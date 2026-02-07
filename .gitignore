@@ -18,6 +18,9 @@ tmp-*
 tmp-*/**
 *.stderr.log
 *.stdout.log
+resources/*.asar
+__pycache__/
+*.pyc
 *.local
 .tmp_*
 
