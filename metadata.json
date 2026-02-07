@@ -1,0 +1,8 @@
+{
+  "name": "GlassBrowser AI",
+  "description": "A simulated Electron-style web browser featuring a glassmorphism UI and a translucent, integrated AI chat assistant powered by Gemini.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

@@ -1,0 +1,74 @@
+Scope
+This is a code-based walkthrough of what your current app (0.1.171) is designed to do and how it is wired. I am describing what the repo implements, not what a specific runtime instance is doing.
+
+App Overview
+The app is a desktop Electron trading workstation that combines a built-in browser with a full-width right-side control panel. It supports two broker paths: MT5 via a local bridge service and TradeLocker via an embedded connector, with a broker-link layer to synchronize or mirror trades. It provides multi-timeframe native charting, pattern detection, and signal generation tied to broker quotes and history. It includes AI-driven workflows (OpenAI/Gemini) for chat, chart chat, signal reasoning, and ops-style diagnostics. It has an automation layer (AutoPilot) with playbooks, task trees, risk gates, and execution modes (live, paper, shadow). It also includes persistent storage for trade ledger, signals, lessons, and UI state plus secure storage for keys.
+
+Browser Shell and Navigation
+The app wraps a full browser window with a Chrome-like tab bar and address bar. Tabs support watch toggles so agents can observe specific pages, pinning for AI context, and short AI labels like "15m" or "H1" to keep multi-timeframe contexts organized. You can open and close tabs and navigate normally. The app can capture tab snapshots for AI analysis. The sidebar opens as a right-side panel; in chat modes it is narrow, and in all other modes it expands full width to act as a complete workspace.
+
+Chat and Chart Chat
+The Chat panel is a general assistant for trading decisions and analysis. It supports text and attachments, can capture the active tab or multiple watched tabs as vision context, and uses your stored OpenAI or Gemini keys. The Chart Chat panel is the chart-focused variant that can ingest multi-timeframe chart snapshots and apply a more trading-centered instruction set. Both support agent-based tools with a tool catalog that can navigate the UI, fetch system state, and trigger playbooks when approved.
+
+Signal Panel
+The Signal panel is a configurable scanning and decision surface. It lets you choose the symbol, timeframes, and session windows (Asia/London/NY or custom). You set a probability range (min and max), expiry time, memory mode (inject/tool/both), and whether pattern context is included. It supports auto-refresh and auto-execution, and it can target Auto/MT5/TradeLocker explicitly. The proposed signals list can expand or collapse, supports multi-select actions, and includes buttons to open the chart, MT5 panel, or TradeLocker panel and prefill the ticket with the signal’s entry, SL, TP, side, and timeframe. Each signal carries a full status lifecycle (proposed, submitting, pending, executed, rejected, expired, win, loss, failed), with metadata such as agent name, execution broker, and news tags.
+
+Patterns Panel
+The Patterns panel is a live pattern-detection dashboard driven by broker data. It supports symbol modes (auto, scope symbol only, active broker symbol only, or a custom list), configurable timeframes, and a large detector list (structure break, range breakout, support/resistance, trend pullback, engulfing, inside bar, pin bar, FVG/imbalance, swing highs/lows, EMA cross, RSI extremes, ATR spikes). You can refresh on a timed interval or on bar close, filter by symbol or type, and jump directly into the chart for a selected pattern.
+
+Native Chart Panel
+The native chart is a multi-frame charting engine with up to five concurrent frames (1m, 5m, 15m, 30m, 1H, 4H, 1D). It fetches broker history, caches it, and overlays quotes, ranges, sessions, constraints, patterns, review annotations, setups, positions, and orders. It exposes price selection modes (entry, SL, TP) and drag handling for overlay lines, which is used for interactive trade design. It can capture single-frame or full-panel snapshots, report frame metadata, and synchronize with the global symbol scope.
+
+MT5 Panel
+The MT5 panel is a full MT5 terminal surface driven by the local Python bridge (FastAPI + MetaTrader5 SDK). It shows account balance, equity, margin, and floating PnL; it manages subscriptions, broker symbols, and a live tick stream via WebSocket (ws://127.0.0.1:8001/ws/ticks). The ticket supports symbol selection, side, type, volume/lot size, SL, TP, and order placement. Tabs include positions, orders, history, and blotter, plus a chart tab that shares the same broker history pipeline. The panel also shows bridge health, ping, and logging to help diagnose MT5 connectivity or market status errors.
+
+TradeLocker Panel
+The TradeLocker panel manages TradeLocker credentials, environment, account selection, and streaming status. It pulls broker quotes, supports symbol search/autosuggest, and exposes a ticket interface similar to MT5 (side, type, qty, price, SL/TP, strategy ID). It also surfaces positions, orders, order history, and account metrics. The panel keeps a persisted config and can auto-connect when credentials are stored.
+
+Backtester and Research
+The Backtester panel is a full strategy lab. It runs multiple strategies (range breakout, break and retest, FVG retrace, trend pullback, mean reversion) on historical candles and computes performance stats and diagnostics. It supports parameter grids, optimization runs, walk-forward validation, training pack export, and a research autopilot that can iterate experiments. You can persist optimizer results, export them, or promote them into watch profiles and setup watchers.
+
+Setups and Watchers
+The Setups panel manages live setup watchers, which continuously evaluate incoming bars for strategy-specific signals. Watchers include regime gating (trend, range, breakout) and generate setup signals (setup ready, entry confirmed, invalidated) with evidence cards and reason codes. These signals can be fed into the chart overlays and into the signal pipeline for downstream execution or review.
+
+AutoPilot and Agent System
+AutoPilot is the automation control center. You can configure execution mode (live, paper, shadow), decision mode (deterministic vs agent), and trading style (scalper, day, trend, swing, or custom). It shows system health snapshots, loss streak monitoring, trade-block reasons, and shadow-trade comparisons. It also exposes task trees and playbooks for multi-step workflows, supports resume/approve/skip actions, and includes a memory manager to add and curate rules or lessons that the agents use when generating signals and decisions. Telegram notification settings are available in the config.
+
+Academy Panel
+The Academy panel is the learning and post-trade reflection space. It stores cases, lessons, and symbol-specific learnings. It supports auto-apply lessons (so new signals and agents inherit past outcomes), auto-export, filters, and per-case details. It is designed to turn executed trades into structured knowledge that can influence future decisions.
+
+Performance Dashboard
+The dashboard aggregates broker and system metrics so you can see account health, exposures, and performance trends at a glance. It is a high-level "check the room" view of equity, positions, and signal activity.
+
+Rank / Leaderboard
+The Rank panel surfaces leaderboard-style stats for agents or strategies, intended to help compare signal performance over time.
+
+Agent Memory, Audit, Changes
+Agent Memory provides a searchable, editable memory store for agent notes, including win/loss tagging and rules. Audit Trail shows action events and tool executions (including confirmations and broker actions). Changes provides a chronological log of major updates and system events.
+
+Notes
+The Notes panel is a local journal and scratchpad for discretionary notes, trade prep, and post-trade reviews, persisted in local storage.
+
+Tech Agent Console
+The Tech Agent Console is an ops/debug interface: it streams and filters logs, allows exporting and copying log bundles, and provides an embedded "tech agent" chat that can analyze the logs with the OpenAI model. It supports image and text attachments and keeps a local chat history for diagnostics.
+
+Broker Link and Mirroring
+A broker-link layer handles MT5 <-> TradeLocker syncing. It supports off / one-way / bidirectional mirroring, order vs position sync, price adjustments (pip or percent), size adjustments (match, balance ratio, risk percent, risk amount), and guardrails (global risk cap and slippage guard). It also includes a symbol map so XAUUSD.R can map cleanly to the broker-specific symbol. This is the core logic that enables cross-broker mirroring and price-normalized execution.
+
+Trade Execution and Risk Gates
+Execution uses a trade ledger to dedupe and reserve orders (preventing accidental double-sends). It applies risk gates like order rate limits, max open positions, max daily loss, max loss streak, and symbol allowlists. Execution supports manual, auto, paper, and shadow modes, and records outcomes back into the ledger for review.
+
+Market Data and Chart Pipeline
+The market data service ingests broker quotes and normalizes symbol variants so the chart engine can consume live prices. The chart engine stores candles, computes indicators (SMA, EMA, ATR, RSI), detects patterns, and tracks session health (stale vs ready). This pipeline feeds the native chart, setup watchers, and signal snapshots.
+
+News and Macro Context
+There is a built-in news service with RSS sources (Reuters, CNBC, MarketWatch, Yahoo Finance, Nasdaq, FXStreet, ForexLive, Kitco, CoinDesk, Cointelegraph, Investing.com, SEC, Federal Reserve, BLS). It tags news by symbol topic (XAUUSD, NAS100, US30, BTCUSD), scores impact using keywords, labels tone (positive/negative/mixed), and flags political items with a "Trump News" tag. Signal entries can include the news snapshot, impact score, and tone.
+
+Settings and Security
+The Settings modal centralizes model settings (text/vision/live models, vision detail), OpenAI/Gemini keys, vector store IDs, and agent reasoning effort. It also covers broker link settings and runtime timing controls (vision intervals, chart context options). Secrets are stored in OS keychain when available (via keytar), with an encrypted file fallback under user data. The app uses an onboarding gate to ensure essential keys and TradeLocker config are present before allowing full operation.
+
+Storage and Persistence
+The app stores UI state (panel settings, filters, toggles) in localStorage, and heavier data in userData: snapshots, chart images, trade ledger (SQLite), TradeLocker config, and logs. This persistence is what enables long-term learning (Academy/Memory), backtest history, and execution dedupe across sessions.
+
+How It Advances Regular Traders
+It collapses research, charting, signals, and execution into one place, reducing context switching and missed details. It adds structured decision support: signals with probability ranges, evidence cards, pattern overlays, and news impact. It encourages disciplined execution through risk gates, guardrails, and automation that can be turned on or off. It turns outcomes into learnings via Academy and Memory, so wins and losses feed back into future trade quality. It supports scaling across brokers with symbol mapping and price adjustment, making cross-account mirroring practical. It builds a clear audit trail and performance loop so traders can understand not just what happened, but why.

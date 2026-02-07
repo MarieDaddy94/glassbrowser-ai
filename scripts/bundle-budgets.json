@@ -1,0 +1,21 @@
+{
+  "index": {
+    "match": "index-",
+    "metric": "rawBytes",
+    "target": 900000,
+    "hard": 1050000
+  },
+  "BacktesterInterface": {
+    "match": "BacktesterInterface-",
+    "metric": "rawBytes",
+    "target": 200000,
+    "hard": 290000
+  },
+  "SettingsModal": {
+    "match": "SettingsModal-",
+    "metric": "rawBytes",
+    "target": 95000,
+    "hard": 135000
+  }
+}
+

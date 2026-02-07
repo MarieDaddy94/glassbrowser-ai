@@ -1,0 +1,37 @@
+{
+  "appId": "com.glassbrowser.ai.beta",
+  "productName": "GlassBrowser AI Beta",
+  "artifactName": "GlassBrowser AI Beta Setup ${version}.exe",
+  "icon": "electron/assets/icon.png",
+  "asar": true,
+  "directories": {
+    "output": "release-beta"
+  },
+  "extraResources": [
+    {
+      "from": "backend",
+      "to": "backend"
+    }
+  ],
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": "nsis"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": false
+  },
+  "mac": {
+    "icon": "electron/assets/icon.png",
+    "target": "dmg"
+  },
+  "linux": {
+    "icon": "electron/assets/icon.png",
+    "target": "AppImage"
+  }
+}

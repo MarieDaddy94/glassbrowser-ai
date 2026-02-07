@@ -1,0 +1,89 @@
+{
+  "name": "glassbrowser-ai",
+  "private": true,
+  "version": "0.1.216",
+  "type": "module",
+  "description": "GlassBrowser AI — a desktop AI trading browser with a Gemini-powered side panel.",
+  "author": "GlassBrowser AI Team",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
+    "contract:generate": "node scripts/generateIpcContract.cjs",
+    "contract:check": "npm run contract:generate && node scripts/checkIpcContractParity.cjs",
+    "release:validate:scopes": "node scripts/validatePermissionScopes.cjs",
+    "release:validate:startup": "node scripts/smokeStartupContracts.cjs",
+    "release:validate": "npm run contract:check && npm run release:validate:scopes && npm run release:validate:startup && npm run bundle:budget",
+    "electron:pack": "npm run release:validate && npm run build && electron-builder --dir",
+    "electron:dist": "npm run release:validate && npm run electron:dist:build && npm run electron:dist:package && npm run release:pack:smoke",
+    "electron:dist:build": "npm run build",
+    "electron:dist:package": "electron-builder",
+    "release:pack:smoke": "node scripts/releasePackSmoke.cjs",
+    "build": "vite build",
+    "bundle:stats": "node scripts/collectBundleStats.cjs",
+    "bundle:budget": "npm run build && npm run bundle:stats && node scripts/checkBundleBudgets.cjs",
+    "preview": "vite preview",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "build": {
+    "appId": "com.glassbrowser.ai",
+    "productName": "GlassBrowser AI",
+    "icon": "electron/assets/icon.png",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "electron/generated/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "mac": {
+      "icon": "electron/assets/icon.png",
+      "target": "dmg"
+    },
+    "linux": {
+      "icon": "electron/assets/icon.png",
+      "target": "AppImage"
+    }
+  },
+  "dependencies": {
+    "@google/genai": "^1.31.0",
+    "better-sqlite3": "^12.5.0",
+    "fast-xml-parser": "^4.5.1",
+    "keytar": "^7.9.0",
+    "lucide-react": "^0.556.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "socket.io-client": "^4.8.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.0",
+    "electron": "^34.0.1",
+    "electron-builder": "^25.1.8",
+    "terser": "^5.46.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "wait-on": "^8.0.1"
+  }
+}
