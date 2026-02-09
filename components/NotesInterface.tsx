@@ -981,6 +981,29 @@ const NotesInterface: React.FC<NotesInterfaceProps> = ({
       updateNote(activeNote.id, { tradeLinks: [...existing, link] });
     };
 
+    const handleTradeReplay = (event: any) => {
+      const detail = event?.detail;
+      if (!detail || typeof detail !== 'object' || !onReplayTrade) return;
+      const symbol = String(detail.symbol || '').trim();
+      if (!symbol) return;
+      const toFinite = (value: any) => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : null;
+      };
+      const timeframeRaw = detail.timeframe == null ? null : String(detail.timeframe).trim();
+      onReplayTrade({
+        symbol,
+        timeframe: timeframeRaw || null,
+        entryPrice: toFinite(detail.entryPrice),
+        stopLoss: toFinite(detail.stopLoss),
+        takeProfit: toFinite(detail.takeProfit),
+        closePrice: toFinite(detail.closePrice),
+        action: detail.action == null ? null : String(detail.action),
+        ledgerId: detail.ledgerId == null ? null : String(detail.ledgerId),
+        noteId: detail.noteId == null ? null : String(detail.noteId)
+      });
+    };
+
     const handleContext = (event: any) => {
       const detail = event?.detail;
       if (!detail || typeof detail !== 'object') return;
@@ -997,15 +1020,17 @@ const NotesInterface: React.FC<NotesInterfaceProps> = ({
     window.addEventListener('glass_notes_checklist', handleChecklistToggle as any);
     window.addEventListener('glass_notes_mistake', handleMistakeToggle as any);
     window.addEventListener('glass_notes_trade_link', handleTradeLink as any);
+    window.addEventListener('glass_notes_trade_replay', handleTradeReplay as any);
     window.addEventListener('glass_notes_context', handleContext as any);
     return () => {
       window.removeEventListener('glass_notes_entry', handleEntryOpen as any);
       window.removeEventListener('glass_notes_checklist', handleChecklistToggle as any);
       window.removeEventListener('glass_notes_mistake', handleMistakeToggle as any);
       window.removeEventListener('glass_notes_trade_link', handleTradeLink as any);
+      window.removeEventListener('glass_notes_trade_replay', handleTradeReplay as any);
       window.removeEventListener('glass_notes_context', handleContext as any);
     };
-  }, [activeNote, attachContext, clearContext, ledgerTrades, mapLedgerEntry, removeTradeLink, toggleChecklist, toggleMistakeTag, updateNote]);
+  }, [activeNote, attachContext, clearContext, ledgerTrades, mapLedgerEntry, onReplayTrade, removeTradeLink, toggleChecklist, toggleMistakeTag, updateNote]);
 
   const syncTradeLinks = useCallback(() => {
     if (!activeNote) return;
@@ -2149,8 +2174,8 @@ const NotesInterface: React.FC<NotesInterfaceProps> = ({
                             {canReplay && (
                               <button
                                 type="button"
-                                onClick={() =>
-                                  onReplayTrade?.({
+                                onClick={() => {
+                                  const replayPayload = {
                                     symbol: replaySymbol,
                                     timeframe: replayTimeframe,
                                     entryPrice: link.entryPrice ?? null,
@@ -2160,8 +2185,9 @@ const NotesInterface: React.FC<NotesInterfaceProps> = ({
                                     action: link.action ?? null,
                                     ledgerId: link.ledgerId,
                                     noteId: activeNote.id
-                                  })
-                                }
+                                  };
+                                  runActionOr('notes.trade.replay', replayPayload, () => onReplayTrade?.(replayPayload));
+                                }}
                                 className="px-2 py-1 rounded-md text-[10px] font-semibold bg-white/10 hover:bg-white/20 text-gray-200 transition-colors"
                               >
                                 Replay

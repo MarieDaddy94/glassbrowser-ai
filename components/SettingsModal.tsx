@@ -8,6 +8,7 @@ import { requestBrokerCoordinated } from "../services/brokerRequestBridge";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { recordLedgerQueueDepth } from "../services/persistenceHealth";
+import { GLASS_EVENT, dispatchGlassEvent } from "../services/glassEvents";
 const AiKeysSection = React.lazy(() => import("./settings/AiKeysSection"));
 const SignalAndWarmupSection = React.lazy(() => import("./settings/SignalAndWarmupSection"));
 const PerformanceAndDebugSection = React.lazy(() => import("./settings/PerformanceAndDebugSection"));
@@ -85,6 +86,8 @@ type TradeLockerProfile = {
   env: "demo" | "live";
   server: string;
   email: string;
+  accountId?: number | null;
+  accNum?: number | null;
   rememberPassword?: boolean;
   rememberDeveloperKey?: boolean;
 };
@@ -141,6 +144,8 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
         env: entry?.env === "live" ? "live" : "demo",
         server: String(entry?.server || ""),
         email: String(entry?.email || ""),
+        accountId: Number.isFinite(Number(entry?.accountId)) ? Number(entry.accountId) : null,
+        accNum: Number.isFinite(Number(entry?.accNum)) ? Number(entry.accNum) : null,
         rememberPassword: entry?.rememberPassword === true,
         rememberDeveloperKey: entry?.rememberDeveloperKey === true
       }))
@@ -189,8 +194,8 @@ const DEFAULT_SIGNAL_TELEGRAM_SETTINGS = {
 
 const DEFAULT_SIGNAL_SNAPSHOT_WARMUP_SETTINGS = {
   barsDefault: 320,
-  bars1d: 60,
-  bars1w: 8,
+  bars1d: 120,
+  bars1w: 52,
   timeoutMs: 90_000
 };
 
@@ -1025,6 +1030,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const server = String(tlServer || "").trim();
     const email = String(tlEmail || "").trim();
     const env = tlEnv === "live" ? "live" : "demo";
+    const accountId = Number.isFinite(Number(tlSelectedAccountId)) ? Number(tlSelectedAccountId) : null;
+    const accNum = Number.isFinite(Number(tlSelectedAccNum)) ? Number(tlSelectedAccNum) : null;
     if (!server || !email) {
       setTlLastError("Set TradeLocker server + email before saving a login.");
       return false;
@@ -1039,6 +1046,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         env,
         server,
         email,
+        accountId,
+        accNum,
         rememberPassword: tlRememberPassword,
         rememberDeveloperKey: tlRememberDeveloperKey
       }
@@ -1046,7 +1055,36 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setTlProfiles(next);
     if (opts?.setActive) setTlActiveProfileId(id);
     return true;
-  }, [buildTradeLockerProfileId, buildTradeLockerProfileLabel, tlEmail, tlEnv, tlProfiles, tlRememberDeveloperKey, tlRememberPassword, tlServer]);
+  }, [buildTradeLockerProfileId, buildTradeLockerProfileLabel, tlEmail, tlEnv, tlProfiles, tlRememberDeveloperKey, tlRememberPassword, tlSelectedAccNum, tlSelectedAccountId, tlServer]);
+
+  const applyTradeLockerActiveAccount = useCallback(async (accountId: number | null, accNum: number | null) => {
+    if (accountId == null || accNum == null) return;
+    const tl = window.glass?.tradelocker;
+    try {
+      if (onRunActionCatalog) {
+        await onRunActionCatalog({
+          actionId: "tradelocker.set_active_account",
+          payload: { accountId, accNum }
+        });
+        return;
+      }
+      if (tl?.setActiveAccount) {
+        await tl.setActiveAccount({ accountId, accNum });
+        try {
+          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+            accountId,
+            accNum,
+            source: "settings_modal_direct",
+            atMs: Date.now()
+          });
+        } catch {
+          // ignore renderer event dispatch failures
+        }
+      }
+    } catch {
+      // keep profile switch resilient even if active account apply fails
+    }
+  }, [onRunActionCatalog]);
 
   const handleTradeLockerProfileSelect = useCallback((profileId: string) => {
     if (!profileId) {
@@ -1061,8 +1099,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setTlEmail(profile.email);
     setTlRememberPassword(profile.rememberPassword !== false);
     setTlRememberDeveloperKey(profile.rememberDeveloperKey === true);
+    const accountId = Number.isFinite(Number(profile.accountId)) ? Number(profile.accountId) : null;
+    const accNum = Number.isFinite(Number(profile.accNum)) ? Number(profile.accNum) : null;
+    setTlSelectedAccountId(accountId != null ? String(accountId) : "");
+    setTlSelectedAccNum(accNum != null ? String(accNum) : "");
+    const currentEnv = String(tlEnv || "").trim().toLowerCase();
+    const currentServer = String(tlServer || "").trim().toLowerCase();
+    const profileEnv = String(profile.env || "").trim().toLowerCase();
+    const profileServer = String(profile.server || "").trim().toLowerCase();
+    const shouldApplyAccount = tlConnected && currentEnv === profileEnv && currentServer === profileServer;
+    if (shouldApplyAccount) {
+      void applyTradeLockerActiveAccount(accountId, accNum);
+    }
     setTlLastError(null);
-  }, [tlProfiles]);
+  }, [applyTradeLockerActiveAccount, tlConnected, tlEnv, tlProfiles, tlServer]);
 
   const handleTradeLockerProfileRemove = useCallback((profileId: string) => {
     if (!profileId) return;
@@ -1291,6 +1341,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             accountId: Number(tlSelectedAccountId),
             accNum: Number(tlSelectedAccNum)
           });
+          try {
+            dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+              accountId: Number(tlSelectedAccountId),
+              accNum: Number(tlSelectedAccNum),
+              source: "settings_modal_save_direct",
+              atMs: Date.now()
+            });
+          } catch {
+            // ignore renderer event dispatch failures
+          }
         } catch {
           // ignore
         }
@@ -1361,6 +1421,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setTlHasSavedPassword(!!cfg.hasSavedPassword);
         setTlHasSavedDeveloperKey(!!cfg.hasSavedDeveloperApiKey);
         setTlEncryptionAvailable(!!cfg.encryptionAvailable);
+        const accountId = Number(cfg?.accountId);
+        const accNum = Number(cfg?.accNum);
+        setTlSelectedAccountId(Number.isFinite(accountId) ? String(accountId) : "");
+        setTlSelectedAccNum(Number.isFinite(accNum) ? String(accNum) : "");
       }
 
       const accountsRes = await tl?.getAccounts?.();
@@ -1439,6 +1503,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const selected = tlAccounts.find(a => String(a?.id) === String(accountIdText));
     const accNum = selected?.accNum != null ? String(selected.accNum) : "";
     setTlSelectedAccNum(accNum);
+    if (tlActiveProfileId) {
+      const accountIdNum = Number(accountIdText);
+      const accNumNum = Number(accNum);
+      setTlProfiles((prev) =>
+        prev.map((profile) => (
+          profile.id === tlActiveProfileId
+            ? {
+                ...profile,
+                accountId: Number.isFinite(accountIdNum) ? accountIdNum : null,
+                accNum: Number.isFinite(accNumNum) ? accNumNum : null
+              }
+            : profile
+        ))
+      );
+    }
     if (!accountIdText || !accNum) return;
     const tl = window.glass?.tradelocker;
     if (!tl?.setActiveAccount && !onRunActionCatalog) return;
@@ -1450,6 +1529,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         });
       } else {
         await tl.setActiveAccount({ accountId: Number(accountIdText), accNum: Number(accNum) });
+        try {
+          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+            accountId: Number(accountIdText),
+            accNum: Number(accNum),
+            source: "settings_modal_select_direct",
+            atMs: Date.now()
+          });
+        } catch {
+          // ignore renderer event dispatch failures
+        }
       }
     } catch {
       // ignore

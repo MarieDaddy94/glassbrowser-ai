@@ -17,6 +17,7 @@ type AuditEntry = {
 
 const DEFAULT_LIMIT = 800;
 const STORAGE_KEY = 'glass_changes_panel_v1';
+const CHANGE_BURST_WINDOW_MS = 90_000;
 
 const readStoredConfig = () => {
   try {
@@ -49,13 +50,92 @@ const formatAge = (ms?: number | null) => {
 
 const describePayload = (entry: AuditEntry) => {
   const payload = entry.payload || {};
+  const aggregatedCount = Number(payload.aggregatedCount);
+  const suppressedCount = Number(payload.suppressedCount);
+  const burstCount = Number.isFinite(aggregatedCount)
+    ? Math.max(1, Math.floor(aggregatedCount))
+    : Number.isFinite(suppressedCount)
+      ? Math.max(1, Math.floor(suppressedCount) + 1)
+      : 1;
+  const burstSuffix = burstCount > 1 ? ` (+${burstCount - 1} similar)` : '';
   const reason = payload.reason || payload.error || payload.note || payload.message;
-  if (reason) return String(reason);
+  if (reason) return `${String(reason)}${burstSuffix}`;
+  if (burstSuffix) return `Burst collapsed${burstSuffix}`;
   if (payload.watcherId) return `watcher ${payload.watcherId}`;
   if (payload.libraryKey) return `library ${payload.libraryKey}`;
   if (payload.runId) return `run ${payload.runId}`;
   if (payload.decisionId) return `decision ${payload.decisionId}`;
   return '';
+};
+
+const readAggregateCount = (entry: AuditEntry) => {
+  const payload = entry.payload || {};
+  const direct = Number(payload.aggregatedCount);
+  if (Number.isFinite(direct) && direct > 0) return Math.max(1, Math.floor(direct));
+  const suppressed = Number(payload.suppressedCount);
+  if (Number.isFinite(suppressed) && suppressed > 0) return Math.max(1, Math.floor(suppressed) + 1);
+  return 1;
+};
+
+const collapseChangeBursts = (entries: AuditEntry[]) => {
+  const source = Array.isArray(entries) ? entries.slice() : [];
+  source.sort((a, b) => Number(b?.createdAtMs || 0) - Number(a?.createdAtMs || 0));
+  const grouped = new Map<
+    string,
+    {
+      sample: AuditEntry;
+      firstAtMs: number;
+      lastAtMs: number;
+      count: number;
+    }
+  >();
+  for (const entry of source) {
+    if (!entry) continue;
+    const createdAtMs = Number(entry.createdAtMs || 0);
+    const bucket = Math.floor((Number.isFinite(createdAtMs) ? createdAtMs : 0) / CHANGE_BURST_WINDOW_MS);
+    const payload = entry.payload || {};
+    const reasonKey = String(payload.reason || payload.error || payload.note || payload.message || '').trim().toLowerCase();
+    const key = [
+      bucket,
+      String(entry.eventType || '').trim().toLowerCase(),
+      String(entry.level || '').trim().toLowerCase(),
+      String(entry.symbol || '').trim().toLowerCase(),
+      reasonKey
+    ].join('|');
+    const count = readAggregateCount(entry);
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, {
+        sample: entry,
+        firstAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
+        lastAtMs: Number.isFinite(createdAtMs) ? createdAtMs : 0,
+        count
+      });
+      continue;
+    }
+    existing.count += count;
+    existing.firstAtMs = Math.min(existing.firstAtMs, Number.isFinite(createdAtMs) ? createdAtMs : existing.firstAtMs);
+    existing.lastAtMs = Math.max(existing.lastAtMs, Number.isFinite(createdAtMs) ? createdAtMs : existing.lastAtMs);
+  }
+
+  return Array.from(grouped.values())
+    .sort((a, b) => b.lastAtMs - a.lastAtMs)
+    .map((group, index) => {
+      const payload = group.sample.payload && typeof group.sample.payload === 'object'
+        ? { ...group.sample.payload }
+        : {};
+      payload.aggregatedCount = group.count;
+      payload.suppressedCount = Math.max(0, group.count - 1);
+      payload.windowMs = CHANGE_BURST_WINDOW_MS;
+      payload.firstAtMs = group.firstAtMs || null;
+      payload.lastAtMs = group.lastAtMs || null;
+      return {
+        ...group.sample,
+        id: group.sample.id || `changes_ui_agg_${group.lastAtMs}_${index}`,
+        payload,
+        createdAtMs: group.lastAtMs || group.sample.createdAtMs || null
+      } as AuditEntry;
+    });
 };
 
 const categorizeEvent = (eventType: string) => {
@@ -201,21 +281,26 @@ const ChangesInterface: React.FC<ChangesInterfaceProps> = ({
       .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [entries, filterSymbol, rangeHours]);
 
+  const reducedEntries = useMemo(() => {
+    return collapseChangeBursts(filteredEntries);
+  }, [filteredEntries]);
+
   const summary = useMemo(() => {
     const totals: Record<string, number> = {};
     let warns = 0;
     let errors = 0;
     const symbols = new Set<string>();
-    filteredEntries.forEach((entry) => {
+    reducedEntries.forEach((entry) => {
+      const count = readAggregateCount(entry);
       const level = String(entry.level || 'info').toLowerCase();
-      if (level === 'warn') warns += 1;
-      if (level === 'error') errors += 1;
+      if (level === 'warn') warns += count;
+      if (level === 'error') errors += count;
       if (entry.symbol) symbols.add(String(entry.symbol));
       const bucket = categorizeEvent(entry.eventType || '');
-      totals[bucket] = (totals[bucket] || 0) + 1;
+      totals[bucket] = (totals[bucket] || 0) + count;
     });
     return { totals, warns, errors, symbols: symbols.size };
-  }, [filteredEntries]);
+  }, [reducedEntries]);
 
   const topCategories = useMemo(() => {
     return Object.entries(summary.totals)
@@ -309,7 +394,8 @@ const ChangesInterface: React.FC<ChangesInterfaceProps> = ({
 
           <div className="rounded-lg border border-white/10 bg-black/40 p-3 text-[11px] text-gray-400 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-emerald-200 font-semibold">Events {filteredEntries.length}</span>
+              <span className="text-emerald-200 font-semibold">Events {reducedEntries.length}</span>
+              <span>Raw {filteredEntries.length}</span>
               <span>Symbols {summary.symbols}</span>
               <span>Warnings {summary.warns}</span>
               <span>Errors {summary.errors}</span>
@@ -333,26 +419,38 @@ const ChangesInterface: React.FC<ChangesInterfaceProps> = ({
         <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
           {isLoading ? (
             <div className="text-[11px] text-gray-500">Loading changes...</div>
-          ) : filteredEntries.length === 0 ? (
+          ) : reducedEntries.length === 0 ? (
             <div className="text-[11px] text-gray-500">No changes for this window.</div>
           ) : (
-            filteredEntries.slice(0, 200).map((entry) => (
-              <VirtualItem
-                key={entry.id || `${entry.eventType}-${entry.createdAtMs}`}
-                minHeight={90}
-                className="border border-white/10 rounded-lg p-2 text-[11px]"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-emerald-200">{entry.eventType || 'event'}</span>
-                  {entry.symbol && <span className="text-gray-400">{entry.symbol}</span>}
-                  {entry.level && <span className="text-gray-500 uppercase">{entry.level}</span>}
-                  <span className="text-gray-500">{formatAge(entry.createdAtMs)} ago</span>
-                </div>
-                {describePayload(entry) && (
-                  <div className="mt-1 text-gray-500">{describePayload(entry)}</div>
-                )}
-              </VirtualItem>
-            ))
+            reducedEntries.slice(0, 200).map((entry) => {
+              const aggregateCount = readAggregateCount(entry);
+              const suppressedCount = Math.max(0, aggregateCount - 1);
+              return (
+                <VirtualItem
+                  key={entry.id || `${entry.eventType}-${entry.createdAtMs}`}
+                  minHeight={90}
+                  className="border border-white/10 rounded-lg p-2 text-[11px]"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-emerald-200">{entry.eventType || 'event'}</span>
+                    {entry.symbol && <span className="text-gray-400">{entry.symbol}</span>}
+                    {entry.level && <span className="text-gray-500 uppercase">{entry.level}</span>}
+                    {aggregateCount > 1 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-200">
+                        x{aggregateCount}
+                      </span>
+                    )}
+                    {suppressedCount > 0 && (
+                      <span className="text-[10px] text-gray-500">suppressed {suppressedCount}</span>
+                    )}
+                    <span className="text-gray-500">{formatAge(entry.createdAtMs)} ago</span>
+                  </div>
+                  {describePayload(entry) && (
+                    <div className="mt-1 text-gray-500">{describePayload(entry)}</div>
+                  )}
+                </VirtualItem>
+              );
+            })
           )}
         </div>
       </div>

@@ -1,5 +1,6 @@
 // @ts-nocheck
 type ActionResult = { ok: boolean; error?: string; data?: any };
+import { GLASS_EVENT } from './glassEvents';
 
 export type runCatalogOpsRuntimeInput = {
   actionId: string;
@@ -158,7 +159,7 @@ export async function runCatalogOpsRuntime(runtimeInput: runCatalogOpsRuntimeInp
       if (actionId === 'mt5.symbols.apply') detail.apply = true;
       if (actionId === 'mt5.symbols.search') detail.search = payload.query ?? payload.search ?? payload.value;
       try {
-        window.dispatchEvent(new CustomEvent('glass_mt5_controls', { detail }));
+        window.dispatchEvent(new CustomEvent(GLASS_EVENT.MT5_CONTROLS, { detail }));
       } catch {
         return { ok: false, error: 'Unable to control MT5 panel.' };
       }

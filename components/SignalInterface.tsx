@@ -1319,6 +1319,11 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
               {signalConnectivityIssue ? (
                 <div className="text-amber-300">
                   Connectivity: {String(signalConnectivityIssue.source || 'catalog').toUpperCase()} degraded
+                  {signalConnectivityIssue.retryAfterMs
+                    ? ` (retry ${formatDuration(signalConnectivityIssue.retryAfterMs) || formatDue(Date.now() + Number(signalConnectivityIssue.retryAfterMs || 0))})`
+                    : signalConnectivityIssue.blockedUntilMs
+                      ? ` (retry ${formatDue(signalConnectivityIssue.blockedUntilMs)})`
+                      : ''}
                 </div>
               ) : null}
               {lastSuccessfulScanAtMs && <div>Last successful: {formatAge(lastSuccessfulScanAtMs)}</div>}

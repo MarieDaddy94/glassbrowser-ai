@@ -23,5 +23,17 @@ test('panel connectivity engine enforces timeout, retry, and backoff controls', 
   assert.equal(source.includes('DEFAULT_RETRY_DELAY_MS'), true);
   assert.equal(source.includes('MAX_BACKOFF_MS'), true);
   assert.equal(source.includes('if (state.failureCount >= 3)'), true);
-  assert.equal(source.includes('source_blocked_until_'), true);
+  assert.equal(source.includes('source_cooldown_active'), true);
+  assert.equal(source.includes('retryAfterMs'), true);
+  assert.equal(source.includes('blockedUntilMs'), true);
+});
+
+test('blocked panel sources do not increment failure count while cooldown is active', () => {
+  const source = read('services/panelConnectivityEngine.ts');
+  const blockedStart = source.indexOf('if (this.isBlocked(panel, source, now)) {');
+  assert.equal(blockedStart >= 0, true);
+  const blockedBody = source.slice(blockedStart, source.indexOf('const startedAt = Date.now();', blockedStart));
+  assert.equal(blockedBody.includes('this.markFailure(panel, source, msg, null);'), false);
+  assert.equal(blockedBody.includes('blocked: true'), true);
+  assert.equal(blockedBody.includes('blockedReason'), true);
 });

@@ -52,6 +52,19 @@ const formatTimeframe = (value: string) => {
   return lower;
 };
 
+const getFreshnessTargetMs = (timeframe: string) => {
+  const key = String(timeframe || '').trim().toLowerCase();
+  if (key === '1m') return 90_000;
+  if (key === '5m') return 4 * 60_000;
+  if (key === '15m') return 12 * 60_000;
+  if (key === '30m') return 25 * 60_000;
+  if (key === '1h') return 70 * 60_000;
+  if (key === '4h') return 4 * 60 * 60_000;
+  if (key === '1d') return 36 * 60 * 60_000;
+  if (key === '1w') return 10 * 24 * 60 * 60_000;
+  return 10 * 60_000;
+};
+
 const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
   symbol,
   candidateSymbols,
@@ -152,6 +165,59 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
     }
     return parts.join(' | ');
   }, [status]);
+
+  const freshnessBadges = useMemo(() => {
+    const frames = Array.isArray(status?.frames) ? status?.frames : [];
+    const missing = new Set((status?.missingFrames || []).map((tf) => String(tf || '').trim().toLowerCase()));
+    const shortByTf = new Map<string, { barsCount: number; minBars: number }>();
+    for (const entry of status?.shortFrames || []) {
+      const tf = String(entry?.tf || '').trim().toLowerCase();
+      if (!tf) continue;
+      shortByTf.set(tf, {
+        barsCount: Number(entry?.barsCount || 0),
+        minBars: Number(entry?.minBars || 0)
+      });
+    }
+    const frameByTf = new Map<string, { barsCount: number; lastUpdatedAtMs: number | null }>();
+    for (const frame of frames) {
+      const tf = String(frame?.tf || '').trim().toLowerCase();
+      if (!tf) continue;
+      frameByTf.set(tf, {
+        barsCount: Number(frame?.barsCount || 0),
+        lastUpdatedAtMs: frame?.lastUpdatedAtMs ?? null
+      });
+    }
+    return (timeframes || []).map((value) => {
+      const tf = String(value || '').trim().toLowerCase();
+      const label = formatTimeframe(value);
+      const short = shortByTf.get(tf);
+      const frame = frameByTf.get(tf);
+      if (missing.has(tf) || !frame) {
+        return { tf, label, state: 'missing', detail: 'missing' };
+      }
+      if (short) {
+        return {
+          tf,
+          label,
+          state: 'short',
+          detail: `${Math.max(0, short.barsCount)}/${Math.max(0, short.minBars)} bars`
+        };
+      }
+      const updatedAtMs = Number(frame.lastUpdatedAtMs || 0);
+      if (!updatedAtMs) {
+        return { tf, label, state: 'unknown', detail: 'age --' };
+      }
+      const ageMs = Math.max(0, Date.now() - updatedAtMs);
+      const targetMs = getFreshnessTargetMs(tf);
+      if (ageMs <= targetMs) {
+        return { tf, label, state: 'fresh', detail: `${formatAge(updatedAtMs)}` };
+      }
+      if (ageMs <= targetMs * 2) {
+        return { tf, label, state: 'aging', detail: `${formatAge(updatedAtMs)}` };
+      }
+      return { tf, label, state: 'stale', detail: `${formatAge(updatedAtMs)}` };
+    });
+  }, [status, timeframes]);
 
   const statusLabel = useMemo(() => {
     if (!status) return 'No snapshot yet.';
@@ -306,6 +372,32 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
           {framesLine && (
             <div className="text-[11px] text-gray-500">
               Frames: {framesLine}
+            </div>
+          )}
+          {freshnessBadges.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {freshnessBadges.map((badge) => {
+                const tone =
+                  badge.state === 'fresh'
+                    ? 'border-emerald-400/60 text-emerald-200 bg-emerald-500/10'
+                    : badge.state === 'aging'
+                      ? 'border-yellow-400/60 text-yellow-200 bg-yellow-500/10'
+                      : badge.state === 'stale'
+                        ? 'border-rose-400/60 text-rose-200 bg-rose-500/10'
+                        : badge.state === 'short'
+                          ? 'border-orange-400/60 text-orange-200 bg-orange-500/10'
+                          : 'border-slate-400/50 text-slate-200 bg-slate-500/10';
+                const stateLabel = String(badge.state || '').toUpperCase();
+                return (
+                  <span
+                    key={`${badge.tf}:${badge.state}`}
+                    className={`px-2 py-1 rounded border text-[10px] tracking-wide ${tone}`}
+                    title={`${badge.label} ${stateLabel} ${badge.detail}`}
+                  >
+                    {badge.label} {stateLabel}
+                  </span>
+                );
+              })}
             </div>
           )}
           {incompleteLine && (

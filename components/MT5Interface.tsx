@@ -5,6 +5,8 @@ import NativeChartInterface, { NativeChartHandle } from "./NativeChartInterface"
 import { normalizeSymbolKey } from "../services/symbols";
 import { Position, TradeLockerOrder } from "../types";
 import { createPanelActionRunner } from "../services/panelConnectivityEngine";
+import { requestBrokerCoordinated } from "../services/brokerRequestBridge";
+import { GLASS_EVENT } from "../services/glassEvents";
 
 interface MT5InterfaceProps {
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
@@ -579,6 +581,24 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
     }
   }, [httpBaseUrl]);
 
+  const requestMt5Broker = useCallback(
+    async (
+      method: string,
+      args?: any,
+      meta?: { symbol?: string | null; source?: string | null }
+    ) => {
+      const resolvedSymbol = String(args?.symbol || args?.instrument || args?.ticker || "").trim();
+      const symbol = meta?.symbol ?? (resolvedSymbol || null);
+      const res = await requestBrokerCoordinated(method, args, {
+        brokerId: "mt5",
+        symbol,
+        source: meta?.source || "mt5.panel"
+      });
+      return res;
+    },
+    []
+  );
+
   const resolveMt5Symbol = useCallback(async (raw: string) => {
     const trimmed = String(raw || "").trim();
     if (!trimmed) return "";
@@ -592,6 +612,26 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
       return localMatch;
     }
 
+    const coordinated = await requestMt5Broker(
+      "searchInstruments",
+      { query: trimmed, limit: 80 },
+      { symbol: trimmed, source: "mt5.panel.symbol.resolve" }
+    );
+    const coordinatedCandidates = Array.isArray(coordinated?.results)
+      ? coordinated.results.map((entry: any) =>
+          String(entry?.symbol || entry?.instrument || entry?.name || "").trim()
+        ).filter(Boolean)
+      : Array.isArray(coordinated?.symbols)
+        ? coordinated.symbols.map((entry: any) => String(entry || "").trim()).filter(Boolean)
+        : [];
+    if (coordinated?.ok && coordinatedCandidates.length > 0) {
+      const remoteMatch = pickBestSymbol(trimmed, coordinatedCandidates);
+      if (remoteMatch) {
+        if (key) symbolAliasRef.current[key] = remoteMatch;
+        return remoteMatch;
+      }
+    }
+
     const res = await fetchMt5(`/symbols?query=${encodeURIComponent(trimmed)}&limit=80`);
     if (res.ok && Array.isArray(res.data?.symbols)) {
       const remoteMatch = pickBestSymbol(trimmed, res.data.symbols);
@@ -602,7 +642,7 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
     }
 
     return trimmed;
-  }, [fetchMt5, symbolResults, subscriptions, symbols]);
+  }, [fetchMt5, requestMt5Broker, symbolResults, subscriptions, symbols]);
 
   useEffect(() => {
     const next = String(defaultSymbol || "").trim();
@@ -988,8 +1028,8 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
       if (detail.search != null) searchSymbols(String(detail.search));
       if (detail.addSymbol != null) addSymbolToWatchlist(String(detail.addSymbol));
     };
-    window.addEventListener("glass_mt5_controls", handler as any);
-    return () => window.removeEventListener("glass_mt5_controls", handler as any);
+    window.addEventListener(GLASS_EVENT.MT5_CONTROLS, handler as any);
+    return () => window.removeEventListener(GLASS_EVENT.MT5_CONTROLS, handler as any);
   }, [
     addSymbolToWatchlist,
     connect,
@@ -1028,8 +1068,8 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
       if (detail.comment != null) setTicketComment(String(detail.comment));
       if (detail.open) setActiveView("ticket");
     };
-    window.addEventListener("glass_mt5_ticket", handleTicket as any);
-    return () => window.removeEventListener("glass_mt5_ticket", handleTicket as any);
+    window.addEventListener(GLASS_EVENT.MT5_TICKET, handleTicket as any);
+    return () => window.removeEventListener(GLASS_EVENT.MT5_TICKET, handleTicket as any);
   }, []);
 
   useEffect(() => {
@@ -1268,6 +1308,28 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
       }
       const resolvedSymbol = await resolveMt5Symbol(payload.symbol);
       payload.symbol = resolvedSymbol || payload.symbol;
+      const coordinated = await requestMt5Broker(
+        "getHistorySeries",
+        {
+          symbol: payload.symbol,
+          resolution: payload.resolution,
+          from: payload.from,
+          to: payload.to,
+          limit: payload.limit,
+          aggregate: true,
+          maxAgeMs: 15_000
+        },
+        { symbol: payload.symbol, source: "mt5.panel.chart.history" }
+      );
+      if (coordinated?.ok && Array.isArray(coordinated?.bars)) {
+        return {
+          ok: true,
+          bars: coordinated.bars,
+          fetchedAtMs: coordinated.fetchedAtMs || Date.now(),
+          source: coordinated.source || coordinated.brokerId || "mt5",
+          coverage: coordinated.coverage ?? null
+        };
+      }
       const res = await fetchMt5("/history/series", {
         method: "POST",
         body: JSON.stringify(payload)
@@ -1284,10 +1346,23 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
       };
     }
     if (method === "getInstrumentConstraints") {
+      const symbol = String(args?.symbol || ticketSymbolTrimmed || "").trim();
+      const coordinated = await requestMt5Broker(
+        "getInstrumentConstraints",
+        symbol ? { symbol } : {},
+        { symbol, source: "mt5.panel.chart.constraints" }
+      );
+      if (coordinated?.ok && coordinated?.constraints) {
+        return {
+          ok: true,
+          constraints: coordinated.constraints,
+          fetchedAtMs: coordinated.fetchedAtMs || Date.now()
+        };
+      }
       return { ok: true, constraints: {}, fetchedAtMs: Date.now() };
     }
     return { ok: false, error: `${method} unsupported.` };
-  }, [fetchMt5, formatHistoryError, resolveMt5Symbol, ticketSymbolTrimmed]);
+  }, [fetchMt5, formatHistoryError, requestMt5Broker, resolveMt5Symbol, ticketSymbolTrimmed]);
 
   const isChartView = activeView === "chart";
 

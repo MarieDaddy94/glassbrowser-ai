@@ -171,9 +171,9 @@ export interface BrokerAdapterSectionCtx {
   tlLastError?: string | null;
   tlActiveProfileId: string;
   handleTradeLockerProfileSelect: (id: string) => void;
-  tlProfiles: Array<{ id: string; label: string }>;
-  upsertTradeLockerProfile: (opts?: { setActive?: boolean }) => Promise<void>;
-  handleTradeLockerProfileRemove: (id: string) => Promise<void>;
+  tlProfiles: Array<{ id: string; label: string; accountId?: number | null; accNum?: number | null }>;
+  upsertTradeLockerProfile: (opts?: { setActive?: boolean }) => boolean | Promise<void>;
+  handleTradeLockerProfileRemove: (id: string) => void | Promise<void>;
   tlEnv: 'demo' | 'live';
   setTlEnv: React.Dispatch<React.SetStateAction<'demo' | 'live'>>;
   tlServer: string;
@@ -263,6 +263,41 @@ export interface TelemetrySectionCtx {
     brokerStatus?: string;
     brokerStreamStatus?: string;
     startupCheckedAtMs?: number;
+    perf?: {
+      brokerCoordinatorRequests?: number | null;
+      brokerCoordinatorExecutions?: number | null;
+      brokerCoordinatorCacheHits?: number | null;
+      brokerCoordinatorDedupeHits?: number | null;
+      brokerCoordinatorCacheHitRate?: number | null;
+      brokerCoordinatorDedupeRate?: number | null;
+      patternWatchSyncCoalesced?: number | null;
+    } | null;
+    scheduler?: {
+      visible?: boolean | null;
+      taskCount?: number | null;
+      signalTaskId?: string | null;
+      signalTask?: {
+        id: string;
+        groupId: string;
+        runCount?: number | null;
+        errorCount?: number | null;
+        lastRunAtMs?: number | null;
+        lastDurationMs?: number | null;
+        paused?: boolean | null;
+        consecutiveFailures?: number | null;
+      } | null;
+      shadowTaskId?: string | null;
+      shadowTask?: {
+        id: string;
+        groupId: string;
+        runCount?: number | null;
+        errorCount?: number | null;
+        lastRunAtMs?: number | null;
+        lastDurationMs?: number | null;
+        paused?: boolean | null;
+        consecutiveFailures?: number | null;
+      } | null;
+    } | null;
     cacheBudgets?: Array<{
       name: string;
       size: number;
@@ -342,6 +377,9 @@ export interface TelemetrySectionCtx {
       error?: string | null;
       updatedAt: number;
       failureCount?: number;
+      blocked?: boolean | null;
+      retryAfterMs?: number | null;
+      blockedReason?: string | null;
       blockedUntilMs?: number | null;
     }> | null;
     panelFreshness?: Array<{

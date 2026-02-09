@@ -2399,6 +2399,15 @@ export const ACTION_CATALOG: Record<string, ActionDefinition> = {
     auditEventType: 'notes_trade_link_remove',
     defaultTimeoutMs: 4000
   },
+  'notes.trade.replay': {
+    id: 'notes.trade.replay',
+    domain: 'notes',
+    owner: 'agent',
+    summary: 'Replay a linked trade from Notes in Native Chart.',
+    safety: { gates: [], requiresConfirmation: false },
+    auditEventType: 'notes_trade_replay',
+    defaultTimeoutMs: 3000
+  },
   'notes.context.attach': {
     id: 'notes.context.attach',
     domain: 'notes',

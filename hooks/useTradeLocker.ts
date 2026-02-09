@@ -3,6 +3,7 @@ import { Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerOrder
 import { normalizeSymbolKey, normalizeSymbolLoose } from "../services/symbols";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
+import { GLASS_EVENT } from "../services/glassEvents";
 
 export type TradeLockerConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
@@ -583,6 +584,7 @@ export function useTradeLocker(
   }, [accountBusyRef, withAccountLock]);
 
   const pollTimerRef = useRef<(() => void) | null>(null);
+  const savedConfigTimerRef = useRef<(() => void) | null>(null);
   const statusTimerRef = useRef<(() => void) | null>(null);
   const streamStatusTimerRef = useRef<(() => void) | null>(null);
   const snapshotInFlightRef = useRef(false);
@@ -623,6 +625,7 @@ export function useTradeLocker(
   });
   const streamConfigKeyRef = useRef<string>("");
   const streamRevisionRef = useRef<number>(0);
+  const accountSwitchRefreshAtRef = useRef<number>(0);
   const suppressRateLimitUntilRef = useRef(0);
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
 
@@ -1464,6 +1467,29 @@ export function useTradeLocker(
   }, [refreshSavedConfig, refreshStatus, startupBridgeOperational]);
 
   useEffect(() => {
+    if (savedConfigTimerRef.current) {
+      savedConfigTimerRef.current();
+      savedConfigTimerRef.current = null;
+    }
+    if (!startupBridgeOperational) return;
+    savedConfigTimerRef.current = runtimeScheduler.registerTask({
+      id: "tradelocker.saved_config.refresh",
+      groupId: "broker",
+      intervalMs: 20_000,
+      jitterPct: 0.1,
+      visibilityMode: "always",
+      priority: "low",
+      run: async () => {
+        await refreshSavedConfig();
+      }
+    });
+    return () => {
+      if (savedConfigTimerRef.current) savedConfigTimerRef.current();
+      savedConfigTimerRef.current = null;
+    };
+  }, [refreshSavedConfig, runtimeScheduler, startupBridgeOperational]);
+
+  useEffect(() => {
     if (autoConnectAttemptedRef.current) return;
     if (!startupBridgeReady) return;
     if (startupPhase === "booting") return;
@@ -1948,6 +1974,53 @@ export function useTradeLocker(
       try { unsubscribe?.(); } catch { /* ignore */ }
     };
   }, [api, refreshAccountMetrics, refreshOrders, refreshSnapshot, scheduleBurstRefresh, scheduleQuoteFlush, shouldUpdateQuote, startupBridgeOperational, status]);
+
+  useEffect(() => {
+    if (!startupBridgeOperational) return;
+    const eventName = GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED;
+    const onAccountChanged = (evt: Event) => {
+      const custom = evt as CustomEvent<any>;
+      const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
+      const accountId = Number(detail?.accountId);
+      const accNum = Number(detail?.accNum);
+      if (Number.isFinite(accountId) && Number.isFinite(accNum)) {
+        setSavedConfig((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            accountId,
+            accNum
+          };
+        });
+      }
+      const now = Date.now();
+      if (now - accountSwitchRefreshAtRef.current < 400) return;
+      accountSwitchRefreshAtRef.current = now;
+      void (async () => {
+        await refreshSavedConfig();
+        await refreshAccounts();
+        if (status === "connected") {
+          await refreshSnapshot();
+          await refreshOrders();
+          await refreshAccountMetrics();
+          await refreshQuotes();
+        }
+      })();
+    };
+    window.addEventListener(eventName, onAccountChanged as EventListener);
+    return () => {
+      window.removeEventListener(eventName, onAccountChanged as EventListener);
+    };
+  }, [
+    refreshAccountMetrics,
+    refreshAccounts,
+    refreshOrders,
+    refreshQuotes,
+    refreshSavedConfig,
+    refreshSnapshot,
+    startupBridgeOperational,
+    status
+  ]);
 
   return {
     status,

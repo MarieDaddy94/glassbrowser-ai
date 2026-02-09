@@ -98,6 +98,29 @@ export type ChartEngineOptions = {
   historyFetchTimeoutMs?: number;
 };
 
+export type ChartFrameCacheTelemetry = {
+  enabled: boolean;
+  entries: number;
+  partitions: string[];
+  hydrate: {
+    attempts: number;
+    hits: number;
+    hitRate: number;
+    lastHydrateAtMs: number | null;
+  };
+  fetchMix: {
+    full: number;
+    incremental: number;
+  };
+  persist: {
+    flushes: number;
+    flushFailures: number;
+    lastFlushAtMs: number | null;
+    lastFlushError: string | null;
+    lastClearAtMs: number | null;
+  };
+};
+
 type ChartSessionInternal = {
   id: string;
   symbol: string;
@@ -111,6 +134,7 @@ type ChartSessionInternal = {
   updatedAtMs: number | null;
   lastBarCloseAtMs: number | null;
   lastHistoryFetchAtMs: number | null;
+  lastFullHistoryFetchAtMs: number | null;
   lastQuoteAtMs: number | null;
   historyMaxAgeMs: number;
   barsBackfill: number;
@@ -119,7 +143,24 @@ type ChartSessionInternal = {
   watched: boolean;
   lastEventKeyByType: Map<string, string>;
   source: string;
+  cachePartition: string;
   error?: string | null;
+};
+
+type PersistedChartFrameEntry = {
+  symbol: string;
+  timeframe: string;
+  partition?: string | null;
+  updatedAtMs: number;
+  lastHistoryFetchAtMs: number | null;
+  lastFullHistoryFetchAtMs: number | null;
+  bars: Candle[];
+};
+
+type PersistedChartFrameCachePayload = {
+  version: number;
+  savedAtMs: number;
+  entries: Record<string, PersistedChartFrameEntry>;
 };
 
 const DEFAULT_DETECTORS = [
@@ -139,6 +180,13 @@ const DEFAULT_DETECTORS = [
 ];
 const DEFAULT_BARS_BACKFILL = 320;
 const DEFAULT_MAX_BARS = 600;
+const PERSISTED_FRAME_CACHE_KEY = 'glass_chart_frame_cache_v1';
+const PERSISTED_FRAME_CACHE_VERSION = 1;
+const PERSISTED_FRAME_CACHE_MAX_ENTRIES = 220;
+const PERSISTED_FRAME_CACHE_WRITE_DEBOUNCE_MS = 1200;
+const FULL_HISTORY_RECONCILE_FALLBACK_MS = 15 * 60 * 1000;
+const DEFAULT_FRAME_CACHE_PARTITION = 'tradelocker|default';
+const PERSISTED_FRAME_KEY_SEPARATOR = '@@';
 const DEFAULT_ATR_PERIOD = 14;
 const DEFAULT_RSI_PERIOD = 14;
 const DEFAULT_SMA_FAST = 20;
@@ -148,6 +196,60 @@ const DEFAULT_EMA_SLOW = 26;
 const MAX_EVENT_KEY_CACHE = 5000;
 
 const nowFallback = () => Date.now();
+
+const getStorageSafe = () => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
+const normalizeFrameCachePartition = (value: any) => {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw || DEFAULT_FRAME_CACHE_PARTITION;
+};
+
+const buildPersistedFrameEntryKey = (partition: string, sessionKey: string) => {
+  return `${normalizeFrameCachePartition(partition)}${PERSISTED_FRAME_KEY_SEPARATOR}${sessionKey}`;
+};
+
+const parsePersistedFrameEntryKey = (raw: string) => {
+  const key = String(raw || '').trim();
+  if (!key) return { partition: DEFAULT_FRAME_CACHE_PARTITION, sessionKey: '' };
+  const sep = key.indexOf(PERSISTED_FRAME_KEY_SEPARATOR);
+  if (sep <= 0) {
+    return { partition: DEFAULT_FRAME_CACHE_PARTITION, sessionKey: key };
+  }
+  const partition = normalizeFrameCachePartition(key.slice(0, sep));
+  const sessionKey = String(key.slice(sep + PERSISTED_FRAME_KEY_SEPARATOR.length) || '').trim();
+  return { partition, sessionKey };
+};
+
+const resolveFrameCachePartitionFromResponse = (res: any, fallback?: string | null) => {
+  const brokerId =
+    String(
+      res?.brokerId ||
+      res?.sourceBroker ||
+      res?.broker ||
+      ''
+    )
+      .trim()
+      .toLowerCase() || 'tradelocker';
+  const accountCandidate =
+    res?.accountKey ||
+    res?.accountId ||
+    res?.accNum ||
+    res?.accountNumber ||
+    (res?.env && res?.server && res?.accountId != null && res?.accNum != null
+      ? `${res.env}:${res.server}:${res.accountId}:${res.accNum}`
+      : null) ||
+    null;
+  const account = String(accountCandidate || '').trim().toLowerCase() || 'default';
+  const next = `${brokerId}|${account}`;
+  return normalizeFrameCachePartition(next || fallback || DEFAULT_FRAME_CACHE_PARTITION);
+};
 
 const toNumber = (value: any) => {
   const n = typeof value === 'number' ? value : Number(String(value ?? '').replace(/,/g, ''));
@@ -231,6 +333,45 @@ const computeHistoryMaxAge = (timeframe: string) => {
   return 120_000;
 };
 
+const computeFullHistoryReconcileMs = (timeframe: string) => {
+  const tf = normalizeTimeframe(timeframe).toLowerCase();
+  if (tf === '1m') return 8 * 60 * 1000;
+  if (tf === '5m') return 12 * 60 * 1000;
+  if (tf === '15m') return 20 * 60 * 1000;
+  if (tf === '30m') return 30 * 60 * 1000;
+  if (tf === '1h') return 60 * 60 * 1000;
+  if (tf === '4h') return 4 * 60 * 60 * 1000;
+  if (tf === '1d') return 24 * 60 * 60 * 1000;
+  if (tf === '1w') return 7 * 24 * 60 * 60 * 1000;
+  return FULL_HISTORY_RECONCILE_FALLBACK_MS;
+};
+
+const computePersistedFrameRetentionMs = (timeframe: string) => {
+  const tf = normalizeTimeframe(timeframe).toLowerCase();
+  if (tf === '1m') return 2 * 24 * 60 * 60 * 1000;
+  if (tf === '5m') return 5 * 24 * 60 * 60 * 1000;
+  if (tf === '15m') return 10 * 24 * 60 * 60 * 1000;
+  if (tf === '30m') return 21 * 24 * 60 * 60 * 1000;
+  if (tf === '1h') return 45 * 24 * 60 * 60 * 1000;
+  if (tf === '4h') return 120 * 24 * 60 * 60 * 1000;
+  if (tf === '1d') return 365 * 24 * 60 * 60 * 1000;
+  if (tf === '1w') return 3 * 365 * 24 * 60 * 60 * 1000;
+  return 45 * 24 * 60 * 60 * 1000;
+};
+
+const computePersistedFrameCap = (timeframe: string) => {
+  const tf = normalizeTimeframe(timeframe).toLowerCase();
+  if (tf === '1m') return 900;
+  if (tf === '5m') return 1100;
+  if (tf === '15m') return 1300;
+  if (tf === '30m') return 1500;
+  if (tf === '1h') return 1800;
+  if (tf === '4h') return 2200;
+  if (tf === '1d') return 2600;
+  if (tf === '1w') return 1500;
+  return 1200;
+};
+
 const resolveMinimumBarsBackfill = (timeframe: string, allowShort = false) => {
   if (!allowShort) return 120;
   const tf = normalizeTimeframe(timeframe).toLowerCase();
@@ -251,6 +392,28 @@ const resolveBackfillOverride = (timeframe: string, overrides?: Record<string, n
   const key = normalizeTimeframe(timeframe).toLowerCase();
   const raw = overrides[key];
   return Number.isFinite(Number(raw)) ? Number(raw) : null;
+};
+
+const mergeBarsWithinWindow = (
+  existingBars: Candle[],
+  incomingBars: Candle[],
+  minTimestampMs: number,
+  maxBars: number
+) => {
+  const filteredExisting = existingBars.filter((bar) => Number(bar?.t || 0) >= minTimestampMs);
+  const filteredIncoming = incomingBars.filter((bar) => Number(bar?.t || 0) >= minTimestampMs);
+  const merged = new Map<number, Candle>();
+  for (const bar of filteredExisting) {
+    if (!bar || !Number.isFinite(Number(bar.t))) continue;
+    merged.set(Number(bar.t), bar);
+  }
+  for (const bar of filteredIncoming) {
+    if (!bar || !Number.isFinite(Number(bar.t))) continue;
+    merged.set(Number(bar.t), bar);
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => a.t - b.t)
+    .slice(-Math.max(120, maxBars));
 };
 
 const buildSessionId = () => `chart_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
@@ -277,6 +440,7 @@ export class ChartEngine {
   private readonly onUpdate?: (update: ChartEngineUpdate) => void;
   private readonly historyFetchTimeoutMs: number;
   private persistence?: ChartPersistence;
+  private readonly storage = getStorageSafe();
 
   private sessions = new Map<string, ChartSessionInternal>();
   private watchConfigs: ChartWatchConfig[] = [];
@@ -286,6 +450,18 @@ export class ChartEngine {
   private historyInFlightCount = 0;
   private historyConcurrency = 1;
   private historyWaiters: Array<() => void> = [];
+  private persistedFrameEntries = new Map<string, PersistedChartFrameEntry>();
+  private persistedFrameFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private frameCacheHydrateAttempts = 0;
+  private frameCacheHydrateHits = 0;
+  private frameCacheFullFetches = 0;
+  private frameCacheIncrementalFetches = 0;
+  private frameCachePersistFlushes = 0;
+  private frameCachePersistFlushFailures = 0;
+  private frameCacheLastFlushAtMs: number | null = null;
+  private frameCacheLastFlushError: string | null = null;
+  private frameCacheLastHydrateAtMs: number | null = null;
+  private frameCacheLastClearAtMs: number | null = null;
 
   constructor(options: ChartEngineOptions) {
     this.getHistorySeries = options.getHistorySeries;
@@ -299,6 +475,7 @@ export class ChartEngine {
     this.historyFetchTimeoutMs = Number.isFinite(Number(options.historyFetchTimeoutMs))
       ? Math.max(5_000, Math.floor(Number(options.historyFetchTimeoutMs)))
       : 20_000;
+    this.loadPersistedFrameEntries();
   }
 
   setPersistence(persistence?: ChartPersistence) {
@@ -316,6 +493,76 @@ export class ChartEngine {
   listRecentEvents(limit = 50) {
     const lim = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 50;
     return this.recentEvents.slice(-lim);
+  }
+
+  getFrameCacheTelemetry(): ChartFrameCacheTelemetry {
+    const attempts = Math.max(0, Number(this.frameCacheHydrateAttempts || 0));
+    const hits = Math.max(0, Number(this.frameCacheHydrateHits || 0));
+    const hitRate = attempts > 0 ? hits / attempts : 0;
+    const partitions = Array.from(
+      new Set(
+        Array.from(this.persistedFrameEntries.keys())
+          .map((key) => parsePersistedFrameEntryKey(key).partition)
+          .filter(Boolean)
+      )
+    ).sort();
+    return {
+      enabled: !!this.storage,
+      entries: this.persistedFrameEntries.size,
+      partitions,
+      hydrate: {
+        attempts,
+        hits,
+        hitRate,
+        lastHydrateAtMs: this.frameCacheLastHydrateAtMs
+      },
+      fetchMix: {
+        full: Math.max(0, Number(this.frameCacheFullFetches || 0)),
+        incremental: Math.max(0, Number(this.frameCacheIncrementalFetches || 0))
+      },
+      persist: {
+        flushes: Math.max(0, Number(this.frameCachePersistFlushes || 0)),
+        flushFailures: Math.max(0, Number(this.frameCachePersistFlushFailures || 0)),
+        lastFlushAtMs: this.frameCacheLastFlushAtMs,
+        lastFlushError: this.frameCacheLastFlushError,
+        lastClearAtMs: this.frameCacheLastClearAtMs
+      }
+    };
+  }
+
+  clearPersistedFrameCache(opts?: { dropSessionBars?: boolean }) {
+    const dropSessionBars = opts?.dropSessionBars === true;
+    const entriesCleared = this.persistedFrameEntries.size;
+    this.persistedFrameEntries.clear();
+    if (this.persistedFrameFlushTimer != null) {
+      clearTimeout(this.persistedFrameFlushTimer);
+      this.persistedFrameFlushTimer = null;
+    }
+    if (dropSessionBars) {
+      for (const session of this.sessions.values()) {
+        session.bars = [];
+        session.updatedAtMs = null;
+        session.lastBarCloseAtMs = null;
+        session.lastHistoryFetchAtMs = null;
+        session.lastFullHistoryFetchAtMs = null;
+        session.error = null;
+        session.source = 'tradelocker';
+        session.revision += 1;
+      }
+    }
+    this.frameCacheLastClearAtMs = this.nowMs();
+    if (this.storage) {
+      try {
+        this.storage.removeItem(PERSISTED_FRAME_CACHE_KEY);
+      } catch (err: any) {
+        const msg = err?.message ? String(err.message) : 'Unknown storage remove failure.';
+        this.frameCachePersistFlushFailures += 1;
+        this.frameCacheLastFlushError = msg;
+        console.warn(`[chartEngine] frame cache clear failed: ${msg}`);
+        return { ok: false as const, entriesCleared, error: msg };
+      }
+    }
+    return { ok: true as const, entriesCleared };
   }
 
   async loadWatches() {
@@ -414,6 +661,7 @@ export class ChartEngine {
       existing.symbol = sym;
       existing.timeframe = tf;
       existing.resolutionMs = resolutionToMs(tf) || existing.resolutionMs;
+      existing.cachePartition = normalizeFrameCachePartition(existing.cachePartition || DEFAULT_FRAME_CACHE_PARTITION);
       if (barsBackfill != null) {
         existing.barsBackfill = resolveBarsBackfill(tf, barsBackfill, true);
       }
@@ -435,6 +683,7 @@ export class ChartEngine {
       updatedAtMs: null,
       lastBarCloseAtMs: null,
       lastHistoryFetchAtMs: null,
+      lastFullHistoryFetchAtMs: null,
       lastQuoteAtMs: null,
       historyMaxAgeMs: computeHistoryMaxAge(tf),
       barsBackfill: resolvedBackfill,
@@ -443,10 +692,12 @@ export class ChartEngine {
       watched: false,
       lastEventKeyByType: new Map(),
       source: 'tradelocker',
+      cachePartition: DEFAULT_FRAME_CACHE_PARTITION,
       error: null
     };
+    this.hydrateSessionFromPersisted(key, session);
     this.sessions.set(key, session);
-    this.refreshSessionHistory(session, { force: true });
+    this.refreshSessionHistory(session, { force: false });
     return id;
   }
 
@@ -535,6 +786,7 @@ export class ChartEngine {
         current.error = null;
         this.refreshIndicators(current);
         this.detectPatterns(current, normalized.length - 1);
+        this.persistSessionFrames(buildSessionKey(current.symbolKey, current.timeframe), current);
         this.bumpRevision(current);
         return;
       }
@@ -549,6 +801,7 @@ export class ChartEngine {
       current.error = null;
       this.refreshIndicators(current);
       this.detectPatterns(current, current.bars.length - 1);
+      this.persistSessionFrames(buildSessionKey(current.symbolKey, current.timeframe), current);
       this.bumpRevision(current);
       return;
     }
@@ -558,6 +811,7 @@ export class ChartEngine {
       current.error = null;
       this.refreshIndicators(current);
       this.detectPatterns(current, current.bars.length - 1);
+      this.persistSessionFrames(buildSessionKey(current.symbolKey, current.timeframe), current);
       this.bumpRevision(current);
     }
   }
@@ -681,6 +935,174 @@ export class ChartEngine {
     return [headerLines.join('\n'), bodyLines.join('\n')].filter(Boolean).join('\n');
   }
 
+  private loadPersistedFrameEntries() {
+    if (!this.storage) return;
+    try {
+      const raw = this.storage.getItem(PERSISTED_FRAME_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as PersistedChartFrameCachePayload;
+      if (!parsed || typeof parsed !== 'object') return;
+      const entriesRaw = parsed.entries && typeof parsed.entries === 'object' ? parsed.entries : {};
+      const now = this.nowMs();
+      for (const [key, entry] of Object.entries(entriesRaw)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const parsedKey = parsePersistedFrameEntryKey(key);
+        if (!parsedKey.sessionKey) continue;
+        const symbol = String(entry.symbol || '').trim();
+        const timeframe = normalizeTimeframe(String(entry.timeframe || '').trim());
+        if (!symbol || !timeframe) continue;
+        const bars = normalizeBars(Array.isArray(entry.bars) ? entry.bars : []).slice(-computePersistedFrameCap(timeframe));
+        if (bars.length === 0) continue;
+        const updatedAtMs = Number(entry.updatedAtMs || entry.lastHistoryFetchAtMs || 0) || now;
+        const retentionMs = computePersistedFrameRetentionMs(timeframe);
+        if (now - updatedAtMs > retentionMs) continue;
+        this.persistedFrameEntries.set(buildPersistedFrameEntryKey(parsedKey.partition, parsedKey.sessionKey), {
+          symbol,
+          timeframe,
+          partition: parsedKey.partition,
+          updatedAtMs,
+          lastHistoryFetchAtMs: Number.isFinite(Number(entry.lastHistoryFetchAtMs))
+            ? Number(entry.lastHistoryFetchAtMs)
+            : null,
+          lastFullHistoryFetchAtMs: Number.isFinite(Number(entry.lastFullHistoryFetchAtMs))
+            ? Number(entry.lastFullHistoryFetchAtMs)
+            : null,
+          bars
+        });
+      }
+      this.compactPersistedFrameEntries();
+    } catch (err: any) {
+      const msg = err?.message ? String(err.message) : 'Unknown frame cache parse failure.';
+      this.frameCachePersistFlushFailures += 1;
+      this.frameCacheLastFlushError = msg;
+      console.warn(`[chartEngine] frame cache load failed: ${msg}`);
+    }
+  }
+
+  private compactPersistedFrameEntries() {
+    const now = this.nowMs();
+    for (const [key, entry] of this.persistedFrameEntries.entries()) {
+      const timeframe = normalizeTimeframe(String(entry.timeframe || '').trim());
+      const updatedAtMs = Number(entry.updatedAtMs || entry.lastHistoryFetchAtMs || 0);
+      const retentionMs = computePersistedFrameRetentionMs(timeframe);
+      if (!timeframe || !Number.isFinite(updatedAtMs) || now - updatedAtMs > retentionMs) {
+        this.persistedFrameEntries.delete(key);
+        continue;
+      }
+      const bars = normalizeBars(entry.bars || []).slice(-computePersistedFrameCap(timeframe));
+      if (bars.length === 0) {
+        this.persistedFrameEntries.delete(key);
+        continue;
+      }
+      entry.timeframe = timeframe;
+      entry.partition = normalizeFrameCachePartition(entry.partition || parsePersistedFrameEntryKey(key).partition);
+      entry.bars = bars;
+      entry.updatedAtMs = updatedAtMs;
+      entry.lastHistoryFetchAtMs = Number.isFinite(Number(entry.lastHistoryFetchAtMs))
+        ? Number(entry.lastHistoryFetchAtMs)
+        : null;
+      entry.lastFullHistoryFetchAtMs = Number.isFinite(Number(entry.lastFullHistoryFetchAtMs))
+        ? Number(entry.lastFullHistoryFetchAtMs)
+        : null;
+      this.persistedFrameEntries.set(key, entry);
+    }
+
+    if (this.persistedFrameEntries.size <= PERSISTED_FRAME_CACHE_MAX_ENTRIES) return;
+    const ordered = Array.from(this.persistedFrameEntries.entries()).sort(
+      (a, b) => (a[1].updatedAtMs || 0) - (b[1].updatedAtMs || 0)
+    );
+    for (const [key] of ordered) {
+      if (this.persistedFrameEntries.size <= PERSISTED_FRAME_CACHE_MAX_ENTRIES) break;
+      this.persistedFrameEntries.delete(key);
+    }
+  }
+
+  private flushPersistedFrameEntries() {
+    if (!this.storage) return;
+    this.compactPersistedFrameEntries();
+    const entries: Record<string, PersistedChartFrameEntry> = {};
+    for (const [key, entry] of this.persistedFrameEntries.entries()) {
+      entries[key] = entry;
+    }
+    const payload: PersistedChartFrameCachePayload = {
+      version: PERSISTED_FRAME_CACHE_VERSION,
+      savedAtMs: this.nowMs(),
+      entries
+    };
+    try {
+      this.storage.setItem(PERSISTED_FRAME_CACHE_KEY, JSON.stringify(payload));
+      this.frameCachePersistFlushes += 1;
+      this.frameCacheLastFlushAtMs = this.nowMs();
+      this.frameCacheLastFlushError = null;
+    } catch (err: any) {
+      const msg = err?.message ? String(err.message) : 'Unknown storage write failure.';
+      this.frameCachePersistFlushFailures += 1;
+      this.frameCacheLastFlushError = msg;
+      console.warn(`[chartEngine] frame cache persist failed: ${msg}`);
+    }
+  }
+
+  private schedulePersistedFrameFlush() {
+    if (!this.storage) return;
+    if (this.persistedFrameFlushTimer != null) return;
+    this.persistedFrameFlushTimer = setTimeout(() => {
+      this.persistedFrameFlushTimer = null;
+      this.flushPersistedFrameEntries();
+    }, PERSISTED_FRAME_CACHE_WRITE_DEBOUNCE_MS);
+  }
+
+  private hydrateSessionFromPersisted(sessionKey: string, session: ChartSessionInternal) {
+    this.frameCacheHydrateAttempts += 1;
+    const expectedKey = buildPersistedFrameEntryKey(session.cachePartition, sessionKey);
+    const legacyDefaultKey = buildPersistedFrameEntryKey(DEFAULT_FRAME_CACHE_PARTITION, sessionKey);
+    const entry =
+      this.persistedFrameEntries.get(expectedKey) ||
+      this.persistedFrameEntries.get(legacyDefaultKey) ||
+      this.persistedFrameEntries.get(sessionKey);
+    if (!entry) return;
+    this.frameCacheHydrateHits += 1;
+    this.frameCacheLastHydrateAtMs = this.nowMs();
+    const bars = normalizeBars(entry.bars || []).slice(-Math.max(120, this.maxBars));
+    if (bars.length === 0) return;
+    session.bars = bars;
+    session.updatedAtMs = Number(entry.updatedAtMs || bars[bars.length - 1]?.t || this.nowMs());
+    session.lastHistoryFetchAtMs = Number.isFinite(Number(entry.lastHistoryFetchAtMs))
+      ? Number(entry.lastHistoryFetchAtMs)
+      : session.updatedAtMs;
+    session.lastFullHistoryFetchAtMs = Number.isFinite(Number(entry.lastFullHistoryFetchAtMs))
+      ? Number(entry.lastFullHistoryFetchAtMs)
+      : session.lastHistoryFetchAtMs;
+    session.lastBarCloseAtMs = bars.length > 1 ? bars[bars.length - 2].t : bars[bars.length - 1]?.t || null;
+    session.source = 'cache';
+    session.cachePartition = normalizeFrameCachePartition(entry.partition || session.cachePartition);
+    session.error = null;
+    this.refreshIndicators(session);
+  }
+
+  private persistSessionFrames(sessionKey: string, session: ChartSessionInternal) {
+    if (!this.storage) return;
+    if (!session || !Array.isArray(session.bars) || session.bars.length === 0) return;
+    const cap = Math.max(120, Math.min(computePersistedFrameCap(session.timeframe), this.maxBars));
+    const bars = session.bars.slice(-cap);
+    if (bars.length === 0) return;
+    const partition = normalizeFrameCachePartition(session.cachePartition || DEFAULT_FRAME_CACHE_PARTITION);
+    const persistedKey = buildPersistedFrameEntryKey(partition, sessionKey);
+    this.persistedFrameEntries.set(persistedKey, {
+      symbol: session.symbol,
+      timeframe: session.timeframe,
+      partition,
+      updatedAtMs: Number(session.updatedAtMs || session.lastHistoryFetchAtMs || this.nowMs()),
+      lastHistoryFetchAtMs: Number.isFinite(Number(session.lastHistoryFetchAtMs))
+        ? Number(session.lastHistoryFetchAtMs)
+        : null,
+      lastFullHistoryFetchAtMs: Number.isFinite(Number(session.lastFullHistoryFetchAtMs))
+        ? Number(session.lastFullHistoryFetchAtMs)
+        : null,
+      bars
+    });
+    this.schedulePersistedFrameFlush();
+  }
+
   private normalizeWatch(watch: ChartWatchConfig | null): ChartWatchConfig | null {
     if (!watch) return null;
     const symbol = String(watch.symbol || '').trim();
@@ -767,13 +1189,27 @@ export class ChartEngine {
   }
 
   private async refreshSessionHistory(session: ChartSessionInternal, opts?: { force?: boolean }) {
-    if (!opts?.force && !this.shouldRefreshSession(session, this.nowMs())) return;
-    await this.acquireHistorySlot();
     const now = this.nowMs();
+    if (!opts?.force && !this.shouldRefreshSession(session, now)) return;
+    await this.acquireHistorySlot();
     const resMs = session.resolutionMs || resolutionToMs(session.timeframe) || 60_000;
     const lookback = Math.max(1, session.barsBackfill);
     const to = now;
-    const from = to - resMs * lookback;
+    const targetFrom = to - resMs * lookback;
+    const existingBars = Array.isArray(session.bars) ? session.bars : [];
+    const latestBarTs = existingBars.length > 0 ? Number(existingBars[existingBars.length - 1].t || 0) : 0;
+    const oldestBarTs = existingBars.length > 0 ? Number(existingBars[0].t || 0) : 0;
+    const hasLookbackCoverage = oldestBarTs > 0 && oldestBarTs <= targetFrom + resMs;
+    const fullReconcileIntervalMs = computeFullHistoryReconcileMs(session.timeframe);
+    const lastFullFetchAtMs = Number(session.lastFullHistoryFetchAtMs || 0);
+    const fullReconcileDue = !lastFullFetchAtMs || (now - lastFullFetchAtMs) >= fullReconcileIntervalMs;
+    const shouldFullFetch = !hasLookbackCoverage || fullReconcileDue;
+    const fetchFrom = shouldFullFetch
+      ? targetFrom
+      : Math.max(targetFrom, latestBarTs > 0 ? latestBarTs - (resMs * 3) : targetFrom);
+    const fetchMaxAgeMs = shouldFullFetch
+      ? 0
+      : Math.max(5_000, Math.min(60_000, Math.floor(session.historyMaxAgeMs / 2)));
 
     session.error = null;
     session.source = 'tradelocker';
@@ -784,10 +1220,10 @@ export class ChartEngine {
         const historyPromise = this.getHistorySeries({
           symbol: session.symbol,
           resolution: session.timeframe,
-          from,
+          from: fetchFrom,
           to,
           aggregate: false,
-          maxAgeMs: 0
+          maxAgeMs: fetchMaxAgeMs
         }).catch((err: any) => ({
           ok: false,
           error: err?.message ? String(err.message) : 'Failed to load history.'
@@ -816,12 +1252,36 @@ export class ChartEngine {
       }
 
       if (res && res.ok && Array.isArray(res.bars)) {
-        const normalized = normalizeBars(res.bars).slice(-this.maxBars);
-        session.bars = normalized;
+        if (shouldFullFetch) this.frameCacheFullFetches += 1;
+        else this.frameCacheIncrementalFetches += 1;
+        const fetchedBars = normalizeBars(res.bars);
+        const mergedBars = shouldFullFetch
+          ? fetchedBars.filter((bar) => Number(bar?.t || 0) >= targetFrom).slice(-this.maxBars)
+          : mergeBarsWithinWindow(existingBars, fetchedBars, targetFrom, this.maxBars);
+        const nextBars = mergedBars.length > 0
+          ? mergedBars
+          : existingBars.filter((bar) => Number(bar?.t || 0) >= targetFrom).slice(-this.maxBars);
+        session.bars = nextBars;
         session.updatedAtMs = res.fetchedAtMs || now;
         session.lastHistoryFetchAtMs = res.fetchedAtMs || now;
+        if (shouldFullFetch) {
+          session.lastFullHistoryFetchAtMs = session.lastHistoryFetchAtMs;
+        }
+        if (nextBars.length > 1) {
+          session.lastBarCloseAtMs = nextBars[nextBars.length - 2].t;
+        }
         session.error = null;
+        const nextPartition = resolveFrameCachePartitionFromResponse(res, session.cachePartition);
+        session.cachePartition = nextPartition;
+        const responseBroker = String(res?.brokerId || res?.sourceBroker || '').trim().toLowerCase();
+        if (responseBroker) {
+          session.source = responseBroker;
+        } else {
+          session.source = shouldFullFetch ? 'tradelocker' : 'mixed';
+        }
         this.refreshIndicators(session);
+        const sessionKey = buildSessionKey(session.symbolKey, session.timeframe);
+        this.persistSessionFrames(sessionKey, session);
         this.bumpRevision(session);
       } else {
         const err = res?.error ? String(res.error) : 'Failed to load history.';
@@ -877,6 +1337,7 @@ export class ChartEngine {
       session.bars = [{ t: bucket, o: price, h: price, l: price, c: price, v: null }];
       session.updatedAtMs = this.nowMs();
       this.refreshIndicators(session);
+      this.persistSessionFrames(buildSessionKey(session.symbolKey, session.timeframe), session);
       this.bumpRevision(session);
       return;
     }
@@ -891,6 +1352,7 @@ export class ChartEngine {
       session.bars = [...bars.slice(0, -1), next];
       session.updatedAtMs = this.nowMs();
       this.refreshIndicators(session);
+      this.persistSessionFrames(buildSessionKey(session.symbolKey, session.timeframe), session);
       this.bumpRevision(session);
       return;
     }
@@ -902,6 +1364,7 @@ export class ChartEngine {
       session.lastBarCloseAtMs = last.t;
       this.refreshIndicators(session);
       this.detectPatterns(session, session.bars.length - 2);
+      this.persistSessionFrames(buildSessionKey(session.symbolKey, session.timeframe), session);
       this.bumpRevision(session);
     }
   }

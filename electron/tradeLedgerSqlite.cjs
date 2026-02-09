@@ -5,6 +5,8 @@ const path = require('path');
 
 const LEDGER_DB_FILE = 'trade-ledger.sqlite';
 const LEDGER_JSON_FILE = 'trade-ledger.json';
+const LEDGER_SCHEMA_VERSION_KEY = 'schema_version';
+const LEDGER_SCHEMA_VERSION_LATEST = 2;
 const MAX_AGENT_MEMORIES = 5000;
 const MAX_OPTIMIZER_CACHE = 20000;
 const MAX_EXPERIMENT_NOTES = 2000;
@@ -256,6 +258,7 @@ class TradeLedgerSqlite {
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('temp_store = MEMORY');
     this._createSchema();
+    this._runSchemaMigrations();
     this._migrateFromJsonIfNeeded();
     this._ensureJsonMirror();
   }
@@ -498,9 +501,62 @@ class TradeLedgerSqlite {
     `);
 
     try {
-      this.db.prepare('INSERT OR IGNORE INTO ledger_meta(key, value) VALUES (?, ?)').run('schema_version', '1');
+      this.db.prepare('INSERT OR IGNORE INTO ledger_meta(key, value) VALUES (?, ?)').run(LEDGER_SCHEMA_VERSION_KEY, '1');
     } catch {
       // ignore
+    }
+  }
+
+  _getSchemaVersion() {
+    try {
+      const row = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ? LIMIT 1').get(LEDGER_SCHEMA_VERSION_KEY);
+      const version = Number(row?.value || 1);
+      if (!Number.isFinite(version) || version < 1) return 1;
+      return Math.floor(version);
+    } catch {
+      return 1;
+    }
+  }
+
+  _setSchemaVersion(version) {
+    const safe = Number.isFinite(Number(version)) ? Math.max(1, Math.floor(Number(version))) : 1;
+    this.db.prepare('INSERT OR REPLACE INTO ledger_meta(key, value) VALUES (?, ?)').run(LEDGER_SCHEMA_VERSION_KEY, String(safe));
+  }
+
+  _schemaMigrationHandlers() {
+    return {
+      2: () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS ledger_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at_ms INTEGER NOT NULL,
+            note TEXT
+          );
+        `);
+        this.db.prepare(`
+          INSERT OR REPLACE INTO ledger_migrations(id, applied_at_ms, note)
+          VALUES (?, ?, ?)
+        `).run('v2_scaffold', nowMs(), 'Schema v2 migration scaffold applied');
+      }
+    };
+  }
+
+  _runSchemaMigrations() {
+    const handlers = this._schemaMigrationHandlers();
+    let current = this._getSchemaVersion();
+    if (current >= LEDGER_SCHEMA_VERSION_LATEST) return;
+
+    for (let next = current + 1; next <= LEDGER_SCHEMA_VERSION_LATEST; next += 1) {
+      const migrate = handlers[next];
+      if (typeof migrate !== 'function') {
+        throw new Error(`Missing ledger schema migration handler for v${next}`);
+      }
+      const tx = this.db.transaction(() => {
+        migrate();
+        this._setSchemaVersion(next);
+      });
+      tx();
+      current = next;
     }
   }
 

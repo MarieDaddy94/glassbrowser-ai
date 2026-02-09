@@ -85,11 +85,20 @@ export class WorkerTaskRouter {
     return true;
   }
 
+  cancel(id: string, reason = "worker task canceled") {
+    const key = String(id || "").trim();
+    if (!key) return false;
+    const pending = this.pending.get(key);
+    if (!pending) return false;
+    if (pending.timeout != null) window.clearTimeout(pending.timeout);
+    pending.resolve({ ok: false, error: `${reason}: ${key}` });
+    this.pending.delete(key);
+    return true;
+  }
+
   cancelAll(reason = "worker task canceled") {
-    for (const [id, pending] of this.pending.entries()) {
-      if (pending.timeout != null) window.clearTimeout(pending.timeout);
-      pending.resolve({ ok: false, error: `${reason}: ${id}` });
-      this.pending.delete(id);
+    for (const id of Array.from(this.pending.keys())) {
+      this.cancel(id, reason);
     }
   }
 
@@ -102,4 +111,3 @@ export class WorkerTaskRouter {
     };
   }
 }
-

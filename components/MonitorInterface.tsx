@@ -8,6 +8,7 @@ import { evaluateAutoDemotionPolicy, evaluatePromotionPolicy } from '../services
 type MonitorInterfaceProps = {
   health?: HealthSnapshot | null;
   onRequestSnapshot?: (input: { detail?: 'summary' | 'full'; maxItems?: number }) => Promise<any> | any;
+  onClearSnapshotFrameCache?: (input?: { dropSessionBars?: boolean }) => Promise<any> | any;
 };
 
 const formatAge = (ms?: number | null) => {
@@ -88,7 +89,7 @@ const MetricRow: React.FC<{ label: string; value: React.ReactNode; tone?: string
   </div>
 );
 
-const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSnapshot }) => {
+const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSnapshot, onClearSnapshotFrameCache }) => {
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
   const livePolicyService = useMemo(() => getLivePolicyService(), []);
   const [snapshot, setSnapshot] = useState<SystemStateSnapshot | null>(null);
@@ -176,10 +177,13 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
   const taskTree = snapshot?.taskTree ?? null;
   const truth = snapshot?.truth?.projection ?? null;
   const perf = liveHealth?.perf ?? null;
+  const chartFrameCache = liveHealth?.chartFrameCache ?? null;
   const panelConnectivityRows = Array.isArray(liveHealth?.panelConnectivity) ? liveHealth.panelConnectivity : [];
   const panelFreshnessRows = Array.isArray(liveHealth?.panelFreshness) ? liveHealth.panelFreshness : [];
   const outcomeFeedCursor = liveHealth?.outcomeFeed?.cursor || null;
   const outcomeFeedConsistency = liveHealth?.outcomeFeed?.consistency || null;
+  const schedulerHealth = liveHealth?.scheduler || null;
+  const cacheBudgetRows = Array.isArray(liveHealth?.cacheBudgets) ? liveHealth.cacheBudgets : [];
 
   const rawJson = useMemo(() => {
     if (!snapshot) return '';
@@ -273,6 +277,31 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
       setStatus('Copy failed.');
     }
   }, [rawJson]);
+
+  const clearSnapshotFrameCache = useCallback(async (dropSessionBars: boolean) => {
+    if (!onClearSnapshotFrameCache) {
+      setError('Snapshot cache clear action unavailable.');
+      return;
+    }
+    try {
+      const res = await onClearSnapshotFrameCache({ dropSessionBars });
+      if (res?.ok) {
+        const cleared = Math.max(0, Number(res?.entriesCleared || 0));
+        setStatus(
+          dropSessionBars
+            ? `Snapshot cache cleared and sessions reset (${cleared} entries).`
+            : `Snapshot cache cleared (${cleared} entries).`
+        );
+        setError(null);
+        await refreshSnapshot({ silent: true });
+      } else {
+        const msg = res?.error ? String(res.error) : 'Snapshot cache clear failed.';
+        setError(msg);
+      }
+    } catch (err: any) {
+      setError(err?.message ? String(err.message) : 'Snapshot cache clear failed.');
+    }
+  }, [onClearSnapshotFrameCache, refreshSnapshot]);
 
   return (
     <div className="flex flex-col h-full w-full text-gray-200 bg-[#050505]">
@@ -386,6 +415,46 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
                 <MetricRow label="Frames" value={liveHealth.nativeChartFrames ?? 0} />
                 <MetricRow label="Updated" value={formatAge(liveHealth.nativeChartUpdatedAtMs)} />
               </MetricCard>
+              <MetricCard title="Snapshot Frame Cache">
+                <MetricRow label="Enabled" value={formatBool(chartFrameCache?.enabled ?? null)} />
+                <MetricRow label="Entries" value={chartFrameCache?.entries ?? 0} />
+                <MetricRow label="Partitions" value={chartFrameCache?.partitions?.length ?? 0} />
+                <MetricRow label="Hydrate Hit Rate" value={formatPercent(chartFrameCache?.hydrate?.hitRate ?? null)} />
+                <MetricRow
+                  label="Fetch Mix"
+                  value={`F ${chartFrameCache?.fetchMix?.full ?? 0} / I ${chartFrameCache?.fetchMix?.incremental ?? 0}`}
+                />
+                <MetricRow
+                  label="Flush Failures"
+                  value={chartFrameCache?.persist?.flushFailures ?? 0}
+                  tone={(chartFrameCache?.persist?.flushFailures || 0) > 0 ? 'text-amber-300' : undefined}
+                />
+                <MetricRow label="Last Flush" value={formatAge(chartFrameCache?.persist?.lastFlushAtMs)} />
+                {chartFrameCache?.persist?.lastFlushError ? (
+                  <div className="text-[10px] text-amber-300">Err: {chartFrameCache.persist.lastFlushError}</div>
+                ) : null}
+                {Array.isArray(chartFrameCache?.partitions) && chartFrameCache.partitions.length > 0 ? (
+                  <div className="text-[10px] text-gray-500 break-all">
+                    {chartFrameCache.partitions.slice(0, 3).join(' | ')}
+                  </div>
+                ) : null}
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { void clearSnapshotFrameCache(false); }}
+                    className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[10px]"
+                  >
+                    Clear Cache
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { void clearSnapshotFrameCache(true); }}
+                    className="px-2 py-1 rounded border border-amber-400/40 text-amber-200 hover:bg-amber-500/10 text-[10px]"
+                  >
+                    Clear + Reset
+                  </button>
+                </div>
+              </MetricCard>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -396,6 +465,10 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
                 <MetricRow label="Timeouts" value={perf?.brokerTimeouts ?? 0} />
                 <MetricRow label="Rate Limits" value={perf?.brokerRateLimits ?? 0} />
                 <MetricRow label="Audit Events" value={perf?.auditEvents ?? 0} />
+                <MetricRow label="Coord Cache Hits" value={perf?.brokerCoordinatorCacheHits ?? 0} />
+                <MetricRow label="Coord Dedupe Hits" value={perf?.brokerCoordinatorDedupeHits ?? 0} />
+                <MetricRow label="Coord Cache Rate" value={formatPercent(perf?.brokerCoordinatorCacheHitRate ?? null)} />
+                <MetricRow label="Coord Dedupe Rate" value={formatPercent(perf?.brokerCoordinatorDedupeRate ?? null)} />
               </MetricCard>
               <MetricCard title="Quote Flow">
                 <MetricRow label="Quote Updates" value={perf?.quoteUpdates ?? 0} />
@@ -417,6 +490,7 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
                 <MetricRow label="Requests" value={perf?.chartRefreshRequests ?? 0} />
                 <MetricRow label="Runs" value={perf?.chartRefreshRuns ?? 0} />
                 <MetricRow label="Coalesced" value={perf?.chartRefreshCoalesced ?? 0} />
+                <MetricRow label="Pattern Sync Coalesced" value={perf?.patternWatchSyncCoalesced ?? 0} />
                 <MetricRow label="Last Duration" value={formatMs(perf?.chartRefreshLastDurationMs)} />
               </MetricCard>
               <MetricCard title="Background Watcher">
@@ -433,6 +507,88 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <MetricCard title="Scheduler">
+                <MetricRow label="Visible" value={formatBool(schedulerHealth?.visible ?? null)} />
+                <MetricRow label="Tasks" value={schedulerHealth?.taskCount ?? '--'} />
+                <MetricRow label="Signal Task" value={schedulerHealth?.signalTask?.id || schedulerHealth?.signalTaskId || '--'} />
+                <MetricRow label="Signal Runs" value={schedulerHealth?.signalTask?.runCount ?? '--'} />
+                <MetricRow label="Signal Errors" value={schedulerHealth?.signalTask?.errorCount ?? '--'} />
+                <MetricRow label="Signal Last Run" value={formatAge(schedulerHealth?.signalTask?.lastRunAtMs)} />
+                <MetricRow label="Signal Last Duration" value={formatMs(schedulerHealth?.signalTask?.lastDurationMs)} />
+                <MetricRow
+                  label="Signal Paused"
+                  value={formatBool(schedulerHealth?.signalTask?.paused ?? null)}
+                  tone={schedulerHealth?.signalTask?.paused ? 'text-amber-300' : undefined}
+                />
+                <MetricRow label="Shadow Task" value={schedulerHealth?.shadowTask?.id || schedulerHealth?.shadowTaskId || '--'} />
+                <MetricRow label="Shadow Runs" value={schedulerHealth?.shadowTask?.runCount ?? '--'} />
+                <MetricRow label="Shadow Errors" value={schedulerHealth?.shadowTask?.errorCount ?? '--'} />
+                <MetricRow label="Shadow Last Run" value={formatAge(schedulerHealth?.shadowTask?.lastRunAtMs)} />
+                <MetricRow label="Shadow Last Duration" value={formatMs(schedulerHealth?.shadowTask?.lastDurationMs)} />
+                <MetricRow
+                  label="Shadow Paused"
+                  value={formatBool(schedulerHealth?.shadowTask?.paused ?? null)}
+                  tone={schedulerHealth?.shadowTask?.paused ? 'text-amber-300' : undefined}
+                />
+              </MetricCard>
+              <MetricCard title="Startup">
+                <MetricRow
+                  label="Phase"
+                  value={liveHealth.startupPhase || '--'}
+                  tone={toneForStatus(liveHealth.startupPhase || null)}
+                />
+                <MetricRow
+                  label="Bridge"
+                  value={liveHealth.startupBridgeState || '--'}
+                  tone={toneForStatus(liveHealth.startupBridgeState || null)}
+                />
+                <MetricRow
+                  label="OpenAI"
+                  value={liveHealth.startupOpenaiState || '--'}
+                  tone={toneForStatus(liveHealth.startupOpenaiState || null)}
+                />
+                <MetricRow
+                  label="TradeLocker"
+                  value={liveHealth.startupTradeLockerState || '--'}
+                  tone={toneForStatus(liveHealth.startupTradeLockerState || null)}
+                />
+                <MetricRow
+                  label="Auto Restore"
+                  value={
+                    liveHealth.startupTradeLockerAutoRestoreAttempted == null
+                      ? '--'
+                      : (liveHealth.startupTradeLockerAutoRestoreSuccess ? 'success' : 'failed')
+                  }
+                  tone={
+                    liveHealth.startupTradeLockerAutoRestoreAttempted == null
+                      ? undefined
+                      : (liveHealth.startupTradeLockerAutoRestoreSuccess ? 'text-emerald-300' : 'text-amber-300')
+                  }
+                />
+                <MetricRow label="Checked" value={formatAge(liveHealth.startupCheckedAtMs)} />
+                <MetricRow label="Scopes Active" value={liveHealth.startupActiveScopes?.length ?? 0} />
+                <MetricRow label="Scopes Blocked" value={liveHealth.startupBlockedScopes?.length ?? 0} />
+                {liveHealth.startupBridgeError ? (
+                  <div className="text-[10px] text-red-400">Bridge: {liveHealth.startupBridgeError}</div>
+                ) : null}
+                {liveHealth.startupDiagnosticWarning ? (
+                  <div className="text-[10px] text-amber-300">{liveHealth.startupDiagnosticWarning}</div>
+                ) : null}
+              </MetricCard>
+              <MetricCard title="Cache Budgets">
+                {cacheBudgetRows.length === 0 ? (
+                  <div className="text-[11px] text-gray-500">No cache budget telemetry.</div>
+                ) : (
+                  cacheBudgetRows.slice(0, 6).map((row) => (
+                    <div key={String(row.name)} className="space-y-0.5 mb-2">
+                      <MetricRow label={String(row.name || '').toUpperCase()} value={`${row.entries ?? 0}/${row.maxEntries ?? 0}`} />
+                      <div className="text-[10px] text-gray-500">
+                        size {formatNumber(row.size ?? 0, 1)} • hit {formatPercent(row.hitRate ?? null)} • evict {row.evictions ?? 0}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </MetricCard>
               <MetricCard title="Refresh SLA">
                 {(liveHealth.refreshSlaByChannel || []).length === 0 ? (
                   <div className="text-[11px] text-gray-500">No channel SLA data.</div>
@@ -515,6 +671,14 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
                       <div className="text-[10px] text-gray-500">
                         latency {formatMs(row.latencyMs)} • updated {formatAge(row.updatedAt)}
                       </div>
+                      {!row.ready && (row.retryAfterMs || row.blockedUntilMs) ? (
+                        <div className="text-[10px] text-gray-500">
+                          retry {formatMs(row.retryAfterMs ?? ((row.blockedUntilMs || 0) - Date.now()))}
+                        </div>
+                      ) : null}
+                      {!row.ready && row.blockedReason ? (
+                        <div className="text-[10px] text-amber-300">{row.blockedReason}</div>
+                      ) : null}
                       {!row.ready && row.error ? (
                         <div className="text-[10px] text-amber-300">{row.error}</div>
                       ) : null}

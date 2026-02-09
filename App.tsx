@@ -73,6 +73,16 @@ type NotesActionRuntimeModule = typeof import('./services/notesActionRuntime');
 type AuditActionRuntimeModule = typeof import('./services/auditActionRuntime');
 type ChangesShadowActionRuntimeModule = typeof import('./services/changesShadowActionRuntime');
 type FeatureControllersModule = typeof import('./controllers/featureControllers');
+type SignalControllerModule = typeof import('./controllers/signalController');
+type CalendarControllerModule = typeof import('./controllers/calendarController');
+type AcademyControllerModule = typeof import('./controllers/academyController');
+type ShadowControllerModule = typeof import('./controllers/shadowController');
+type OutcomeFeedRefreshControllerModule = typeof import('./controllers/outcomeFeedRefreshController');
+type SetupWatcherBackgroundControllerModule = typeof import('./controllers/setupWatcherBackgroundController');
+type TradingViewPriceControllerModule = typeof import('./controllers/tradingViewPriceController');
+type Mt5AccountSpecControllerModule = typeof import('./controllers/mt5AccountSpecController');
+type Mt5TelemetryControllerModule = typeof import('./controllers/mt5TelemetryController');
+type LiveCaptureControllerModule = typeof import('./controllers/liveCaptureController');
 type CatalogOpsRuntimeModule = typeof import('./services/catalogOpsRuntime');
 type CatalogAgentRuntimeModule = typeof import('./services/catalogAgentRuntime');
 
@@ -206,6 +216,16 @@ const loadChangesShadowActionRuntimeModule = () => {
 };
 
 let featureControllersPromise: Promise<FeatureControllersModule> | null = null;
+let signalControllerPromise: Promise<SignalControllerModule> | null = null;
+let calendarControllerPromise: Promise<CalendarControllerModule> | null = null;
+let academyControllerPromise: Promise<AcademyControllerModule> | null = null;
+let shadowControllerPromise: Promise<ShadowControllerModule> | null = null;
+let outcomeFeedRefreshControllerPromise: Promise<OutcomeFeedRefreshControllerModule> | null = null;
+let setupWatcherBackgroundControllerPromise: Promise<SetupWatcherBackgroundControllerModule> | null = null;
+let tradingViewPriceControllerPromise: Promise<TradingViewPriceControllerModule> | null = null;
+let mt5AccountSpecControllerPromise: Promise<Mt5AccountSpecControllerModule> | null = null;
+let mt5TelemetryControllerPromise: Promise<Mt5TelemetryControllerModule> | null = null;
+let liveCaptureControllerPromise: Promise<LiveCaptureControllerModule> | null = null;
 let catalogOpsRuntimePromise: Promise<CatalogOpsRuntimeModule> | null = null;
 const loadCatalogOpsRuntimeModule = () => {
   if (!catalogOpsRuntimePromise) catalogOpsRuntimePromise = import('./services/catalogOpsRuntime');
@@ -221,6 +241,68 @@ const loadCatalogAgentRuntimeModule = () => {
 const loadFeatureControllers = () => {
   if (!featureControllersPromise) featureControllersPromise = import('./controllers/featureControllers');
   return featureControllersPromise;
+};
+
+const loadSignalControllerModule = () => {
+  if (!signalControllerPromise) signalControllerPromise = import('./controllers/signalController');
+  return signalControllerPromise;
+};
+
+const loadCalendarControllerModule = () => {
+  if (!calendarControllerPromise) calendarControllerPromise = import('./controllers/calendarController');
+  return calendarControllerPromise;
+};
+
+const loadAcademyControllerModule = () => {
+  if (!academyControllerPromise) academyControllerPromise = import('./controllers/academyController');
+  return academyControllerPromise;
+};
+
+const loadShadowControllerModule = () => {
+  if (!shadowControllerPromise) shadowControllerPromise = import('./controllers/shadowController');
+  return shadowControllerPromise;
+};
+
+const loadOutcomeFeedRefreshControllerModule = () => {
+  if (!outcomeFeedRefreshControllerPromise) {
+    outcomeFeedRefreshControllerPromise = import('./controllers/outcomeFeedRefreshController');
+  }
+  return outcomeFeedRefreshControllerPromise;
+};
+
+const loadSetupWatcherBackgroundControllerModule = () => {
+  if (!setupWatcherBackgroundControllerPromise) {
+    setupWatcherBackgroundControllerPromise = import('./controllers/setupWatcherBackgroundController');
+  }
+  return setupWatcherBackgroundControllerPromise;
+};
+
+const loadTradingViewPriceControllerModule = () => {
+  if (!tradingViewPriceControllerPromise) {
+    tradingViewPriceControllerPromise = import('./controllers/tradingViewPriceController');
+  }
+  return tradingViewPriceControllerPromise;
+};
+
+const loadMt5AccountSpecControllerModule = () => {
+  if (!mt5AccountSpecControllerPromise) {
+    mt5AccountSpecControllerPromise = import('./controllers/mt5AccountSpecController');
+  }
+  return mt5AccountSpecControllerPromise;
+};
+
+const loadMt5TelemetryControllerModule = () => {
+  if (!mt5TelemetryControllerPromise) {
+    mt5TelemetryControllerPromise = import('./controllers/mt5TelemetryController');
+  }
+  return mt5TelemetryControllerPromise;
+};
+
+const loadLiveCaptureControllerModule = () => {
+  if (!liveCaptureControllerPromise) {
+    liveCaptureControllerPromise = import('./controllers/liveCaptureController');
+  }
+  return liveCaptureControllerPromise;
 };
 
 const sendMessageToOpenAI = async (...args: Parameters<OpenAiServiceModule['sendMessageToOpenAI']>) => {
@@ -401,6 +483,8 @@ import {
   toSignalEpochMs
 } from './services/setupSignalLifecycle';
 import { planWarmup } from './services/warmupPlanner';
+import { createSnapshotHistoryFetcher } from './services/snapshotHistoryFetcher';
+import { createPatternRefreshCoalescer } from './services/patternRefreshCoalescer';
 import { computeFrameGapWorker } from './services/signalAnalysisWorkerClient';
 import { getWorkerFallbackStats } from './services/workerFallbackPolicy';
 import { getRefreshSlaMonitor } from './services/refreshSlaMonitor';
@@ -418,6 +502,12 @@ import { getLivePolicyService } from './services/livePolicyService';
 import { getPanelConnectivityEngine } from './services/panelConnectivityEngine';
 import { getCrossPanelContextEngine } from './services/crossPanelContextEngine';
 import { getOutcomeConsistencyEngine, buildOutcomeFeedCursorFromHistory } from './services/outcomeConsistencyEngine';
+import { GLASS_EVENT, dispatchGlassEvent } from './services/glassEvents';
+import { submitTradeLockerOrderBatch } from './services/executionSubmissionService';
+import { cancelTimer, deferMs, sleepMs, type TimerHandle } from './services/timerPrimitives';
+import { buildMirrorExecutions } from './orchestrators/executionOrchestrator';
+import { normalizePanelConnectivitySnapshot } from './orchestrators/panelOrchestrator';
+import { buildSystemInitializedMessage } from './orchestrators/startupOrchestrator';
 import { TaskTreeOrchestrator, type TaskTreeRunSummary, type TaskTreeStateSnapshot } from './services/taskTreeService';
 import { resolveAutoPilotPolicy } from './services/autoPilotPolicy';
 import { evaluateAutoPilotState, mergeAutoPilotState } from './services/autopilotStateMachine';
@@ -444,6 +534,7 @@ type PerfStats = {
   signalScanLastDurationMs: number | null;
   chartRefreshRequests: number;
   chartRefreshCoalesced: number;
+  patternWatchSyncCoalesced: number;
   chartRefreshRuns: number;
   chartRefreshLastDurationMs: number | null;
   signalSnapshotWarmups: number;
@@ -523,9 +614,9 @@ const BROKER_DEDUPE_METHODS = new Set([
 ]);
 const SIGNAL_SNAPSHOT_WARMUP_TIMEOUT_MS = 90_000;
 const SIGNAL_SNAPSHOT_WARMUP_POLL_MS = 750;
-const SIGNAL_SNAPSHOT_WARMUP_BARS_DEFAULT = 60;
-const SIGNAL_SNAPSHOT_WARMUP_BARS_1D = 20;
-const SIGNAL_SNAPSHOT_WARMUP_BARS_1W = 4;
+const SIGNAL_SNAPSHOT_WARMUP_BARS_DEFAULT = 320;
+const SIGNAL_SNAPSHOT_WARMUP_BARS_1D = 120;
+const SIGNAL_SNAPSHOT_WARMUP_BARS_1W = 52;
 const SETUP_SIGNAL_DEBUG_KEY = 'glass_setup_signal_debug';
 const TL_SNAPSHOT_SOURCE_KEY = 'glass_tl_snapshot_source';
 const TL_SNAPSHOT_AUTO_KEY = 'glass_tl_snapshot_auto';
@@ -533,6 +624,7 @@ const TL_SNAPSHOT_FALLBACK_KEY = 'glass_tl_snapshot_fallback';
 const TL_EXECUTION_TARGETS_KEY = 'glass_tl_execution_targets';
 const TL_NORMALIZE_ENABLED_KEY = 'glass_tl_normalize_enabled';
 const TL_NORMALIZE_REF_KEY = 'glass_tl_normalize_ref';
+const LEGACY_TL_SUBMISSION_FLAG_KEY = 'execution.useLegacyTradeLockerSubmission';
 const TL_NORMALIZE_WINDOW = 120;
 const TL_NORMALIZE_MIN_SAMPLES = 30;
 const TL_NORMALIZE_ALPHA = 0.12;
@@ -550,6 +642,15 @@ const ACADEMY_AGENT_UPDATE_MARKER = '\n\n[ACADEMY UPDATES]\n';
 const SNAPSHOT_SLA_TASK_ID = 'snapshot.panel.refresh';
 const SCHEDULER_CIRCUIT_GUARD_TASK_ID = 'scheduler.guard.circuit';
 const PRE_TRADE_QUANT_LATENCY_BUDGET_MS = 150;
+
+const readLegacyTradeLockerSubmissionFlag = () => {
+  try {
+    const raw = String(localStorage.getItem(LEGACY_TL_SUBMISSION_FLAG_KEY) || '').trim().toLowerCase();
+    return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  } catch {
+    return false;
+  }
+};
 
 type LiveErrorEntry = {
   id: string;
@@ -1012,7 +1113,7 @@ const resolveBrokerPriority = (method: string) => {
 const scheduleBrokerDrain = () => {
   if (brokerDrainScheduled) return;
   brokerDrainScheduled = true;
-  setTimeout(() => {
+  deferMs(() => {
     brokerDrainScheduled = false;
     drainBrokerQueue();
   }, 0);
@@ -1027,10 +1128,10 @@ const drainBrokerQueue = () => {
     brokerInFlight += 1;
     const { method, args, resolve, brokerId } = next;
     const timeoutMs = BROKER_REQUEST_TIMEOUT_MS;
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let timeoutHandle: TimerHandle | null = null;
     let timedOut = false;
     const timeoutPromise = new Promise((timeoutResolve) => {
-      timeoutHandle = setTimeout(() => {
+      timeoutHandle = deferMs(() => {
         timedOut = true;
         timeoutResolve({ ok: false, timeout: true, error: `${method} timeout (${timeoutMs}ms).` });
       }, timeoutMs);
@@ -1042,7 +1143,7 @@ const drainBrokerQueue = () => {
     Promise.race([work, timeoutPromise])
       .then((res) => {
         if (timeoutHandle) {
-          clearTimeout(timeoutHandle);
+          cancelTimer(timeoutHandle);
           timeoutHandle = null;
         }
         if (timedOut && res && typeof res === 'object' && !Array.isArray(res)) {
@@ -1112,10 +1213,13 @@ registerBrokerRequestExecutor((method, args, opts) =>
 
 async function requestBrokerRaw(method: string, args?: any, brokerId?: string | null) {
   const broker = (window as any)?.glass?.broker;
+  const brokerRequest = broker && typeof (broker as any)['request'] === 'function'
+    ? (broker as any)['request'].bind(broker)
+    : null;
   const requestedBroker = brokerId ? String(brokerId) : null;
-  if (broker?.request) {
+  if (brokerRequest) {
     try {
-      const res = await broker.request({ method, args, brokerId: requestedBroker });
+      const res = await brokerRequest({ method, args, brokerId: requestedBroker });
       if (res && res.ok === false) {
         const errMsg = String(res.error || '');
         const unsupported =
@@ -3338,6 +3442,7 @@ const App: React.FC = () => {
   const [snapshotPanelStatus, setSnapshotPanelStatus] = useState<SignalSnapshotStatus | null>(null);
   const snapshotPanelApplyRef = React.useRef(snapshotPanelApplyToSignals);
   const snapshotPanelLastSymbolRef = React.useRef(snapshotPanelSymbol);
+  const snapshotStartupPrewarmRef = React.useRef<{ key: string; atMs: number } | null>(null);
   const [signalWarmupInFlight, setSignalWarmupInFlight] = useState(false);
   const signalWarmupHoldRef = React.useRef(0);
   const beginSignalWarmup = useCallback(() => {
@@ -3427,17 +3532,22 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const tick = () => {
+    let stop: (() => void) | null = null;
+    void loadOutcomeFeedRefreshControllerModule().then((mod) => {
       if (cancelled) return;
-      setOutcomeFeedConsistency(outcomeConsistencyEngine.getConsistencyState());
-      setPanelFreshness(outcomeConsistencyEngine.getPanelFreshness());
-      timer = window.setTimeout(tick, 15_000);
-    };
-    timer = window.setTimeout(tick, 15_000);
+      const controller = mod.createOutcomeFeedRefreshController({
+        intervalMs: 15_000,
+        tick: () => {
+          setOutcomeFeedConsistency(outcomeConsistencyEngine.getConsistencyState());
+          setPanelFreshness(outcomeConsistencyEngine.getPanelFreshness());
+        }
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       cancelled = true;
-      if (timer) window.clearTimeout(timer);
+      stop?.();
     };
   }, []);
 
@@ -3722,6 +3832,7 @@ const App: React.FC = () => {
   const runSignalScanAutoRef = React.useRef<(source: 'manual' | 'auto') => Promise<void> | void>(async () => {});
   const signalAutoRefreshAttemptAtRef = React.useRef(0);
   const SIGNAL_AUTO_REFRESH_TASK_ID = 'signal.auto_refresh.scan';
+  const SHADOW_CONTROLLER_TASK_ID = 'controller.shadow.tick';
   const patternSymbols = Array.isArray(patternSettings.symbols) ? patternSettings.symbols : [];
   const patternSymbolMode = (patternSettings.symbolMode || 'auto') as PatternSymbolMode;
   const patternTimeframes = Array.isArray(patternSettings.timeframes) ? patternSettings.timeframes : [...DEFAULT_PATTERN_TIMEFRAMES];
@@ -5030,7 +5141,7 @@ const App: React.FC = () => {
     }
 
     // Auto dismiss
-    setTimeout(() => {
+    deferMs(() => {
         setNotifications(prev => prev.filter(n => n.id !== id));
     }, 5000);
     }, [appendLiveError]);
@@ -5420,7 +5531,6 @@ const App: React.FC = () => {
   const setupSignalExpiryAtRef = React.useRef(0);
   const backgroundWatcherStateRef = React.useRef<Map<string, { lastFetchMs: number; lastTriggerBarTs: number }>>(new Map());
   const backgroundWatcherRunningRef = React.useRef(false);
-  const backgroundWatcherTimerRef = React.useRef<number | null>(null);
   const backgroundWatchersEnabledRef = React.useRef(true);
   const backgroundSymbolCacheRef = React.useRef<Map<string, string>>(new Map());
   const backgroundWatcherLastTickAtRef = React.useRef<number | null>(null);
@@ -5484,6 +5594,7 @@ const App: React.FC = () => {
     signalScanLastDurationMs: null,
     chartRefreshRequests: 0,
     chartRefreshCoalesced: 0,
+    patternWatchSyncCoalesced: 0,
     chartRefreshRuns: 0,
     chartRefreshLastDurationMs: null,
     signalSnapshotWarmups: 0,
@@ -5555,12 +5666,14 @@ const App: React.FC = () => {
       stats.signalScans = 0;
       stats.chartRefreshRequests = 0;
       stats.chartRefreshCoalesced = 0;
+      stats.patternWatchSyncCoalesced = 0;
       stats.chartRefreshRuns = 0;
       stats.signalSnapshotWarmups = 0;
       stats.signalSnapshotWarmupTimeouts = 0;
       brokerQueueMetrics.reset();
     }
     const queueMetrics = brokerQueueMetrics.snapshot();
+    const coordinatorStats = brokerRequestCoordinator.getStats();
     return {
       windowMs,
       auditEvents: stats.auditEvents,
@@ -5580,11 +5693,18 @@ const App: React.FC = () => {
       signalScanLastDurationMs: stats.signalScanLastDurationMs,
       chartRefreshRequests: stats.chartRefreshRequests,
       chartRefreshCoalesced: stats.chartRefreshCoalesced,
+      patternWatchSyncCoalesced: stats.patternWatchSyncCoalesced,
       chartRefreshRuns: stats.chartRefreshRuns,
       chartRefreshLastDurationMs: stats.chartRefreshLastDurationMs,
       signalSnapshotWarmups: stats.signalSnapshotWarmups,
       signalSnapshotWarmupTimeouts: stats.signalSnapshotWarmupTimeouts,
-      signalSnapshotWarmupLastDurationMs: stats.signalSnapshotWarmupLastDurationMs
+      signalSnapshotWarmupLastDurationMs: stats.signalSnapshotWarmupLastDurationMs,
+      brokerCoordinatorRequests: coordinatorStats.requests,
+      brokerCoordinatorExecutions: coordinatorStats.executions,
+      brokerCoordinatorCacheHits: coordinatorStats.cacheHits,
+      brokerCoordinatorDedupeHits: coordinatorStats.dedupeHits,
+      brokerCoordinatorCacheHitRate: coordinatorStats.cacheHitRate,
+      brokerCoordinatorDedupeRate: coordinatorStats.dedupeRate
     };
   }, []);
 
@@ -5624,11 +5744,15 @@ const App: React.FC = () => {
   const requestBrokerWithAudit = useCallback(async (
     method: string,
     args?: any,
-    meta?: { symbol?: string | null; runId?: string | null; source?: string | null }
+    meta?: { symbol?: string | null; runId?: string | null; source?: string | null; brokerId?: BrokerId | null }
   ) => {
     const logger = appendAuditEventRef.current;
     const payload = sanitizeBrokerArgs(method, args);
     const sourceTag = String(meta?.source || 'other').trim() || 'other';
+    const requestedBrokerId =
+      meta?.brokerId === 'mt5' || meta?.brokerId === 'tradelocker'
+        ? meta.brokerId
+        : null;
     const symbol = meta?.symbol ?? payload.symbol ?? null;
     const runId = meta?.runId ?? null;
     const isSnapshotMethod = TRADELOCKER_SNAPSHOT_METHODS.has(method);
@@ -5682,7 +5806,7 @@ const App: React.FC = () => {
     };
     let argsResolved = args;
     if (args && typeof args === 'object') {
-      const brokerHint = isSnapshotMethod ? 'tradelocker' : await resolveActiveBrokerId();
+      const brokerHint = requestedBrokerId || (isSnapshotMethod ? 'tradelocker' : await resolveActiveBrokerId());
       const next: Record<string, any> = { ...(args as any) };
       let changed = false;
       if (typeof next.symbol === 'string' && next.symbol.trim()) {
@@ -5778,7 +5902,10 @@ const App: React.FC = () => {
           await ensureAccount(snapshotKey, 'broker_request');
         }
       }
-      return requestBroker(method, argsResolved);
+      return requestBroker(method, argsResolved, {
+        brokerId: requestedBrokerId,
+        source: sourceTag
+      });
     };
 
     const runWithAccountLock = async <T,>(fn: () => Promise<T> | T) => {
@@ -5823,7 +5950,10 @@ const App: React.FC = () => {
             const switchRes = await ensureAccount(nextKey, 'snapshot_autoswitch');
             if (!switchRes.ok) return res;
             accountKeyHint = nextKey;
-            const retry = await requestBroker(method, argsResolved);
+            const retry = await requestBroker(method, argsResolved, {
+              brokerId: requestedBrokerId,
+              source: sourceTag
+            });
             if (retry?.ok !== false) {
               setTlSnapshotSourceKey(nextKey);
             }
@@ -6134,15 +6264,28 @@ const App: React.FC = () => {
     }
   }, [resolveActiveRunContext]);
 
+  const chartHistorySeriesFetcher = React.useMemo(() => {
+    return createSnapshotHistoryFetcher({
+      fetcher: (args) =>
+        requestBrokerWithAudit('getHistorySeries', { ...args, aggregate: args?.aggregate ?? true }),
+      resolvePartition: () => {
+        const brokerId = String(activeBrokerIdRef.current?.id || '').trim().toLowerCase() || 'auto';
+        const accountKeyFn = getTradeLockerAccountKeyRef.current;
+        const accountKey = accountKeyFn ? String(accountKeyFn() || '').trim().toLowerCase() : '';
+        return `${brokerId}|${accountKey || 'default'}`;
+      }
+    });
+  }, [requestBrokerWithAudit]);
+
   const chartEngine = React.useMemo(() => {
     return new ChartEngine({
-      getHistorySeries: (args) => requestBrokerWithAudit('getHistorySeries', { ...args, aggregate: args?.aggregate ?? true }),
+      getHistorySeries: chartHistorySeriesFetcher,
       persistence: chartPersistence,
       onUpdate: chartEngineOnUpdate,
       historyFetchConcurrency: CHART_HISTORY_FETCH_CONCURRENCY,
       historyFetchTimeoutMs: CHART_HISTORY_FETCH_TIMEOUT_MS
     });
-  }, [chartEngineOnUpdate, chartPersistence, requestBrokerWithAudit]);
+  }, [chartEngineOnUpdate, chartHistorySeriesFetcher, chartPersistence]);
 
   const chartRefreshStateRef = React.useRef({
     inFlight: false,
@@ -6195,6 +6338,56 @@ const App: React.FC = () => {
     marketDataRef.current = marketData;
   }, [marketData]);
 
+  const patternWatchRefreshCoalescer = React.useMemo(() => {
+    return createPatternRefreshCoalescer<{
+      entries: Array<{ watchId: string; symbol: string; timeframe: string }>;
+      detectors: string[];
+    }>({
+      delayMs: 180,
+      onCoalesced: () => {
+        recordPerf('patternWatchSyncCoalesced');
+      },
+      onRun: async (input) => {
+        const entries = Array.isArray(input?.entries) ? input.entries : [];
+        const detectors = Array.isArray(input?.detectors) ? input.detectors.filter(Boolean) : [];
+        const existing = chartEngine
+          .listWatches()
+          .filter((watch) => watch.source === 'patterns_panel' || String(watch.watchId || '').startsWith('patterns:'));
+        const desiredMap = new Map<string, { symbol: string; timeframe: string }>();
+        for (const entry of entries) desiredMap.set(entry.watchId, { symbol: entry.symbol, timeframe: entry.timeframe });
+
+        for (const watch of existing) {
+          if (!watch?.watchId) continue;
+          if (!desiredMap.has(watch.watchId)) {
+            await chartEngine.removeWatch(watch.watchId);
+          }
+        }
+
+        for (const entry of entries) {
+          await chartEngine.addWatch({
+            watchId: entry.watchId,
+            symbol: entry.symbol,
+            timeframe: entry.timeframe,
+            detectorsEnabled: detectors,
+            enabled: true,
+            source: 'patterns_panel'
+          });
+        }
+
+        if (entries.length > 0) {
+          const fetches = Math.max(1, Math.min(4, entries.length));
+          requestChartRefresh(fetches);
+        }
+      }
+    });
+  }, [chartEngine, recordPerf, requestChartRefresh]);
+
+  useEffect(() => {
+    return () => {
+      patternWatchRefreshCoalescer.dispose();
+    };
+  }, [patternWatchRefreshCoalescer]);
+
   useEffect(() => {
     const symbols = patternWatchSymbols.filter(Boolean);
     const timeframes = patternWatchTimeframes.filter(Boolean);
@@ -6227,28 +6420,11 @@ const App: React.FC = () => {
       }
     }
 
-    const existing = chartEngine.listWatches().filter((watch) => watch.source === 'patterns_panel' || String(watch.watchId || '').startsWith('patterns:'));
-    const desiredMap = new Map<string, { symbol: string; timeframe: string }>();
-    for (const entry of capped) desiredMap.set(entry.watchId, { symbol: entry.symbol, timeframe: entry.timeframe });
-
-    for (const watch of existing) {
-      if (!watch?.watchId) continue;
-      if (!desiredMap.has(watch.watchId)) {
-        void chartEngine.removeWatch(watch.watchId);
-      }
-    }
-
-    for (const entry of capped) {
-      void chartEngine.addWatch({
-        watchId: entry.watchId,
-        symbol: entry.symbol,
-        timeframe: entry.timeframe,
-        detectorsEnabled: detectors,
-        enabled: true,
-        source: 'patterns_panel'
-      });
-    }
-  }, [addNotification, chartEngine, patternDetectorsResolved, patternWatchSymbols, patternWatchTimeframes]);
+    patternWatchRefreshCoalescer.schedule({
+      entries: capped,
+      detectors
+    });
+  }, [addNotification, patternDetectorsResolved, patternWatchSymbols, patternWatchTimeframes, patternWatchRefreshCoalescer]);
 
   useEffect(() => {
     if (!patternAutoRefreshEnabled) return;
@@ -9298,22 +9474,23 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const tick = async () => {
+    let stop: (() => void) | null = null;
+    void loadSetupWatcherBackgroundControllerModule().then((mod) => {
       if (cancelled) return;
-      await runSetupWatcherBackgroundTick();
-      if (cancelled) return;
-      const nextDelay = backgroundWatchersEnabledRef.current ? 8000 : 60_000;
-      backgroundWatcherTimerRef.current = window.setTimeout(tick, nextDelay);
-    };
-
-    const initialDelay = backgroundWatchersEnabledRef.current ? 4000 : 20_000;
-    backgroundWatcherTimerRef.current = window.setTimeout(tick, initialDelay);
+      const controller = mod.createSetupWatcherBackgroundController({
+        tick: () => runSetupWatcherBackgroundTick(),
+        isEnabled: () => backgroundWatchersEnabledRef.current === true,
+        enabledIntervalMs: 8_000,
+        disabledIntervalMs: 60_000,
+        initialEnabledDelayMs: 4_000,
+        initialDisabledDelayMs: 20_000
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       cancelled = true;
-      if (backgroundWatcherTimerRef.current != null) {
-        window.clearTimeout(backgroundWatcherTimerRef.current);
-        backgroundWatcherTimerRef.current = null;
-      }
+      stop?.();
     };
   }, [runSetupWatcherBackgroundTick]);
 
@@ -10724,10 +10901,10 @@ const App: React.FC = () => {
       const key = normalizeWarmupTimeframeKey(tf);
       if (!key) continue;
       const configuredFloor = key === '1d'
-        ? signalSnapshotWarmupBars1d
+        ? Math.max(signalSnapshotWarmupBars1d, SIGNAL_SNAPSHOT_WARMUP_BARS_1D)
         : key === '1w'
-          ? signalSnapshotWarmupBars1w
-          : signalSnapshotWarmupBarsDefault;
+          ? Math.max(signalSnapshotWarmupBars1w, SIGNAL_SNAPSHOT_WARMUP_BARS_1W)
+          : Math.max(signalSnapshotWarmupBarsDefault, SIGNAL_SNAPSHOT_WARMUP_BARS_DEFAULT);
       const plan = planWarmup({
         timeframe: key,
         configuredMinBars: configuredFloor,
@@ -10775,7 +10952,7 @@ const App: React.FC = () => {
     });
     const minBarsByTimeframe = input.barsByTimeframe;
     const startedAt = Date.now();
-    const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const sleep = (ms: number) => sleepMs(ms);
     let payloadResult: any = null;
     while (Date.now() - startedAt < signalSnapshotWarmupTimeoutMs) {
       const snapshots = chartEngine.getSnapshots({ barsLimit: CHART_CHAT_MAX_CANDLES, eventsLimit: 0, includeInactive: true });
@@ -10884,7 +11061,7 @@ const App: React.FC = () => {
           chart.ensureFrameActive(frameIds[0]);
         }
 
-        const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+        const sleep = (ms: number) => sleepMs(ms);
         const startedAt = Date.now();
         while (Date.now() - startedAt < CHART_CHAT_CAPTURE_TIMEOUT_MS) {
           snapshotDataUrl = chart.captureSnapshot ? chart.captureSnapshot() : null;
@@ -11294,10 +11471,10 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (agentPerformanceById.size === 0) return;
-    const timer = window.setTimeout(() => {
+    const timer = deferMs(() => {
       void persistAgentScorecards();
     }, 400);
-    return () => window.clearTimeout(timer);
+    return () => cancelTimer(timer);
   }, [agentPerformanceById, persistAgentScorecards]);
 
   const buildAcademyBrokerSnapshot = useCallback((symbol: string) => {
@@ -12697,14 +12874,14 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (signalEntryPersistTimerRef.current != null) {
-      window.clearTimeout(signalEntryPersistTimerRef.current);
+      cancelTimer(signalEntryPersistTimerRef.current);
     }
-    signalEntryPersistTimerRef.current = window.setTimeout(() => {
+    signalEntryPersistTimerRef.current = deferMs(() => {
       void persistSignalEntries(signalEntriesRef.current || []);
     }, 300);
     return () => {
       if (signalEntryPersistTimerRef.current != null) {
-        window.clearTimeout(signalEntryPersistTimerRef.current);
+        cancelTimer(signalEntryPersistTimerRef.current);
       }
     };
   }, [persistSignalEntries, signalEntries]);
@@ -13443,15 +13620,17 @@ const App: React.FC = () => {
     void syncEconomicCalendar({ force: false, reason: 'boot' });
     let stop: (() => void) | null = null;
     let cancelled = false;
-    void loadFeatureControllers().then((mod) => {
+    void loadCalendarControllerModule().then((mod) => {
       if (cancelled) return;
-      stop = mod.startIntervalControllerSafe({
+      const controller = mod.createCalendarController({
         intervalMs: 30 * 60 * 1000,
-        onTick: () => {
-          if (!backgroundWatchersEnabledRef.current) return;
-          void syncEconomicCalendar({ force: false, reason: 'poll' });
+        backgroundIntervalMs: 90 * 60 * 1000,
+        tick: async () => {
+          await syncEconomicCalendar({ force: false, reason: 'poll' });
         }
       });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
     }).catch(() => {
       // ignore lazy controller load errors
     });
@@ -13869,9 +14048,32 @@ const App: React.FC = () => {
   }, [refreshCalendarRules]);
 
   useEffect(() => {
-    void refreshAcademyCases();
+    void refreshAcademyCases({ force: true });
     void refreshAcademyLessons();
     void refreshAcademySymbolLearnings();
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    void loadAcademyControllerModule().then((mod) => {
+      if (cancelled) return;
+      const controller = mod.createAcademyController({
+        intervalMs: 30_000,
+        tick: async () => {
+          await Promise.all([
+            refreshAcademyCases({ force: true }),
+            refreshAcademyLessons(),
+            refreshAcademySymbolLearnings()
+          ]);
+        }
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {
+      // ignore lazy controller load errors
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
   }, [refreshAcademyCases, refreshAcademyLessons, refreshAcademySymbolLearnings]);
 
   useEffect(() => {
@@ -13915,7 +14117,7 @@ const App: React.FC = () => {
     const notBefore = academyExportNotBeforeRef.current || 0;
     if (!opts?.force && now < notBefore) return;
     academyExportNotBeforeRef.current = now + cooldownMs;
-    window.setTimeout(() => {
+    deferMs(() => {
       void persistAcademyExport();
     }, 250);
   }, [academyAutoExportEnabled, persistAcademyExport]);
@@ -14805,8 +15007,8 @@ const App: React.FC = () => {
       detail.takeProfit = Number(entry?.takeProfit);
     }
 
-    const eventName = targetBroker === 'mt5' ? 'glass_mt5_ticket' : 'glass_tradelocker_ticket';
-    window.setTimeout(() => {
+    const eventName = targetBroker === 'mt5' ? GLASS_EVENT.MT5_TICKET : GLASS_EVENT.TRADELOCKER_TICKET;
+    deferMs(() => {
       window.dispatchEvent(new CustomEvent(eventName, { detail }));
     }, 120);
   }, [buildSignalTicketPayload]);
@@ -15437,7 +15639,7 @@ const App: React.FC = () => {
         if (syncInFlight.has(entry.id)) return;
         syncInFlight.add(entry.id);
         try {
-          const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+          const sleep = (ms: number) => sleepMs(ms);
           let updated: SignalEntry | null = null;
           for (let i = 0; i < 5; i += 1) {
             updated = (signalEntriesRef.current || []).find((item) => item.id === entry.id) || null;
@@ -15783,6 +15985,61 @@ const App: React.FC = () => {
     resolveSnapshotPanelSymbol,
     snapshotPanelTimeframes,
     snapshotPanelWarmupBarsByTimeframe
+  ]);
+
+  useEffect(() => {
+    const activeTimeframes = Array.isArray(snapshotPanelTimeframes) ? snapshotPanelTimeframes : [];
+    if (activeTimeframes.length === 0) return;
+    const primarySymbol = resolveSnapshotPanelSymbol();
+    const candidateSymbols = [primarySymbol, symbolScopeSymbol, ...signalSymbols]
+      .map((entry) => String(entry || '').trim())
+      .filter(Boolean);
+    if (candidateSymbols.length === 0) return;
+    const dedupedSymbols = Array.from(new Set(candidateSymbols)).slice(0, 4);
+
+    const now = Date.now();
+    const key = `${dedupedSymbols.join(',')}|${activeTimeframes.join(',')}`;
+    const prior = snapshotStartupPrewarmRef.current;
+    if (prior && prior.key === key && now - prior.atMs < 120_000) return;
+    snapshotStartupPrewarmRef.current = { key, atMs: now };
+
+    let cancelled = false;
+    (async () => {
+      const ensureConnect = ensureTradeLockerConnectedRef.current;
+      if (ensureConnect) {
+        try {
+          await ensureConnect('startup_snapshot_prewarm');
+        } catch {
+          // ignore prewarm connect failures
+        }
+      }
+      for (const symbol of dedupedSymbols) {
+        if (cancelled) return;
+        chartEngine.setActiveSessions(symbol, activeTimeframes, {
+          barsBackfillByTimeframe: snapshotPanelWarmupBarsByTimeframe
+        });
+        await chartEngine.refreshSessionsForSymbol(symbol, activeTimeframes, {
+          force: false,
+          barsBackfillByTimeframe: snapshotPanelWarmupBarsByTimeframe
+        });
+      }
+      if (cancelled) return;
+      if (primarySymbol) {
+        await refreshSnapshotPanelStatus({ symbol: primarySymbol, timeframes: activeTimeframes });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    chartEngine,
+    refreshSnapshotPanelStatus,
+    resolveSnapshotPanelSymbol,
+    signalSymbols,
+    snapshotPanelTimeframes,
+    snapshotPanelWarmupBarsByTimeframe,
+    symbolScopeSymbol
   ]);
 
   const runSignalScan = useCallback(async (source: 'manual' | 'auto') => {
@@ -16470,30 +16727,40 @@ const App: React.FC = () => {
       intervalMs
     });
     const checkEveryMs = Math.max(1_000, Math.min(10_000, Math.floor(intervalMs / 4)));
-    const dispose = runtimeScheduler.registerTask({
-      id: SIGNAL_AUTO_REFRESH_TASK_ID,
-      groupId: 'signal',
-      intervalMs: checkEveryMs,
-      jitterPct: 0.08,
-      visibilityMode: 'always',
-      priority: 'high',
-      run: async () => {
-        const state = signalAutoRefreshStateRef.current;
-        if (!state.enabled) return;
-        if (!Array.isArray(state.symbols) || state.symbols.length === 0) return;
-        if (!isSignalSessionOpen(state.sessions)) return;
-        if (state.running) return;
-        const now = Date.now();
-        const lastRunAtMs = Number(state.lastRunAtMs || 0);
-        const lastAttemptAtMs = Number(signalAutoRefreshAttemptAtRef.current || 0);
-        const anchorAtMs = Math.max(lastRunAtMs, lastAttemptAtMs);
-        if (anchorAtMs > 0 && now - anchorAtMs < intervalMs) return;
-        signalAutoRefreshAttemptAtRef.current = now;
-        await Promise.resolve(runSignalScanAutoRef.current('auto'));
-      }
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    void loadSignalControllerModule().then((mod) => {
+      if (cancelled) return;
+      const controller = mod.createSignalController({
+        taskId: SIGNAL_AUTO_REFRESH_TASK_ID,
+        groupId: 'signal',
+        intervalMs: checkEveryMs,
+        jitterPct: 0.08,
+        visibilityMode: 'always',
+        priority: 'high',
+        tick: async () => {
+          const state = signalAutoRefreshStateRef.current;
+          if (!state.enabled) return;
+          if (!Array.isArray(state.symbols) || state.symbols.length === 0) return;
+          if (!isSignalSessionOpen(state.sessions)) return;
+          if (state.running) return;
+          const now = Date.now();
+          const lastRunAtMs = Number(state.lastRunAtMs || 0);
+          const lastAttemptAtMs = Number(signalAutoRefreshAttemptAtRef.current || 0);
+          const anchorAtMs = Math.max(lastRunAtMs, lastAttemptAtMs);
+          if (anchorAtMs > 0 && now - anchorAtMs < intervalMs) return;
+          signalAutoRefreshAttemptAtRef.current = now;
+          await Promise.resolve(runSignalScanAutoRef.current('auto'));
+        }
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {
+      // ignore lazy controller load errors
     });
     return () => {
-      dispose();
+      cancelled = true;
+      stop?.();
     };
   }, [SIGNAL_AUTO_REFRESH_TASK_ID, isSignalSessionOpen, signalRefreshIntervalMs]);
 
@@ -19429,7 +19696,7 @@ const App: React.FC = () => {
         setNativeChartMounted(true);
       }
 
-      const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+      const sleep = (ms: number) => sleepMs(ms);
       const maxWaitMs = 3500;
       const startedAt = Date.now();
       let snapshot: string | null = null;
@@ -20775,7 +21042,7 @@ const App: React.FC = () => {
           return finalizeToolResult({ ok: false, text: 'Optimization chain requires a paramGrid or saved preset.' });
         }
 
-        const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+        const sleep = (ms: number) => sleepMs(ms);
         const waitForCompletion = async (sessionId: string, label: string) => {
           const startedAt = Date.now();
           const timeoutMs = 240_000;
@@ -22247,7 +22514,7 @@ const App: React.FC = () => {
         if (!nativeChartMounted) {
           setNativeChartMounted(true);
         }
-        const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+        const sleep = (ms: number) => sleepMs(ms);
         const startedAt = Date.now();
         const maxWaitMs = 3500;
         let snapshot: string | null = null;
@@ -22519,6 +22786,12 @@ const App: React.FC = () => {
     return executeAgentToolRequest(action);
   }, [executeAgentToolRequest]);
 
+  const clearSnapshotFrameCache = useCallback((opts?: { dropSessionBars?: boolean }) => {
+    return chartEngine.clearPersistedFrameCache({
+      dropSessionBars: opts?.dropSessionBars === true
+    });
+  }, [chartEngine]);
+
   const cancelAgentToolRequest = useCallback((messageId: string, action: AgentToolAction) => {
     if (!messageId) return;
     if (!action || action.type !== 'RUN_BACKTEST_OPTIMIZATION') return;
@@ -22598,16 +22871,12 @@ const App: React.FC = () => {
     tvPriceFetchAtRef.current = 0;
 
     let cancelled = false;
-    let timer: number | null = null;
     const intervalMs = 8000;
 
     const poll = async () => {
       if (cancelled) return;
       const now = Date.now();
-      if (now - tvPriceFetchAtRef.current < 1500) {
-        timer = window.setTimeout(poll, intervalMs);
-        return;
-      }
+      if (now - tvPriceFetchAtRef.current < 1500) return;
       tvPriceFetchAtRef.current = now;
 
       let res: any = null;
@@ -22624,14 +22893,22 @@ const App: React.FC = () => {
         setActiveTvPrice(parsed);
         setActiveTvPriceUpdatedAtMs(Date.now());
       }
-
-      timer = window.setTimeout(poll, intervalMs);
     };
 
-    void poll();
+    let stop: (() => void) | null = null;
+    void loadTradingViewPriceControllerModule().then((mod) => {
+      if (cancelled) return;
+      const controller = mod.createTradingViewPriceController({
+        intervalMs,
+        runOnStart: true,
+        tick: poll
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stop?.();
     };
   }, [activeTab?.url, activeTabId]);
 
@@ -23401,16 +23678,24 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: number | null = null;
-    const tick = async () => {
+    let stop: (() => void) | null = null;
+    void loadShadowControllerModule().then((mod) => {
       if (cancelled) return;
-      await evaluateShadowTrades();
-      timer = window.setTimeout(tick, 5_000);
-    };
-    void tick();
+      const controller = mod.createShadowController({
+        intervalMs: 5_000,
+        tick: async () => {
+          await evaluateShadowTrades();
+          await Promise.resolve(maybeExecutePendingLiveSignalsRef.current?.());
+        }
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {
+      // ignore lazy controller load errors
+    });
     return () => {
       cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stop?.();
     };
   }, [evaluateShadowTrades]);
 
@@ -24411,33 +24696,86 @@ const App: React.FC = () => {
         return { proposal: proposalForAccount, normalized };
       };
 
-      const results = await withTradeLockerAccountLock(async () => {
-        const output: Array<{ accountKey: string; res: any; normalized: boolean; proposal: TradeProposal }> = [];
-        for (const accountKey of executionTargets) {
-          const switchRes = await ensureTradeLockerAccount(accountKey, 'trade_execute');
-          if (!switchRes.ok) {
-            output.push({ accountKey, res: { ok: false, error: switchRes.error }, normalized: false, proposal: executionProposal });
-            continue;
-          }
-          const { proposal: proposalForAccount, normalized } = await normalizeProposalForAccount(accountKey);
-          const res = await window.glass!.tradelocker!.placeOrder({
-            symbol: proposalForAccount.symbol,
-            side: proposalForAccount.action,
-            qty: qty,
-            type: orderType,
-            price: proposalForAccount.entryPrice,
-            stopPrice: orderType === 'stop' ? proposalForAccount.entryPrice : undefined,
-            stopLoss: proposalForAccount.stopLoss,
-            takeProfit: proposalForAccount.takeProfit,
-            strategyId
-          });
-          output.push({ accountKey, res, normalized, proposal: proposalForAccount });
-        }
-        if (snapshotKey && snapshotKey !== getTradeLockerAccountKey()) {
-          await ensureTradeLockerAccount(snapshotKey, 'trade_restore');
-        }
-        return output;
-      });
+      const useLegacySubmission = readLegacyTradeLockerSubmissionFlag();
+      const results = useLegacySubmission
+        ? await withTradeLockerAccountLock(async () => {
+            const output: Array<{ accountKey: string; res: any; normalized: boolean; proposal: TradeProposal }> = [];
+            for (const accountKey of executionTargets) {
+              const switchRes = await ensureTradeLockerAccount(accountKey, 'trade_execute');
+              if (!switchRes.ok) {
+                output.push({ accountKey, res: { ok: false, error: switchRes.error }, normalized: false, proposal: executionProposal });
+                continue;
+              }
+              const { proposal: proposalForAccount, normalized } = await normalizeProposalForAccount(accountKey);
+              const res = await requestBrokerWithAudit(
+                'placeOrder',
+                {
+                  symbol: proposalForAccount.symbol,
+                  side: proposalForAccount.action,
+                  qty: qty,
+                  type: orderType,
+                  price: proposalForAccount.entryPrice,
+                  stopPrice: orderType === 'stop' ? proposalForAccount.entryPrice : undefined,
+                  stopLoss: proposalForAccount.stopLoss,
+                  takeProfit: proposalForAccount.takeProfit,
+                  strategyId
+                },
+                {
+                  symbol: proposalForAccount.symbol,
+                  runId,
+                  source: 'trade_execute',
+                  brokerId: 'tradelocker'
+                }
+              );
+              output.push({ accountKey, res, normalized, proposal: proposalForAccount });
+            }
+            if (snapshotKey && snapshotKey !== getTradeLockerAccountKey()) {
+              await ensureTradeLockerAccount(snapshotKey, 'trade_restore');
+            }
+            return output;
+          })
+        : (
+            await submitTradeLockerOrderBatch({
+              route: 'trade_execute',
+              executionTargets,
+              snapshotAccountKey: snapshotKey || null,
+              ensureAccount: async (accountKey, reason) => await ensureTradeLockerAccount(accountKey, reason),
+              withAccountLock: withTradeLockerAccountLock,
+              getActiveAccountKey: getTradeLockerAccountKey,
+              switchReason: 'trade_execute',
+              restoreReason: 'trade_restore',
+              submitForAccount: async (accountKey) => {
+                const { proposal: proposalForAccount, normalized } = await normalizeProposalForAccount(accountKey);
+                const payload = {
+                  symbol: proposalForAccount.symbol,
+                  side: proposalForAccount.action,
+                  qty: qty,
+                  type: orderType,
+                  price: proposalForAccount.entryPrice,
+                  stopPrice: orderType === 'stop' ? proposalForAccount.entryPrice : undefined,
+                  stopLoss: proposalForAccount.stopLoss,
+                  takeProfit: proposalForAccount.takeProfit,
+                  strategyId
+                };
+                const res = await requestBrokerWithAudit(
+                  'placeOrder',
+                  payload,
+                  {
+                    symbol: proposalForAccount.symbol,
+                    runId,
+                    source: 'trade_execute',
+                    brokerId: 'tradelocker'
+                  }
+                );
+                return { res, normalized, payload: { ...payload, proposalForAccount } };
+              }
+            })
+          ).results.map((row) => ({
+            accountKey: row.accountKey,
+            res: row.res,
+            normalized: !!row.normalized,
+            proposal: (row.payload as any)?.proposalForAccount || executionProposal
+          }));
 
       // Make sure the TradeLocker panel reflects new positions / attached TP/SL orders ASAP.
       try {
@@ -24462,16 +24800,7 @@ const App: React.FC = () => {
         statusUpper.includes('FILL') || statusUpper.includes('EXECUT') || statusUpper.includes('DONE') || statusUpper.includes('COMPLETE');
       const isFilled = (filledQty != null && filledQty > 0) || filledByStatus;
 
-      const mirrorExecutions = results
-        .filter((r) => r.accountKey !== primaryResult?.accountKey)
-        .map((r) => ({
-          accountKey: r.accountKey,
-          ok: r.res?.ok !== false,
-          orderId: extractBrokerOrderId(r.res) || null,
-          resolvedSymbol: r.res?.resolvedSymbol ?? null,
-          error: r.res?.ok === false ? String(r.res?.error || '') : null,
-          normalized: r.normalized || false
-        }));
+      const mirrorExecutions = buildMirrorExecutions(results as any, primaryResult?.accountKey || null);
 
       if (res?.ok) {
         const normalizedQty =
@@ -24539,7 +24868,7 @@ const App: React.FC = () => {
           addNotification('TradeLocker Mirror', 'Some mirror executions failed. Check Audit for details.', 'warning');
         }
         if (autoPilotConfigRef.current?.telegram?.connected) {
-          setTimeout(() => {
+          deferMs(() => {
             addNotification('Telegram Relay', `Sent trade alert to Chat ID: ${autoPilotConfigRef.current.telegram.chatId}`, 'info');
           }, 800);
         }
@@ -24658,7 +24987,7 @@ const App: React.FC = () => {
         executionProposal.symbol
       );
       if (autoPilotConfigRef.current?.telegram?.connected) {
-        setTimeout(() => {
+        deferMs(() => {
           addNotification('Telegram Relay', `Sent trade alert to Chat ID: ${autoPilotConfigRef.current.telegram.chatId}`, 'info');
         }, 800);
       }
@@ -24707,6 +25036,7 @@ const App: React.FC = () => {
     resolveSnapshotSourceKey,
     resolveTradeLockerExecutionTargets,
     resolveTradeLockerSymbolBestEffort,
+    requestBrokerWithAudit,
     runPreTradeRiskGate,
     updateSetupSignalStatus,
     withTradeLockerAccountLock
@@ -24851,7 +25181,7 @@ const App: React.FC = () => {
   const scheduleExecutionQueueDrain = useCallback(() => {
     if (executionQueueDrainScheduledRef.current) return;
     executionQueueDrainScheduledRef.current = true;
-    setTimeout(() => {
+    deferMs(() => {
       executionQueueDrainScheduledRef.current = false;
       const drain = executionQueueDrainRef.current;
       if (drain) drain();
@@ -25226,7 +25556,7 @@ const App: React.FC = () => {
       };
     };
 
-    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const pause = (ms: number) => sleepMs(ms);
 
     const resolvePositionId = (positions: any[]) => {
       let positionId = String(action.positionId || '').trim();
@@ -26426,6 +26756,7 @@ const App: React.FC = () => {
       }
     });
     if (input.broker === 'tradelocker') {
+      let positions = Array.isArray(tlPositionsRef.current) ? tlPositionsRef.current : [];
       const accountHint = input.accountHint ? String(input.accountHint).trim() : '';
       if (accountHint) {
         const api = window.glass?.tradelocker;
@@ -26444,10 +26775,35 @@ const App: React.FC = () => {
           await sendTelegramText(`TradeLocker account ${accountHint} not found.`, chatId);
           return;
         }
-        await api.setActiveAccount({ accountId: Number(match.id), accNum: Number(match.accNum) });
+        const switchRes = await api.setActiveAccount({ accountId: Number(match.id), accNum: Number(match.accNum) });
+        if (switchRes?.ok === false) {
+          await sendTelegramText(switchRes?.error ? String(switchRes.error) : 'Failed to switch TradeLocker account.', chatId);
+          return;
+        }
+        try {
+          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+            accountId: Number(match.id),
+            accNum: Number(match.accNum),
+            source: 'telegram',
+            atMs: Date.now()
+          });
+        } catch {
+          // ignore renderer event dispatch failures
+        }
+        if (api?.getSnapshot) {
+          const snapRes = await api.getSnapshot({ includeOrders: false });
+          if (snapRes?.ok && Array.isArray(snapRes.positions)) {
+            positions = snapRes.positions
+              .map((p: any) => ({
+                id: String(p?.id || ''),
+                symbol: String(p?.symbol || ''),
+                size: Number(p?.size),
+                entryPrice: Number(p?.entryPrice)
+              }))
+              .filter((p: any) => p.id && p.symbol);
+          }
+        }
       }
-
-      const positions = Array.isArray(tlPositionsRef.current) ? tlPositionsRef.current : [];
       const matches = (symbol: string) => {
         if (!requestedSymbol) return true;
         const targetKeys = buildSymbolKeyVariantsShared(requestedSymbol).map((v) => String(v).toUpperCase());
@@ -26693,7 +27049,7 @@ const App: React.FC = () => {
     const timeoutMs = Number.isFinite(Number(opts?.timeoutMs))
       ? Math.max(300, Math.floor(Number(opts?.timeoutMs)))
       : 2000;
-    const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const sleep = (ms: number) => sleepMs(ms);
     if (!nativeChartMounted) setNativeChartMounted(true);
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
@@ -28249,7 +28605,7 @@ const App: React.FC = () => {
     const timers = taskTreePersistTimerRef.current;
     const existing = timers[taskType];
     if (existing) return;
-    timers[taskType] = window.setTimeout(() => {
+    timers[taskType] = deferMs(() => {
       timers[taskType] = null;
       void write();
     }, 400);
@@ -28605,13 +28961,13 @@ const App: React.FC = () => {
     run.context = buildPlaybookRunContext(data, source);
     upsertTaskPlaybookRun({ ...run });
 
-    const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const waitMs = (ms: number) => sleepMs(ms);
     const runWithTimeout = async <T,>(promise: Promise<T>, timeoutMs: number | null) => {
       if (!Number.isFinite(Number(timeoutMs)) || Number(timeoutMs) <= 0) return promise;
-      let handle: ReturnType<typeof setTimeout> | null = null;
+      let handle: TimerHandle | null = null;
       try {
         const timed = new Promise<T>((resolve) => {
-          handle = setTimeout(() => {
+          handle = deferMs(() => {
             resolve({
               ok: false,
               error: 'Playbook step timed out.',
@@ -28621,7 +28977,7 @@ const App: React.FC = () => {
         });
         return await Promise.race([promise, timed]);
       } finally {
-        if (handle) clearTimeout(handle);
+        if (handle) cancelTimer(handle);
       }
     };
 
@@ -28889,9 +29245,9 @@ const App: React.FC = () => {
         if (isRetryable && retryCount < maxRetries) {
           retryCount += 1;
           if (retryAfterMs && retryAfterMs > 0) {
-            await sleepMs(retryAfterMs);
+            await waitMs(retryAfterMs);
           } else if (retryDelayMs > 0) {
-            await sleepMs(retryDelayMs);
+            await waitMs(retryDelayMs);
           }
           continue;
         }
@@ -29328,12 +29684,42 @@ const App: React.FC = () => {
       reason: 'action_flow'
     });
     if (res.ok) {
+      void appendAuditEvent({
+        eventType: 'autopilot_action_flow_started',
+        symbol: symbol || null,
+        runId: res.runId || null,
+        payload: {
+          playbookId: playbook.id,
+          intentKey: flow.intentKey || null,
+          intentLabel: flow.intentLabel || null,
+          source: baseSource,
+          timeframe: timeframe || null,
+          strategy: strategy || null,
+          sequence,
+          queued: res.queued ?? null
+        }
+      });
+      void refreshShadowTrades({ force: true, includeCompare: true });
       addNotification('Action Flow Started', playbook.name, 'info');
     } else {
+      void appendAuditEvent({
+        eventType: 'autopilot_action_flow_failed',
+        symbol: symbol || null,
+        payload: {
+          playbookId: playbook.id,
+          intentKey: flow.intentKey || null,
+          intentLabel: flow.intentLabel || null,
+          source: baseSource,
+          timeframe: timeframe || null,
+          strategy: strategy || null,
+          sequence,
+          error: res.error || 'Unable to start flow.'
+        }
+      });
       addNotification('Action Flow Failed', res.error || 'Unable to start flow.', 'warning');
     }
     return res;
-  }, [addNotification, enqueuePlaybookRun]);
+  }, [addNotification, appendAuditEvent, enqueuePlaybookRun, refreshShadowTrades]);
   runRecommendedActionFlowRef.current = runRecommendedActionFlow;
 
   const {
@@ -29554,7 +29940,7 @@ const App: React.FC = () => {
     const needsMt5 = (shadowProfiles || []).some((profile) => profile?.liveDeployEnabled && profile.liveBroker === 'mt5');
     if (!needsMt5) return;
     let canceled = false;
-    let timer: number | null = null;
+    let stop: (() => void) | null = null;
     const poll = async () => {
       try {
         const spec = await fetchMt5AccountSpec();
@@ -29565,14 +29951,20 @@ const App: React.FC = () => {
       } catch {
         // ignore MT5 polling failures
       }
-      if (!canceled) {
-        timer = window.setTimeout(poll, 5000);
-      }
     };
-    void poll();
+    void loadMt5AccountSpecControllerModule().then((mod) => {
+      if (canceled) return;
+      const controller = mod.createMt5AccountSpecController({
+        intervalMs: 5_000,
+        runOnStart: true,
+        tick: poll
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       canceled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stop?.();
     };
   }, [shadowProfiles]);
 
@@ -31013,19 +31405,17 @@ const App: React.FC = () => {
       return;
     }
     let canceled = false;
-    let timer: number | null = null;
+    let stop: (() => void) | null = null;
 
     const poll = async () => {
       if (canceled) return;
       const now = Date.now();
       const nextAllowed = mt5TelemetryBackoffRef.current || 0;
       if (nextAllowed && now < nextAllowed) {
-        timer = window.setTimeout(poll, Math.max(2000, nextAllowed - now));
-        return;
+        return Math.max(2000, nextAllowed - now);
       }
       if (mt5TelemetryInFlightRef.current) {
-        timer = window.setTimeout(poll, 2000);
-        return;
+        return 2000;
       }
       mt5TelemetryInFlightRef.current = true;
       try {
@@ -31063,14 +31453,22 @@ const App: React.FC = () => {
         mt5TelemetryBackoffRef.current = Date.now() + 30_000;
       } finally {
         mt5TelemetryInFlightRef.current = false;
-        if (!canceled) timer = window.setTimeout(poll, 15_000);
       }
+      return 15_000;
     };
-
-    void poll();
+    void loadMt5TelemetryControllerModule().then((mod) => {
+      if (canceled) return;
+      const controller = mod.createMt5TelemetryController({
+        defaultDelayMs: 15_000,
+        schedulerIntervalMs: 1_000,
+        tick: poll
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       canceled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stop?.();
     };
   }, [mt5TelemetryEnabled]);
 
@@ -31436,11 +31834,15 @@ const App: React.FC = () => {
     const persistenceHealth = getPersistenceHealthSnapshot();
     const executionAuditSnapshot = executionAuditService.getSnapshot();
     const livePolicySnapshot = livePolicyService.getSnapshot();
-    const panelConnectivity = panelConnectivityEngine.getSnapshot(now);
+    const panelConnectivity = normalizePanelConnectivitySnapshot(panelConnectivityEngine.getSnapshot(now), now);
     const crossPanelContextSnapshot = crossPanelContextEngine.getContext();
     const outcomeCursorSnapshot = outcomeConsistencyEngine.getCursor();
     const outcomeConsistencySnapshot = outcomeConsistencyEngine.getConsistencyState(now);
     const panelFreshnessSnapshot = outcomeConsistencyEngine.getPanelFreshness(now);
+    const chartFrameCache = chartEngine.getFrameCacheTelemetry();
+    const schedulerStats = runtimeScheduler.getStats();
+    const signalSchedulerTask = (schedulerStats.tasks || []).find((entry) => entry.id === SIGNAL_AUTO_REFRESH_TASK_ID) || null;
+    const shadowSchedulerTask = (schedulerStats.tasks || []).find((entry) => entry.id === SHADOW_CONTROLLER_TASK_ID) || null;
     const scorecardUpdatedAtMs = (agentScorecards || []).reduce((acc, item) => {
       const ts = Number(item?.updatedAtMs || 0);
       if (Number.isFinite(ts) && ts > acc) return ts;
@@ -31526,7 +31928,38 @@ const App: React.FC = () => {
       autoPilotReasonMessage: autoState?.message ?? null,
       autoPilotStateUpdatedAtMs: autoState?.updatedAtMs ?? null,
       perf: snapshotPerf(now),
+      scheduler: {
+        visible: schedulerStats.visible,
+        taskCount: schedulerStats.taskCount,
+        signalTaskId: SIGNAL_AUTO_REFRESH_TASK_ID,
+        signalTask: signalSchedulerTask
+          ? {
+              id: signalSchedulerTask.id,
+              groupId: signalSchedulerTask.groupId,
+              runCount: signalSchedulerTask.runCount,
+              errorCount: signalSchedulerTask.errorCount,
+              lastRunAtMs: signalSchedulerTask.lastRunAtMs,
+              lastDurationMs: signalSchedulerTask.lastDurationMs,
+              paused: signalSchedulerTask.paused,
+              consecutiveFailures: signalSchedulerTask.consecutiveFailures
+            }
+          : null,
+        shadowTaskId: SHADOW_CONTROLLER_TASK_ID,
+        shadowTask: shadowSchedulerTask
+          ? {
+              id: shadowSchedulerTask.id,
+              groupId: shadowSchedulerTask.groupId,
+              runCount: shadowSchedulerTask.runCount,
+              errorCount: shadowSchedulerTask.errorCount,
+              lastRunAtMs: shadowSchedulerTask.lastRunAtMs,
+              lastDurationMs: shadowSchedulerTask.lastDurationMs,
+              paused: shadowSchedulerTask.paused,
+              consecutiveFailures: shadowSchedulerTask.consecutiveFailures
+            }
+          : null
+      },
       cacheBudgets: cacheBudgetManager.getTelemetry(),
+      chartFrameCache,
       workerFallback: {
         updatedAtMs: now,
         byDomain: workerFallbackByDomain
@@ -31564,7 +31997,7 @@ const App: React.FC = () => {
       },
       crossPanelContext: crossPanelContextSnapshot
     };
-  }, [agentScorecards, brokerRateLimitSuppressUntilMs, openaiReadinessState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlQuotesError, tlQuotesUpdatedAtMs, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
+  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlQuotesError, tlQuotesUpdatedAtMs, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
 
   useEffect(() => {
     buildHealthSnapshotRef.current = buildHealthSnapshot;
@@ -32860,28 +33293,72 @@ const App: React.FC = () => {
         return { args: nextArgs, normalized };
       };
 
-      const results = await withTradeLockerAccountLock(async () => {
-        const out: Array<{ accountKey: string; res: any; normalized: boolean }> = [];
-        for (const targetKey of executionTargets) {
-          const switchRes = await ensureTradeLockerAccount(targetKey, 'ticket_execute');
-          if (!switchRes.ok) {
-            out.push({ accountKey: targetKey, res: { ok: false, error: switchRes.error }, normalized: false });
-            continue;
-          }
-          const payload = await normalizeTicketForAccount(targetKey);
-          let res: any = null;
-          try {
-            res = await window.glass!.tradelocker!.placeOrder(payload.args);
-          } catch (e: any) {
-            res = { ok: false, error: e?.message ? String(e.message) : 'Failed to place order.' };
-          }
-          out.push({ accountKey: targetKey, res, normalized: payload.normalized });
-        }
-        if (snapshotKey && snapshotKey !== getTradeLockerAccountKey()) {
-          await ensureTradeLockerAccount(snapshotKey, 'ticket_restore');
-        }
-        return out;
-      });
+      const useLegacySubmission = readLegacyTradeLockerSubmissionFlag();
+      const results = useLegacySubmission
+        ? await withTradeLockerAccountLock(async () => {
+            const out: Array<{ accountKey: string; res: any; normalized: boolean }> = [];
+            for (const targetKey of executionTargets) {
+              const switchRes = await ensureTradeLockerAccount(targetKey, 'ticket_execute');
+              if (!switchRes.ok) {
+                out.push({ accountKey: targetKey, res: { ok: false, error: switchRes.error }, normalized: false });
+                continue;
+              }
+              const payload = await normalizeTicketForAccount(targetKey);
+              let res: any = null;
+              try {
+                res = await requestBrokerWithAudit(
+                  'placeOrder',
+                  payload.args,
+                  {
+                    symbol,
+                    source: 'ticket_execute',
+                    brokerId: 'tradelocker'
+                  }
+                );
+              } catch (e: any) {
+                res = { ok: false, error: e?.message ? String(e.message) : 'Failed to place order.' };
+              }
+              out.push({ accountKey: targetKey, res, normalized: payload.normalized });
+            }
+            if (snapshotKey && snapshotKey !== getTradeLockerAccountKey()) {
+              await ensureTradeLockerAccount(snapshotKey, 'ticket_restore');
+            }
+            return out;
+          })
+        : (
+            await submitTradeLockerOrderBatch({
+              route: 'ticket_execute',
+              executionTargets,
+              snapshotAccountKey: snapshotKey || null,
+              ensureAccount: async (accountKey, reason) => await ensureTradeLockerAccount(accountKey, reason),
+              withAccountLock: withTradeLockerAccountLock,
+              getActiveAccountKey: getTradeLockerAccountKey,
+              switchReason: 'ticket_execute',
+              restoreReason: 'ticket_restore',
+              submitForAccount: async (accountKey) => {
+                const payload = await normalizeTicketForAccount(accountKey);
+                let res: any = null;
+                try {
+                  res = await requestBrokerWithAudit(
+                    'placeOrder',
+                    payload.args,
+                    {
+                      symbol,
+                      source: 'ticket_execute',
+                      brokerId: 'tradelocker'
+                    }
+                  );
+                } catch (e: any) {
+                  res = { ok: false, error: e?.message ? String(e.message) : 'Failed to place order.' };
+                }
+                return { res, normalized: payload.normalized, payload: payload.args };
+              }
+            })
+          ).results.map((row) => ({
+            accountKey: row.accountKey,
+            res: row.res,
+            normalized: !!row.normalized
+          }));
 
       const primaryResult = results.find((r) => r.accountKey === primaryKey) || results[0];
       const res = primaryResult?.res;
@@ -32900,16 +33377,7 @@ const App: React.FC = () => {
         const filledByStatus =
           statusUpper.includes('FILL') || statusUpper.includes('EXECUT') || statusUpper.includes('DONE') || statusUpper.includes('COMPLETE');
         const isFilled = (filledQty != null && filledQty > 0) || filledByStatus;
-        const mirrorExecutions = results
-          .filter((r) => r.accountKey !== primaryResult?.accountKey)
-          .map((r) => ({
-            accountKey: r.accountKey,
-            ok: r.res?.ok !== false,
-            orderId: extractBrokerOrderId(r.res) || null,
-            resolvedSymbol: r.res?.resolvedSymbol ?? null,
-            error: r.res?.ok === false ? String(r.res?.error || '') : null,
-            normalized: r.normalized || false
-          }));
+        const mirrorExecutions = buildMirrorExecutions(results as any, primaryResult?.accountKey || null);
 
         try {
           const normalizedQty =
@@ -32973,16 +33441,7 @@ const App: React.FC = () => {
           statusUpper.includes('EXPIRED') ||
           statusUpper.includes('CLOSE') ||
           statusUpper.includes('CLOSED');
-        const mirrorExecutions = results
-          .filter((r) => r.accountKey !== primaryResult?.accountKey)
-          .map((r) => ({
-            accountKey: r.accountKey,
-            ok: r.res?.ok !== false,
-            orderId: extractBrokerOrderId(r.res) || null,
-            resolvedSymbol: r.res?.resolvedSymbol ?? null,
-            error: r.res?.ok === false ? String(r.res?.error || '') : null,
-            normalized: r.normalized || false
-          }));
+        const mirrorExecutions = buildMirrorExecutions(results as any, primaryResult?.accountKey || null);
         try {
           if (ledgerId && ledger?.update) await ledger.update({
             id: ledgerId,
@@ -33011,6 +33470,7 @@ const App: React.FC = () => {
     resolveSnapshotSourceKey,
     resolveTradeLockerExecutionTargets,
     resolveTradeLockerSymbolBestEffort,
+    requestBrokerWithAudit,
     tlSavedConfig,
     withTradeLockerAccountLock
   ]);
@@ -33019,10 +33479,11 @@ const App: React.FC = () => {
 
   // --- System Initialization & Background Monitor ---
   useEffect(() => {
-    const timer = setTimeout(() => {
-      addNotification("System Initialized", "GlassBrowser AI v0.1.182 Online", "success");
+    const timer = deferMs(() => {
+      const runtimeVersion = String((window as any)?.glass?.app?.version || '').trim() || 'dev';
+      addNotification("System Initialized", buildSystemInitializedMessage(runtimeVersion), "success");
     }, 1000);
-    return () => clearTimeout(timer);
+    return () => cancelTimer(timer);
   }, [addNotification]);
 
   const tlStatusRef = React.useRef<string | null>(null);
@@ -33265,10 +33726,6 @@ const App: React.FC = () => {
     const chartEnabled = chartWatchEnabled && !isSettingsOpen && isOpen && mode === 'chat';
     if (!liveEnabled && !chartEnabled) return;
 
-    let cancelled = false;
-    let timer: number | null = null;
-    let tickInFlight = false;
-
     const readInterval = (key: string, fallback: number, min: number, max: number) => {
       try {
         const raw = localStorage.getItem(key);
@@ -33278,34 +33735,7 @@ const App: React.FC = () => {
       return fallback;
     };
 
-    const due = {
-      liveActive: Date.now(),
-      liveWatched: Date.now(),
-      chartWatch: Date.now()
-    };
-
     const monitoredUrlsNow = () => (tabsRef.current || []).filter((t) => !!t.isWatched).map((t) => t.url);
-
-    const scheduleNext = () => {
-      if (cancelled) return;
-      if (timer != null) window.clearTimeout(timer);
-
-      const now = Date.now();
-      const times: number[] = [];
-      if (liveEnabled) {
-        times.push(due.liveActive);
-        times.push(due.liveWatched);
-      }
-      if (chartEnabled) {
-        const backoffUntil = Number(chartWatchBackoffUntilMsRef.current) || 0;
-        times.push(Math.max(due.chartWatch, backoffUntil));
-      }
-      if (times.length === 0) return;
-
-      const nextAt = Math.min(...times);
-      const delay = Math.max(80, Math.min(60_000, nextAt - now));
-      timer = window.setTimeout(() => { void tick(); }, delay);
-    };
 
     const runLiveActive = async () => {
       const capture = browserControlsRef.current?.captureTab;
@@ -33551,41 +33981,31 @@ const App: React.FC = () => {
       }
     };
 
-    const tick = async () => {
+    const liveActiveIntervalMs = readInterval('glass_vision_active_interval_ms', 2000, 500, 60000);
+    const liveWatchedIntervalMs = readInterval('glass_vision_watched_interval_ms', 7000, 1000, 600000);
+    const chartWatchIntervalMs = readInterval("glass_chart_watch_interval_ms", 60_000, 5_000, 600_000);
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    void loadLiveCaptureControllerModule().then((mod) => {
       if (cancelled) return;
-      if (tickInFlight) {
-        scheduleNext();
-        return;
-      }
-      tickInFlight = true;
-      try {
-        const now = Date.now();
-
-        if (liveEnabled && now >= due.liveActive) {
-          await runLiveActive();
-          due.liveActive = Date.now() + readInterval('glass_vision_active_interval_ms', 2000, 500, 60000);
-        }
-
-        if (liveEnabled && now >= due.liveWatched) {
-          await runLiveWatched();
-          due.liveWatched = Date.now() + readInterval('glass_vision_watched_interval_ms', 7000, 1000, 600000);
-        }
-
-        const backoffUntil = Number(chartWatchBackoffUntilMsRef.current) || 0;
-        if (chartEnabled && now >= due.chartWatch && now >= backoffUntil) {
-          await runChartWatch();
-          due.chartWatch = Date.now() + readInterval("glass_chart_watch_interval_ms", 60_000, 5_000, 600_000);
-        }
-      } finally {
-        tickInFlight = false;
-        scheduleNext();
-      }
-    };
-
-    void tick();
+      const controller = mod.createLiveCaptureController({
+        runLiveActive,
+        runLiveWatched,
+        runChartWatch,
+        isLiveEnabled: () => liveEnabled,
+        isChartEnabled: () => chartEnabled,
+        getChartBackoffUntilMs: () => Number(chartWatchBackoffUntilMsRef.current) || 0,
+        liveActiveIntervalMs,
+        liveWatchedIntervalMs,
+        chartWatchIntervalMs,
+        schedulerIntervalMs: 250
+      });
+      controller.start({ scheduler: runtimeScheduler });
+      stop = () => controller.stop();
+    }).catch(() => {});
     return () => {
       cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
+      stop?.();
     };
   }, [addNotification, applyVisionTransform, captureTabCached, chartSessionsRef, chartWatchEnabled, chartWatchMode, chartWatchSnoozedUntilMs, isLive, isOpen, isSettingsOpen, liveMode, mode, readChatTabContextTransform, runChartWatchUpdate, sendVideoFrame]);
 
@@ -34218,6 +34638,7 @@ const App: React.FC = () => {
                     <MonitorInterface
                       health={healthSnapshot}
                       onRequestSnapshot={requestSystemSnapshot}
+                      onClearSnapshotFrameCache={clearSnapshotFrameCache}
                     />
                 )}
                 {mode === 'mt5' && (

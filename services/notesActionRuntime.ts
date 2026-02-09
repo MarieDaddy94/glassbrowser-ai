@@ -144,6 +144,16 @@ export async function runNotesActionRuntime(
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
 
+  if (actionId === 'notes.trade.replay') {
+    const detail = payload && typeof payload === 'object' ? payload : {};
+    try {
+      window.dispatchEvent(new CustomEvent('glass_notes_trade_replay', { detail }));
+    } catch {
+      return { handled: true, result: { ok: false, error: 'Unable to replay linked trade.' } };
+    }
+    return { handled: true, result: { ok: true, data: { replay: true } } };
+  }
+
   if (actionId === 'notes.context.attach' || actionId === 'notes.context.clear') {
     const detail = payload && typeof payload === 'object' ? payload : {};
     try {

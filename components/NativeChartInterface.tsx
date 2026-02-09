@@ -71,7 +71,11 @@ interface NativeChartInterfaceProps {
   onBarClose?: (event: { symbol: string; resolution: string; bar: Candle; bars: Candle[]; updatedAtMs: number | null }) => void;
   onUpdateWatcher?: (id: string, patch: Partial<SetupWatcher>) => void;
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
-  requestBroker?: (method: string, args?: any, meta?: { symbol?: string | null }) => Promise<any>;
+  requestBroker?: (
+    method: string,
+    args?: any,
+    meta?: { symbol?: string | null; source?: string | null; timeframe?: string | null }
+  ) => Promise<any>;
   crossPanelContext?: CrossPanelContext | null;
   onPriceSelect?: (event: { price: number; frameId: string; resolution: string; source: 'frame' | 'fullscreen'; mode: 'entry' | 'sl' | 'tp' }) => void;
   onLevelUpdate?: (event: {
@@ -661,13 +665,19 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
     );
 
     const brokerRequest = useCallback(
-      async (method: string, args?: any) => {
+      async (method: string, args?: any, meta?: { source?: string | null; timeframe?: string | null }) => {
+        const source = meta?.source || 'nativechart';
+        const symbol = resolvedSymbol || symbolInput || null;
         if (requestBroker) {
-          return requestBroker(method, args, { symbol: resolvedSymbol || symbolInput || null });
+          return requestBroker(method, args, {
+            symbol,
+            source,
+            timeframe: meta?.timeframe || null
+          });
         }
         const coordinated = await requestBrokerCoordinated(method, args, {
-          symbol: resolvedSymbol || symbolInput || null,
-          source: 'chart'
+          symbol,
+          source
         });
         if (coordinated?.ok || !String(coordinated?.error || '').includes('bridge unavailable')) {
           return coordinated;
@@ -817,7 +827,11 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
       const loadInstrument = async () => {
         setInstrumentStatus((prev) => ({ ...prev, loading: true, error: null }));
         try {
-          const res = await brokerRequest('getInstrumentConstraints', { symbol: resolvedSymbol });
+          const res = await brokerRequest(
+            'getInstrumentConstraints',
+            { symbol: resolvedSymbol },
+            { source: 'nativechart.constraints' }
+          );
           if (cancelled) return;
           if (!res?.ok) {
             const err = res?.error ? formatConstraintError(String(res.error), brokerLabelSafe) : 'Constraints unavailable.';
@@ -1369,14 +1383,21 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
               const resolutionMs = RESOLUTION_MS[frame.resolution] || 0;
               const lookbackMs = resolutionMs > 0 ? resolutionMs * frame.lookbackBars : 0;
               const from = lookbackMs > 0 ? now - lookbackMs : now - 7 * 24 * 60 * 60_000;
-              const res = await brokerRequest('getHistorySeries', {
-                symbol: resolvedSymbol,
-                resolution: frame.resolution,
-                from,
-                to: now,
-                aggregate: true,
-                maxAgeMs: force ? 0 : frame.maxAgeMs
-              });
+              const res = await brokerRequest(
+                'getHistorySeries',
+                {
+                  symbol: resolvedSymbol,
+                  resolution: frame.resolution,
+                  from,
+                  to: now,
+                  aggregate: true,
+                  maxAgeMs: force ? 0 : frame.maxAgeMs
+                },
+                {
+                  source: `nativechart.history.${frame.id}`,
+                  timeframe: frame.resolution
+                }
+              );
               if (refreshTokenRef.current !== token) return;
               if (res?.ok && Array.isArray(res.bars)) {
                 const bars = normalizeBars(res.bars).slice(-Math.max(frame.lookbackBars, frame.displayBars));

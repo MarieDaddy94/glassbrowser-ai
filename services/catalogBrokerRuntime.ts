@@ -1,4 +1,5 @@
 type ActionResult = { ok: boolean; error?: string; data?: any };
+import { GLASS_EVENT, dispatchGlassEvent } from './glassEvents';
 
 export type runCatalogBrokerRuntimeInput = {
   actionId: string;
@@ -76,7 +77,7 @@ export async function runCatalogBrokerRuntime(
         clear: payload.clear === true
       };
       try {
-        window.dispatchEvent(new CustomEvent('glass_tradelocker_ticket', { detail }));
+        dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_TICKET, detail);
       } catch {
         return { ok: false, error: 'Unable to update TradeLocker ticket.' };
       }
@@ -260,6 +261,16 @@ export async function runCatalogBrokerRuntime(
       if (!tl?.setActiveAccount) return { ok: false, error: 'TradeLocker bridge unavailable.' };
       const res = await tl.setActiveAccount({ accountId, accNum });
       if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to set active account.' };
+      try {
+        dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+          accountId,
+          accNum,
+          source: 'catalog',
+          atMs: Date.now()
+        });
+      } catch {
+        // ignore renderer event dispatch failures
+      }
       return { ok: true, data: res ?? null };
     }
 

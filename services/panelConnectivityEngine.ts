@@ -9,6 +9,7 @@ type InternalConnectivityState = {
   ready: boolean;
   latencyMs: number | null;
   error: string | null;
+  blockedReason: string | null;
   updatedAt: number;
   failureCount: number;
   blockedUntilMs: number | null;
@@ -96,6 +97,7 @@ class PanelConnectivityEngine {
       ready: true,
       latencyMs: null,
       error: null,
+      blockedReason: null,
       updatedAt: Date.now(),
       failureCount: 0,
       blockedUntilMs: null
@@ -109,6 +111,7 @@ class PanelConnectivityEngine {
     state.ready = true;
     state.latencyMs = Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null;
     state.error = null;
+    state.blockedReason = null;
     state.updatedAt = Date.now();
     state.failureCount = 0;
     state.blockedUntilMs = null;
@@ -119,12 +122,14 @@ class PanelConnectivityEngine {
     state.ready = false;
     state.latencyMs = Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null;
     state.error = error || 'unknown_error';
+    state.blockedReason = null;
     state.updatedAt = Date.now();
     state.failureCount += 1;
     if (state.failureCount >= 3) {
       const exponent = Math.max(0, state.failureCount - 3);
       const backoffMs = Math.min(MAX_BACKOFF_MS, 1000 * Math.pow(2, exponent));
       state.blockedUntilMs = Date.now() + backoffMs;
+      state.blockedReason = 'source_cooldown_active';
     }
   }
 
@@ -144,7 +149,11 @@ class PanelConnectivityEngine {
         ok,
         source,
         data: raw.data ?? raw.payload ?? null,
-        error: ok ? null : (raw.error ? String(raw.error) : 'Action failed.')
+        error: ok ? null : (raw.error ? String(raw.error) : 'Action failed.'),
+        blocked: raw.blocked === true,
+        retryAfterMs: Number.isFinite(Number(raw.retryAfterMs)) ? Number(raw.retryAfterMs) : null,
+        blockedReason: raw.blockedReason ? String(raw.blockedReason) : null,
+        blockedUntilMs: Number.isFinite(Number(raw.blockedUntilMs)) ? Number(raw.blockedUntilMs) : null
       };
     }
     return {
@@ -164,7 +173,11 @@ class PanelConnectivityEngine {
         ok,
         source,
         data: raw.data ?? raw.payload ?? raw,
-        error: ok ? null : (raw.error ? String(raw.error) : 'Fallback failed.')
+        error: ok ? null : (raw.error ? String(raw.error) : 'Fallback failed.'),
+        blocked: raw.blocked === true,
+        retryAfterMs: Number.isFinite(Number(raw.retryAfterMs)) ? Number(raw.retryAfterMs) : null,
+        blockedReason: raw.blockedReason ? String(raw.blockedReason) : null,
+        blockedUntilMs: Number.isFinite(Number(raw.blockedUntilMs)) ? Number(raw.blockedUntilMs) : null
       };
     }
     return {
@@ -190,13 +203,22 @@ class PanelConnectivityEngine {
       const now = Date.now();
       if (this.isBlocked(panel, source, now)) {
         const blocked = this.resolveState(panel, source);
-        const msg = `source_blocked_until_${blocked.blockedUntilMs ?? now}`;
-        this.markFailure(panel, source, msg, null);
+        const blockedUntilMs = Number(blocked.blockedUntilMs || 0) || now;
+        const retryAfterMs = Math.max(0, blockedUntilMs - now);
+        const blockedReason = blocked.blockedReason || 'source_cooldown_active';
+        blocked.ready = false;
+        blocked.error = blockedReason;
+        blocked.blockedReason = blockedReason;
+        blocked.updatedAt = now;
         return {
           ok: false,
           source,
           attempts,
-          error: msg
+          error: blockedReason,
+          blocked: true,
+          retryAfterMs,
+          blockedReason,
+          blockedUntilMs
         };
       }
 
@@ -318,6 +340,9 @@ class PanelConnectivityEngine {
       error: entry.error,
       updatedAt: entry.updatedAt,
       failureCount: entry.failureCount,
+      blocked: !!(entry.blockedUntilMs && entry.blockedUntilMs > ts),
+      retryAfterMs: entry.blockedUntilMs && entry.blockedUntilMs > ts ? Math.max(0, entry.blockedUntilMs - ts) : null,
+      blockedReason: entry.blockedUntilMs && entry.blockedUntilMs > ts ? (entry.blockedReason || 'source_cooldown_active') : null,
       blockedUntilMs: entry.blockedUntilMs && entry.blockedUntilMs > ts ? entry.blockedUntilMs : null
     }));
     rows.sort((a, b) => b.updatedAt - a.updatedAt);

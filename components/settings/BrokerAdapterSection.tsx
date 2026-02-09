@@ -181,14 +181,19 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
             <select value={tlActiveProfileId} onChange={(e) => handleTradeLockerProfileSelect(e.target.value)} className="flex-1 min-w-[180px] bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-purple-500/50 transition-colors font-mono">
               <option value="">Select saved login…</option>
               {tlProfiles.map((profile: any) => (
-                <option key={profile.id} value={profile.id}>{profile.label}</option>
+                <option key={profile.id} value={profile.id}>
+                  {profile.label}
+                  {Number.isFinite(Number(profile?.accountId))
+                    ? ` • acct ${Number(profile.accountId)}${Number.isFinite(Number(profile?.accNum)) ? `/${Number(profile.accNum)}` : ''}`
+                    : ''}
+                </option>
               ))}
             </select>
             <button type="button" onClick={() => upsertTradeLockerProfile({ setActive: true })} className="px-3 py-2 rounded-lg text-[11px] font-semibold bg-white/10 hover:bg-white/15 text-gray-100 transition-colors">Save Login</button>
             <button type="button" onClick={() => handleTradeLockerProfileRemove(tlActiveProfileId)} disabled={!tlActiveProfileId} className="px-3 py-2 rounded-lg text-[11px] font-semibold bg-white/10 hover:bg-white/15 text-gray-100 transition-colors disabled:opacity-40">Remove</button>
           </div>
           <div className="text-[10px] text-gray-500">
-            Profiles store env/server/email only. Passwords and developer keys stay in encrypted storage when "Remember" is enabled.
+            Profiles store env/server/email plus the selected account. Passwords and developer keys stay in encrypted storage when "Remember" is enabled.
           </div>
         </div>
 

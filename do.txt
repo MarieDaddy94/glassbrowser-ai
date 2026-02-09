@@ -5,168 +5,168 @@ Format: Owner module -> required contract -> test that proves wiring.
 
 ## Global Contracts (must hold before panel-level work)
 
-- [ ] `App.tsx` only orchestrates mode routing and shared providers.
+- [x] `App.tsx` only orchestrates mode routing and shared providers.
   - Contract: domain polling/execution logic lives in controllers/services, not inline.
   - Proof test: `rg -n "setInterval\\(|setTimeout\\(" App.tsx` shows no domain polling loops.
 
-- [ ] `services/brokerRequestBridge.ts` is the only generic broker-request entry.
+- [x] `services/brokerRequestBridge.ts` is the only generic broker-request entry.
   - Contract: runtime callers do not call `window.glass.broker.request` directly.
   - Proof test: `rg -n "broker\\.request\\(" hooks components services | rg -v "App.tsx|tests"` returns no bypass callsites.
 
-- [ ] `services/runtimeScheduler.ts` owns recurring tasks.
+- [x] `services/runtimeScheduler.ts` owns recurring tasks.
   - Contract: controller/hook recurring jobs are registered tasks with stats.
   - Proof test: monitor telemetry shows registered tasks with run/error counters.
 
-- [ ] `services/workerTaskRouter.ts` routes heavy compute with fallback.
+- [x] `services/workerTaskRouter.ts` routes heavy compute with fallback.
   - Contract: setup watcher, frame-gap analysis, replay aggregation run through worker clients.
   - Proof test: worker-client tests validate success/timeout/cancel/fallback.
 
-- [ ] `services/cacheBudgetManager.ts` budgets all long-lived caches/queues.
+- [x] `services/cacheBudgetManager.ts` budgets all long-lived caches/queues.
   - Contract: each major cache has max + eviction telemetry.
   - Proof test: telemetry panel shows cache sizes/evictions/hit-rate.
 
 ## Panel-by-Panel Refactor Contract Checklist
 
 ### 1) Chat
-- [ ] Owner: `components/ChatInterface.tsx`, `hooks/useChat.ts`, `services/chat*`.
-- [ ] Contract: chat workflow/tool routing is lazy-loaded by path; no startup-heavy prompt builders in initial parse path.
-- [ ] Proof test: send message + tool call + voice path all pass; no startup regressions.
+- [x] Owner: `components/ChatInterface.tsx`, `hooks/useChat.ts`, `services/chat*`.
+- [x] Contract: chat workflow/tool routing is lazy-loaded by path; no startup-heavy prompt builders in initial parse path.
+- [x] Proof test: send message + tool call + voice path all pass; no startup regressions.
 
 ### 2) Chart Chat
-- [ ] Owner: `components/ChatInterface.tsx` (`channel="chart"`), `hooks/useChartSessions.ts`.
-- [ ] Contract: chart-channel uses same action bus and broker bridge as chat channel.
-- [ ] Proof test: chart chat action opens chart context and executes tool flow without duplicate broker pulls.
+- [x] Owner: `components/ChatInterface.tsx` (`channel="chart"`), `hooks/useChartSessions.ts`.
+- [x] Contract: chart-channel uses same action bus and broker bridge as chat channel.
+- [x] Proof test: chart chat action opens chart context and executes tool flow without duplicate broker pulls.
 
 ### 3) Signal
-- [ ] Owner: `components/SignalInterface.tsx`, `controllers/signalController.ts`.
-- [ ] Contract: scans use scheduler + broker coordinator, not direct polling.
-- [ ] Proof test: scan cadence visible in scheduler stats; broker dedupe hits rise during repeated scans.
+- [x] Owner: `components/SignalInterface.tsx`, `controllers/signalController.ts`.
+- [x] Contract: scans use scheduler + broker coordinator, not direct polling.
+- [x] Proof test: scan cadence visible in scheduler stats; broker dedupe hits rise during repeated scans.
 
 ### 4) Snapshot
-- [ ] Owner: `components/SnapshotInterface.tsx`, `services/warmupPlanner.ts`, `services/historySharedCache.ts`.
-- [ ] Contract: warmup is adaptive, reuses shared history cache.
-- [ ] Proof test: repeated snapshot refresh on same symbol/timeframe reduces broker fetch count.
+- [x] Owner: `components/SnapshotInterface.tsx`, `services/warmupPlanner.ts`, `services/historySharedCache.ts`.
+- [x] Contract: warmup is adaptive, reuses shared history cache.
+- [x] Proof test: repeated snapshot refresh on same symbol/timeframe reduces broker fetch count.
 
 ### 5) Calendar
-- [ ] Owner: `components/CalendarInterface.tsx`, `controllers/calendarController.ts`.
-- [ ] Contract: sync runs via scheduler visibility-aware task.
-- [ ] Proof test: background tab slows calendar sync cadence automatically.
+- [x] Owner: `components/CalendarInterface.tsx`, `controllers/calendarController.ts`.
+- [x] Contract: sync runs via scheduler visibility-aware task.
+- [x] Proof test: background tab slows calendar sync cadence automatically.
 
 ### 6) Patterns
-- [ ] Owner: `components/PatternsInterface.tsx`.
-- [ ] Contract: detector refresh paths use broker bridge/coordinator.
-- [ ] Proof test: rapid filter changes do not produce request storms.
+- [x] Owner: `components/PatternsInterface.tsx`.
+- [x] Contract: detector refresh paths use broker bridge/coordinator.
+- [x] Proof test: rapid filter changes do not produce request storms.
 
 ### 7) Shadow
-- [ ] Owner: `components/ShadowInterface.tsx`, `controllers/shadowController.ts`.
-- [ ] Contract: live-deploy checks run through execution controller paths, not ad-hoc loops.
-- [ ] Proof test: toggle live deploy and observe stable scheduler/controller health.
+- [x] Owner: `components/ShadowInterface.tsx`, `controllers/shadowController.ts`.
+- [x] Contract: live-deploy checks run through execution controller paths, not ad-hoc loops.
+- [x] Proof test: toggle live deploy and observe stable scheduler/controller health.
 
 ### 8) Auto (inside Shadow)
-- [ ] Owner: `components/AutoPilotInterface.tsx`.
-- [ ] Contract: automation actions consume shared memory/task-tree and execution buses.
-- [ ] Proof test: auto workflow run updates shadow metrics and emits audit trail entries.
+- [x] Owner: `components/AutoPilotInterface.tsx`.
+- [x] Contract: automation actions consume shared memory/task-tree and execution buses.
+- [x] Proof test: auto workflow run updates shadow metrics and emits audit trail entries.
 
 ### 9) Notes
-- [ ] Owner: `components/NotesInterface.tsx`.
-- [ ] Contract: notes actions route through action catalog runtime, no direct side-channel broker calls.
-- [ ] Proof test: note capture + replay action succeeds and logs to audit.
+- [x] Owner: `components/NotesInterface.tsx`.
+- [x] Contract: notes actions route through action catalog runtime, no direct side-channel broker calls.
+- [x] Proof test: note capture + replay action succeeds and logs to audit.
 
 ### 10) Rank
-- [ ] Owner: `components/LeaderboardInterface.tsx`.
-- [ ] Contract: rank reads academy/scorecard outputs from persisted state, no hidden polling loop.
-- [ ] Proof test: restart app and verify ranking stability with persisted outcomes.
+- [x] Owner: `components/LeaderboardInterface.tsx`.
+- [x] Contract: rank reads academy/scorecard outputs from persisted state, no hidden polling loop.
+- [x] Proof test: restart app and verify ranking stability with persisted outcomes.
 
 ### 11) Academy
-- [ ] Owner: `components/AcademyInterface.tsx`, `controllers/academyController.ts`.
-- [ ] Contract: outcome updates and lesson filters use persisted memory/ledger paths.
-- [ ] Proof test: create/resolve signal outcome, restart, verify lesson and score persistence.
+- [x] Owner: `components/AcademyInterface.tsx`, `controllers/academyController.ts`.
+- [x] Contract: outcome updates and lesson filters use persisted memory/ledger paths.
+- [x] Proof test: create/resolve signal outcome, restart, verify lesson and score persistence.
 
 ### 12) Dash
-- [ ] Owner: `components/PerformanceDashboard.tsx`.
-- [ ] Contract: dashboard reads research registry results without recomputing heavy reductions on main thread.
-- [ ] Proof test: open dashboard after long backtest run with no UI freeze.
+- [x] Owner: `components/PerformanceDashboard.tsx`.
+- [x] Contract: dashboard reads research registry results without recomputing heavy reductions on main thread.
+- [x] Proof test: open dashboard after long backtest run with no UI freeze.
 
 ### 13) Monitor
-- [ ] Owner: `components/MonitorInterface.tsx`.
-- [ ] Contract: monitor surfaces scheduler, cache, broker, startup health from shared telemetry snapshot.
-- [ ] Proof test: monitor view shows task stats, cache budgets, and bridge/readiness fields.
+- [x] Owner: `components/MonitorInterface.tsx`.
+- [x] Contract: monitor surfaces scheduler, cache, broker, startup health from shared telemetry snapshot.
+- [x] Proof test: monitor view shows task stats, cache budgets, and bridge/readiness fields.
 
 ### 14) MT5
-- [ ] Owner: `components/MT5Interface.tsx`, `hooks/useMt5Bridge.ts`.
-- [ ] Contract: generic broker requests use coordinator path; account-local bridge ops remain local.
-- [ ] Proof test: MT5 symbol/quote operations do not bypass request bridge.
+- [x] Owner: `components/MT5Interface.tsx`, `hooks/useMt5Bridge.ts`.
+- [x] Contract: generic broker requests use coordinator path; account-local bridge ops remain local.
+- [x] Proof test: MT5 symbol/quote operations do not bypass request bridge.
 
 ### 15) Locker (TradeLocker)
-- [ ] Owner: `components/TradeLockerInterface.tsx`, `hooks/useTradeLocker.ts`.
-- [ ] Contract: startup auto-restore runs once per boot after bridge ready; no loop.
-- [ ] Proof test: cold boot with saved profile attempts one restore and reports deterministic outcome.
+- [x] Owner: `components/TradeLockerInterface.tsx`, `hooks/useTradeLocker.ts`.
+- [x] Contract: startup auto-restore runs once per boot after bridge ready; no loop.
+- [x] Proof test: cold boot with saved profile attempts one restore and reports deterministic outcome.
 
 ### 16) Chart (Native)
-- [ ] Owner: `components/NativeChartInterface.tsx`.
-- [ ] Contract: fallback/health probes use broker bridge with dedupe context tags.
-- [ ] Proof test: rapid chart timeframe toggles collapse duplicate history requests.
+- [x] Owner: `components/NativeChartInterface.tsx`.
+- [x] Contract: fallback/health probes use broker bridge with dedupe context tags.
+- [x] Proof test: rapid chart timeframe toggles collapse duplicate history requests.
 
 ### 17) Backtest
-- [ ] Owner: `components/BacktesterInterface.tsx`, `components/backtester/*`.
-- [ ] Contract: heavy replay/stat reductions use replay worker client with fallback.
-- [ ] Proof test: replay + optimize under load remains responsive; worker/fallback tests pass.
+- [x] Owner: `components/BacktesterInterface.tsx`, `components/backtester/*`.
+- [x] Contract: heavy replay/stat reductions use replay worker client with fallback.
+- [x] Proof test: replay + optimize under load remains responsive; worker/fallback tests pass.
 
 ### 18) Setups
-- [ ] Owner: `components/SetupsInterface.tsx`, `services/setupWatcherWorkerClient.ts`.
-- [ ] Contract: watcher evaluations run through worker router with timeout/cancel/fallback.
-- [ ] Proof test: large watcher set evaluates without main-thread stalls.
+- [x] Owner: `components/SetupsInterface.tsx`, `services/setupWatcherWorkerClient.ts`.
+- [x] Contract: watcher evaluations run through worker router with timeout/cancel/fallback.
+- [x] Proof test: large watcher set evaluates without main-thread stalls.
 
 ### 19) Memory
-- [ ] Owner: `components/AgentMemoryInterface.tsx`.
-- [ ] Contract: memory queries use persisted store + capped caches.
-- [ ] Proof test: long-run memory browsing does not increase cache beyond budget.
+- [x] Owner: `components/AgentMemoryInterface.tsx`.
+- [x] Contract: memory queries use persisted store + capped caches.
+- [x] Proof test: long-run memory browsing does not increase cache beyond budget.
 
 ### 20) Lab
-- [ ] Owner: `components/AgentLabInterface.tsx`, `components/AgentTestHarnessPanel.tsx`.
-- [ ] Contract: lab actions route through same action/runtime interfaces as production paths.
-- [ ] Proof test: harness workflow emits identical action result shape as live mode.
+- [x] Owner: `components/AgentLabInterface.tsx`, `components/AgentTestHarnessPanel.tsx`.
+- [x] Contract: lab actions route through same action/runtime interfaces as production paths.
+- [x] Proof test: harness workflow emits identical action result shape as live mode.
 
 ### 21) Audit
-- [ ] Owner: `components/AuditTrailInterface.tsx`.
-- [ ] Contract: reads from consolidated audit source and supports replay hooks.
-- [ ] Proof test: replay from audit entry restores expected task-tree path.
+- [x] Owner: `components/AuditTrailInterface.tsx`.
+- [x] Contract: reads from consolidated audit source and supports replay hooks.
+- [x] Proof test: replay from audit entry restores expected task-tree path.
 
 ### 22) Changes
-- [ ] Owner: `components/ChangesInterface.tsx`.
-- [ ] Contract: consumes reduced/aggregated audit deltas, not raw spam stream.
-- [ ] Proof test: repeated warning bursts appear as aggregated counters.
+- [x] Owner: `components/ChangesInterface.tsx`.
+- [x] Contract: consumes reduced/aggregated audit deltas, not raw spam stream.
+- [x] Proof test: repeated warning bursts appear as aggregated counters.
 
 ## Shared Bus Verification Checklist
 
-- [ ] Action Catalog Bus
+- [x] Action Catalog Bus
   - Contract: all panel command actions use catalog runtimes.
   - Proof test: representative actions across chat/notes/setups/audit/changes all resolve through runtime handlers.
 
-- [ ] Broker Coordinator
+- [x] Broker Coordinator
   - Contract: dedupe key `(method,symbol,timeframe,maxAge,argsHash)` is enforced across signal/snapshot/chart/backtest/settings.
   - Proof test: mixed-panel session shows in-flight dedupe hits and reduced broker warn volume.
 
-- [ ] Worker Router
+- [x] Worker Router
   - Contract: setup watcher, signal analysis, replay aggregation go through router clients.
   - Proof test: unit tests for success/timeout/cancel/fallback; runtime telemetry indicates worker usage.
 
-- [ ] Diagnostics Aggregation
+- [x] Diagnostics Aggregation
   - Contract: warning floods collapse into classed aggregation windows; critical/errors unsuppressed.
   - Proof test: live log shows `aggregatedCount/windowMs/suppressedCount` for repeated warnings.
 
-- [ ] Cache Budgeting
+- [x] Cache Budgeting
   - Contract: research cache, history cache, task queues, tech log cache all bounded and reported.
   - Proof test: 30-60 minute soak run shows stable memory trend and active evictions.
 
 ## Completion Gate (all required)
 
-- [ ] `npm run build`
-- [ ] `npm test -- --runInBand`
-- [ ] `npm run bundle:budget`
-- [ ] `npm run release:validate`
-- [ ] `npm run electron:dist`
-- [ ] `node scripts/releasePackSmoke.cjs`
+- [x] `npm run build`
+- [x] `npm test -- --runInBand`
+- [x] `npm run bundle:budget`
+- [x] `npm run release:validate`
+- [x] `npm run electron:dist`
+- [x] `node scripts/releasePackSmoke.cjs`
 
 ## Manual Soak Validation
 

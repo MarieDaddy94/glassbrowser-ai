@@ -1,4 +1,5 @@
 type ActionResult = { ok: boolean; error?: string; data?: any };
+import { GLASS_EVENT } from './glassEvents';
 
 type BacktesterLike = {
   listOptimizerPresets?: () => any[];
@@ -49,7 +50,7 @@ export async function runBacktesterActionRuntime(
       timeframe: payload.timeframe ?? payload.resolution ?? null,
       rangeDays: payload.rangeDays ?? payload.days ?? null
     };
-    const dispatched = dispatchBacktesterEvent('glass_backtester_config', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.CONFIG, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: detail } };
@@ -63,7 +64,7 @@ export async function runBacktesterActionRuntime(
       timeframe: payload.timeframe ?? payload.resolution ?? null,
       rangeDays: payload.rangeDays ?? payload.days ?? null
     };
-    const dispatched = dispatchBacktesterEvent('glass_backtester_params', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.PARAMS, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester params.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: detail } };
@@ -71,7 +72,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.optimizer.config.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_optimizer_config', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.OPTIMIZER_CONFIG, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester optimizer config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -79,7 +80,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.batch.config.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_batch_config', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.BATCH_CONFIG, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester batch config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -87,7 +88,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.execution.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_execution', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.EXECUTION, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester execution config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -95,7 +96,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.confluence.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_confluence', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.CONFLUENCE, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester confluence config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -103,7 +104,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.validation.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_validation', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.VALIDATION, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester validation config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -111,7 +112,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.walkforward.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_walkforward', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.WALKFORWARD, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester walk-forward config.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -119,7 +120,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.replay.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_replay', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.REPLAY, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester replay controls.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -127,7 +128,7 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.replay.play.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_replay', { playing: detail.playing });
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.REPLAY, { playing: detail.playing });
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to toggle Backtester replay.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
@@ -135,14 +136,14 @@ export async function runBacktesterActionRuntime(
   if (actionId === 'backtester.replay.step') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
     const stepDelta = Number.isFinite(Number(detail.stepDelta)) ? Number(detail.stepDelta) : 1;
-    const dispatched = dispatchBacktesterEvent('glass_backtester_replay', { stepDelta });
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.REPLAY, { stepDelta });
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to step Backtester replay.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
 
   if (actionId === 'backtester.tiebreaker.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_tiebreaker', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.TIEBREAKER, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester tie-breaker.' } };
     if (payload.openPanel) input.openBacktesterPanel();
     return { handled: true, result: { ok: true, data: { updated: true } } };
@@ -150,14 +151,14 @@ export async function runBacktesterActionRuntime(
 
   if (actionId === 'backtester.auto_summary.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_auto_summary', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.AUTO_SUMMARY, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester auto-summary.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
 
   if (actionId === 'backtester.watchlist.mode.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_watchlist_mode', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.WATCHLIST_MODE, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester watchlist mode.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
@@ -167,21 +168,21 @@ export async function runBacktesterActionRuntime(
       tradeId: payload.tradeId ?? payload.id ?? null,
       clear: payload.clear === true
     };
-    const dispatched = dispatchBacktesterEvent('glass_backtester_trade_select', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.TRADE_SELECT, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to select Backtester trade.' } };
     return { handled: true, result: { ok: true, data: detail } };
   }
 
   if (actionId === 'backtester.memory.filters.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_memory_filters', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.MEMORY_FILTERS, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester memory filters.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }
 
   if (actionId === 'backtester.research.config.set') {
     const detail = payload && typeof payload === 'object' ? { ...payload } : {};
-    const dispatched = dispatchBacktesterEvent('glass_backtester_research_config', detail);
+    const dispatched = dispatchBacktesterEvent(GLASS_EVENT.BACKTESTER.RESEARCH_CONFIG, detail);
     if (!dispatched.ok) return { handled: true, result: { ok: false, error: 'Unable to update Backtester research config.' } };
     return { handled: true, result: { ok: true, data: { updated: true } } };
   }

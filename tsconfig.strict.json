@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "services/executionSubmissionService.ts",
+    "services/panelConnectivityEngine.ts",
+    "services/executionApi.ts",
+    "services/brokerRequestBridge.ts",
+    "services/glassEvents.ts",
+    "orchestrators/**/*.ts"
+  ]
+}

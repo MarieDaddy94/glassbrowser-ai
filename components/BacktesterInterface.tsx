@@ -32,6 +32,7 @@ import {
   type BacktestOptimizationStrategy,
   type BacktestParamGrid
 } from '../services/backtestResearchService';
+import { GLASS_EVENT } from '../services/glassEvents';
 import {
   type SetupOptimizerPayload
 } from '../services/backtestComputeWorkerClient';
@@ -5026,15 +5027,15 @@ const BacktesterInterface = forwardRef<BacktesterHandle, BacktesterInterfaceProp
       if (detail.advancedOpen != null) setResearchAdvancedOpen(!!detail.advancedOpen);
     };
 
-    window.addEventListener('glass_backtester_config', handleConfig as any);
-    window.addEventListener('glass_backtester_params', handleParams as any);
-    window.addEventListener('glass_backtester_optimizer_config', handleOptimizerConfig as any);
-    window.addEventListener('glass_backtester_batch_config', handleBatchConfig as any);
-    window.addEventListener('glass_backtester_execution', handleExecution as any);
-    window.addEventListener('glass_backtester_confluence', handleConfluence as any);
-    window.addEventListener('glass_backtester_validation', handleValidation as any);
-    window.addEventListener('glass_backtester_walkforward', handleWalkForward as any);
-    window.addEventListener('glass_backtester_replay', handleReplay as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.CONFIG, handleConfig as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.PARAMS, handleParams as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.OPTIMIZER_CONFIG, handleOptimizerConfig as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.BATCH_CONFIG, handleBatchConfig as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.EXECUTION, handleExecution as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.CONFLUENCE, handleConfluence as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.VALIDATION, handleValidation as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.WALKFORWARD, handleWalkForward as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.REPLAY, handleReplay as any);
     const handleWatchlistMode = (event: any) => {
       const detail = event?.detail;
       if (!detail || typeof detail !== 'object') return;
@@ -5043,28 +5044,28 @@ const BacktesterInterface = forwardRef<BacktesterHandle, BacktesterInterfaceProp
         setWatchlistMode(modeRaw as 'suggest' | 'paper' | 'live');
       }
     };
-    window.addEventListener('glass_backtester_watchlist_mode', handleWatchlistMode as any);
-    window.addEventListener('glass_backtester_tiebreaker', handleTieBreaker as any);
-    window.addEventListener('glass_backtester_auto_summary', handleAutoSummary as any);
-    window.addEventListener('glass_backtester_trade_select', handleTradeSelect as any);
-    window.addEventListener('glass_backtester_memory_filters', handleMemoryFilters as any);
-    window.addEventListener('glass_backtester_research_config', handleResearchConfig as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.WATCHLIST_MODE, handleWatchlistMode as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.TIEBREAKER, handleTieBreaker as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.AUTO_SUMMARY, handleAutoSummary as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.TRADE_SELECT, handleTradeSelect as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.MEMORY_FILTERS, handleMemoryFilters as any);
+    window.addEventListener(GLASS_EVENT.BACKTESTER.RESEARCH_CONFIG, handleResearchConfig as any);
     return () => {
-      window.removeEventListener('glass_backtester_config', handleConfig as any);
-      window.removeEventListener('glass_backtester_params', handleParams as any);
-      window.removeEventListener('glass_backtester_optimizer_config', handleOptimizerConfig as any);
-      window.removeEventListener('glass_backtester_batch_config', handleBatchConfig as any);
-      window.removeEventListener('glass_backtester_execution', handleExecution as any);
-      window.removeEventListener('glass_backtester_confluence', handleConfluence as any);
-      window.removeEventListener('glass_backtester_validation', handleValidation as any);
-      window.removeEventListener('glass_backtester_walkforward', handleWalkForward as any);
-    window.removeEventListener('glass_backtester_replay', handleReplay as any);
-    window.removeEventListener('glass_backtester_watchlist_mode', handleWatchlistMode as any);
-      window.removeEventListener('glass_backtester_tiebreaker', handleTieBreaker as any);
-      window.removeEventListener('glass_backtester_auto_summary', handleAutoSummary as any);
-      window.removeEventListener('glass_backtester_trade_select', handleTradeSelect as any);
-      window.removeEventListener('glass_backtester_memory_filters', handleMemoryFilters as any);
-      window.removeEventListener('glass_backtester_research_config', handleResearchConfig as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.CONFIG, handleConfig as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.PARAMS, handleParams as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.OPTIMIZER_CONFIG, handleOptimizerConfig as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.BATCH_CONFIG, handleBatchConfig as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.EXECUTION, handleExecution as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.CONFLUENCE, handleConfluence as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.VALIDATION, handleValidation as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.WALKFORWARD, handleWalkForward as any);
+    window.removeEventListener(GLASS_EVENT.BACKTESTER.REPLAY, handleReplay as any);
+    window.removeEventListener(GLASS_EVENT.BACKTESTER.WATCHLIST_MODE, handleWatchlistMode as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.TIEBREAKER, handleTieBreaker as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.AUTO_SUMMARY, handleAutoSummary as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.TRADE_SELECT, handleTradeSelect as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.MEMORY_FILTERS, handleMemoryFilters as any);
+      window.removeEventListener(GLASS_EVENT.BACKTESTER.RESEARCH_CONFIG, handleResearchConfig as any);
     };
   }, [applyOptimization, buildMergedOptimizerConfig, resolveAndSetSymbol]);
 

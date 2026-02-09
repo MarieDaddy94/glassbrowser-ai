@@ -135,6 +135,7 @@ MT5_TIMEFRAMES: Dict[str, Any] = {
     "1h": getattr(mt5, "TIMEFRAME_H1", None),
     "4h": getattr(mt5, "TIMEFRAME_H4", None),
     "1d": getattr(mt5, "TIMEFRAME_D1", None),
+    "1w": getattr(mt5, "TIMEFRAME_W1", None),
 }
 
 
@@ -145,7 +146,7 @@ def _normalize_resolution(value: Any) -> Optional[str]:
     lowered = raw.lower()
     if lowered in MT5_TIMEFRAMES:
         return lowered
-    if lowered and lowered[0] in ("m", "h", "d") and lowered[1:].isdigit():
+    if lowered and lowered[0] in ("m", "h", "d", "w") and lowered[1:].isdigit():
         return f"{lowered[1:]}{lowered[0]}"
     if lowered.isdigit():
         if lowered == "60":

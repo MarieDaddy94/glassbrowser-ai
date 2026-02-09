@@ -35,10 +35,18 @@ function runReleasePackSmoke(repoRoot) {
     throw new Error(`Pack smoke check failed: missing required app.asar entries: ${missing.join(', ')}`);
   }
 
-  return {
+  const result = {
     appAsarPath,
     checked: REQUIRED_PATHS.slice()
   };
+  try {
+    const artifactsDir = path.join(repoRoot, 'artifacts');
+    fs.mkdirSync(artifactsDir, { recursive: true });
+    fs.writeFileSync(path.join(artifactsDir, 'release-pack-smoke.json'), JSON.stringify(result, null, 2), 'utf8');
+  } catch {
+    // best-effort artifact output
+  }
+  return result;
 }
 
 if (require.main === module) {

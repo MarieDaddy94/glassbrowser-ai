@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Database, Download, Filter, RefreshCw, Settings, Trash2 } from 'lucide-react';
 import { Agent, AgentMemoryEntry } from '../types';
 import TagPills from './TagPills';
 import VirtualItem from './VirtualItem';
 import { createPanelActionRunner } from '../services/panelConnectivityEngine';
+import { getCacheBudgetManager } from '../services/cacheBudgetManager';
 
 interface AgentMemoryInterfaceProps {
   activeSymbol?: string;
@@ -15,6 +16,9 @@ interface AgentMemoryInterfaceProps {
 
 const STORAGE_KEY = 'glass_agent_memory_panel_v1';
 const PRESET_KEY = 'glass_agent_memory_filter_presets_v1';
+const AGENT_MEMORY_QUERY_CACHE_BUDGET = 'agent_memory.query_cache';
+const AGENT_MEMORY_QUERY_CACHE_MAX = 64;
+const AGENT_MEMORY_QUERY_CACHE_TTL_MS = 20_000;
 
 type AgentMemoryFilterPreset = {
   id: string;
@@ -141,6 +145,8 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
   const [memoryPresetName, setMemoryPresetName] = useState<string>('');
   const [memoryPresetStatus, setMemoryPresetStatus] = useState<string | null>(null);
   const [memoryPresetError, setMemoryPresetError] = useState<string | null>(null);
+  const queryCacheRef = useRef<Map<string, { entries: AgentMemoryEntry[]; fetchedAtMs: number }>>(new Map());
+  const cacheBudgetManager = useMemo(() => getCacheBudgetManager(), []);
   const runPanelAction = useMemo(
     () =>
       createPanelActionRunner({
@@ -151,6 +157,15 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
       }),
     [onRunActionCatalog]
   );
+
+  useEffect(() => {
+    cacheBudgetManager.register({
+      name: AGENT_MEMORY_QUERY_CACHE_BUDGET,
+      maxEntries: AGENT_MEMORY_QUERY_CACHE_MAX,
+      maxAgeMs: AGENT_MEMORY_QUERY_CACHE_TTL_MS * 4
+    });
+    cacheBudgetManager.setSize(AGENT_MEMORY_QUERY_CACHE_BUDGET, queryCacheRef.current.size);
+  }, [cacheBudgetManager]);
 
   const runActionOr = useCallback(
     (actionId: string, payload: Record<string, any>, fallback?: () => void) => {
@@ -335,7 +350,16 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
     setMemoryPresetStatus(`Deleted "${preset.name}".`);
   }, [memoryPresetId, memoryPresets]);
 
-  const loadMemory = useCallback(async () => {
+  const clearQueryCache = useCallback(() => {
+    const cache = queryCacheRef.current;
+    if (cache.size > 0) {
+      cacheBudgetManager.noteEviction(AGENT_MEMORY_QUERY_CACHE_BUDGET, cache.size, 'lru');
+      cache.clear();
+    }
+    cacheBudgetManager.setSize(AGENT_MEMORY_QUERY_CACHE_BUDGET, cache.size);
+  }, [cacheBudgetManager]);
+
+  const loadMemory = useCallback(async (opts?: { force?: boolean }) => {
     const symbolValue = String(symbol || '').trim();
     const timeframeValue = String(timeframe || '').trim();
     const kindValue = String(kind || '').trim();
@@ -356,6 +380,20 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
       category: categoryValue || undefined,
       subcategory: subcategoryValue || undefined
     };
+    const cacheKey = JSON.stringify(payload);
+    if (!opts?.force) {
+      const cached = queryCacheRef.current.get(cacheKey);
+      if (cached && Date.now() - cached.fetchedAtMs <= AGENT_MEMORY_QUERY_CACHE_TTL_MS) {
+        cacheBudgetManager.noteGet(AGENT_MEMORY_QUERY_CACHE_BUDGET, cacheKey, true);
+        setLoading(false);
+        setError(null);
+        setExportStatus(null);
+        setEntries(Array.isArray(cached.entries) ? cached.entries : []);
+        setUpdatedAtMs(cached.fetchedAtMs);
+        return;
+      }
+      cacheBudgetManager.noteGet(AGENT_MEMORY_QUERY_CACHE_BUDGET, cacheKey, false);
+    }
 
     setLoading(true);
     setError(null);
@@ -376,15 +414,24 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
         return;
       }
       const nextEntries = Array.isArray(res?.data?.memories) ? res.data.memories : [];
+      const fetchedAtMs = Date.now();
+      queryCacheRef.current.set(cacheKey, { entries: nextEntries, fetchedAtMs });
+      cacheBudgetManager.noteSet(AGENT_MEMORY_QUERY_CACHE_BUDGET, cacheKey);
+      cacheBudgetManager.apply(
+        AGENT_MEMORY_QUERY_CACHE_BUDGET,
+        queryCacheRef.current,
+        (entry) => Number(entry?.fetchedAtMs || 0) || null
+      );
+      cacheBudgetManager.setSize(AGENT_MEMORY_QUERY_CACHE_BUDGET, queryCacheRef.current.size);
       setEntries(nextEntries);
-      setUpdatedAtMs(Date.now());
+      setUpdatedAtMs(fetchedAtMs);
     } catch (err: any) {
       setError(err?.message ? String(err.message) : 'Failed to load agent memory.');
       setEntries([]);
     } finally {
       setLoading(false);
     }
-  }, [agentId, category, kind, normalizedLimit, runPanelAction, scope, subcategory, symbol, tagFilters, timeframe]);
+  }, [agentId, cacheBudgetManager, category, kind, normalizedLimit, runPanelAction, scope, subcategory, symbol, tagFilters, timeframe]);
 
   const handleUseActive = useCallback(() => {
     const nextSymbol = String(activeSymbol || '').trim();
@@ -427,7 +474,7 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
       const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
       if (detail.clear) {
         handleClearFilters();
-        if (detail.refresh) void loadMemory();
+        if (detail.refresh) void loadMemory({ force: true });
         return;
       }
       if (detail.symbol != null) setSymbol(String(detail.symbol));
@@ -444,7 +491,7 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
         if (Number.isFinite(next)) setLimit(Math.max(1, Math.min(5000, Math.floor(next))));
       }
       if (detail.useActive) handleUseActive();
-      if (detail.refresh) void loadMemory();
+      if (detail.refresh) void loadMemory({ force: true });
     };
     window.addEventListener('glass_agent_memory_filters', handler as any);
     return () => window.removeEventListener('glass_agent_memory_filters', handler as any);
@@ -495,11 +542,12 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
         setError(res?.error ? String(res.error) : 'Failed to delete memory.');
         return;
       }
+      clearQueryCache();
       setEntries((prev) => prev.filter((item) => item?.id !== id && item?.key !== key));
     } catch (err: any) {
       setError(err?.message ? String(err.message) : 'Failed to delete memory.');
     }
-  }, [runPanelAction]);
+  }, [clearQueryCache, runPanelAction]);
 
   const handleClearAll = useCallback(async () => {
     if (!window.confirm('Clear all agent memory entries?')) return;
@@ -517,12 +565,13 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
         setError(res?.error ? String(res.error) : 'Failed to clear agent memory.');
         return;
       }
+      clearQueryCache();
       setEntries([]);
       setUpdatedAtMs(Date.now());
     } catch (err: any) {
       setError(err?.message ? String(err.message) : 'Failed to clear agent memory.');
     }
-  }, [runPanelAction]);
+  }, [clearQueryCache, runPanelAction]);
 
   const buildExportPayload = useCallback(() => {
     return {
@@ -603,7 +652,7 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
     const handler = (event: any) => {
       const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
       const mode = String(detail.mode || detail.format || '').trim().toLowerCase();
-      if (detail.refresh) void loadMemory();
+      if (detail.refresh) void loadMemory({ force: true });
       if (mode === 'download' || mode === 'file') {
         downloadExport();
         return;
@@ -633,7 +682,7 @@ const AgentMemoryInterface: React.FC<AgentMemoryInterfaceProps> = ({
           )}
           <button
             type="button"
-            onClick={loadMemory}
+            onClick={() => void loadMemory({ force: true })}
             className="px-2 py-1 rounded-md text-xs bg-white/10 hover:bg-white/20 text-gray-200 flex items-center gap-1"
           >
             <RefreshCw size={12} />

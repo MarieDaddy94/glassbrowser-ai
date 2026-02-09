@@ -6,6 +6,7 @@ import { normalizeSymbolKey } from '../services/symbols';
 import { getRuntimeScheduler } from '../services/runtimeScheduler';
 import { requireBridge } from '../services/bridgeGuard';
 import { createPanelActionRunner } from '../services/panelConnectivityEngine';
+import { GLASS_EVENT, dispatchGlassEvent } from '../services/glassEvents';
 
 interface TradeLockerInstrumentSuggestion {
   tradableInstrumentId: number | null;
@@ -87,6 +88,8 @@ type TradeLockerProfile = {
   env: 'demo' | 'live';
   server: string;
   email: string;
+  accountId?: number | null;
+  accNum?: number | null;
   rememberPassword?: boolean;
   rememberDeveloperKey?: boolean;
 };
@@ -146,6 +149,8 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
         env: entry?.env === 'live' ? 'live' : 'demo',
         server: String(entry?.server || ''),
         email: String(entry?.email || ''),
+        accountId: Number.isFinite(Number(entry?.accountId)) ? Number(entry.accountId) : null,
+        accNum: Number.isFinite(Number(entry?.accNum)) ? Number(entry.accNum) : null,
         rememberPassword: entry?.rememberPassword === true,
         rememberDeveloperKey: entry?.rememberDeveloperKey === true
       }))
@@ -502,17 +507,57 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     setSavedProfileId(profileId);
     const profile = savedProfiles.find((entry) => entry.id === profileId);
     if (!profile) return;
+    try {
+      if (profile.id) localStorage.setItem(TL_ACTIVE_PROFILE_KEY, profile.id);
+    } catch {
+      // ignore storage failures
+    }
     setAddAccountEnv(profile.env === 'live' ? 'live' : 'demo');
     setAddAccountServer(profile.server);
     setAddAccountEmail(profile.email);
     setAddAccountRememberPassword(!!profile.rememberPassword);
     setAddAccountRememberDeveloperKey(!!profile.rememberDeveloperKey);
-  }, [savedProfiles]);
+    const accountId = Number.isFinite(Number(profile.accountId)) ? Number(profile.accountId) : null;
+    const accNum = Number.isFinite(Number(profile.accNum)) ? Number(profile.accNum) : null;
+    if (accountId == null || accNum == null) return;
+    const activeEnv = String(activeAccount?.env || '').trim().toLowerCase();
+    const activeServer = String(activeAccount?.server || '').trim().toLowerCase();
+    const profileEnv = String(profile.env || '').trim().toLowerCase();
+    const profileServer = String(profile.server || '').trim().toLowerCase();
+    const shouldApplyAccount = !!isConnected && activeEnv === profileEnv && activeServer === profileServer;
+    if (!shouldApplyAccount) return;
+    void runPanelAction('tradelocker.set_active_account', { accountId, accNum }, {
+      fallback: async () => {
+        try {
+          await (window as any)?.glass?.tradelocker?.setActiveAccount?.({ accountId, accNum });
+          try {
+            dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+              accountId,
+              accNum,
+              source: 'tradelocker_panel_direct',
+              atMs: Date.now()
+            });
+          } catch {
+            // ignore renderer event dispatch failures
+          }
+          onRefreshAccounts?.();
+        } catch {
+          // ignore account auto-restore errors from saved profile selection
+        }
+        return { ok: true, data: null };
+      }
+    });
+  }, [activeAccount?.env, activeAccount?.server, isConnected, onRefreshAccounts, runPanelAction, savedProfiles]);
 
-  const upsertProfile = useCallback((env: 'demo' | 'live', server: string, email: string) => {
+  const upsertProfile = useCallback((env: 'demo' | 'live', server: string, email: string, account?: {
+    accountId?: number | null;
+    accNum?: number | null;
+  }) => {
     if (!server || !email) return;
     const id = buildTradeLockerProfileId(env, server, email);
     const label = buildTradeLockerProfileLabel(env, server, email);
+    const accountId = Number.isFinite(Number(account?.accountId)) ? Number(account?.accountId) : null;
+    const accNum = Number.isFinite(Number(account?.accNum)) ? Number(account?.accNum) : null;
     const next: TradeLockerProfile[] = [
       ...savedProfiles.filter((profile) => profile.id !== id),
       {
@@ -521,6 +566,8 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         env,
         server,
         email,
+        accountId,
+        accNum,
         rememberPassword: addAccountRememberPassword,
         rememberDeveloperKey: addAccountRememberDeveloperKey
       }
@@ -569,7 +616,25 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         setAddAccountError(res?.error ? String(res.error) : 'Failed to connect.');
         return;
       }
-      upsertProfile(addAccountEnv, server, email);
+      const tlApi = (window as any)?.glass?.tradelocker;
+      let accountId = activeAccount?.accountId != null && Number.isFinite(Number(activeAccount.accountId))
+        ? Number(activeAccount.accountId)
+        : null;
+      let accNum = activeAccount?.accNum != null && Number.isFinite(Number(activeAccount.accNum))
+        ? Number(activeAccount.accNum)
+        : null;
+      try {
+        const savedCfg = await tlApi?.getSavedConfig?.();
+        if (savedCfg?.ok) {
+          const cfgAccountId = Number(savedCfg?.accountId);
+          const cfgAccNum = Number(savedCfg?.accNum);
+          if (Number.isFinite(cfgAccountId)) accountId = cfgAccountId;
+          if (Number.isFinite(cfgAccNum)) accNum = cfgAccNum;
+        }
+      } catch {
+        // ignore saved config read failures for profile persistence
+      }
+      upsertProfile(addAccountEnv, server, email, { accountId, accNum });
       setAddAccountPassword('');
       setAddAccountDeveloperKey('');
       setAddAccountOpen(false);
@@ -587,6 +652,8 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     addAccountRememberDeveloperKey,
     addAccountRememberPassword,
     addAccountServer,
+    activeAccount?.accNum,
+    activeAccount?.accountId,
     onRefreshAccounts,
     runPanelAction,
     upsertProfile
@@ -2774,7 +2841,12 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                       >
                         <option value="">Select saved login…</option>
                         {savedProfiles.map((profile) => (
-                          <option key={profile.id} value={profile.id}>{profile.label}</option>
+                          <option key={profile.id} value={profile.id}>
+                            {profile.label}
+                            {Number.isFinite(Number(profile.accountId))
+                              ? ` • acct ${Number(profile.accountId)}${Number.isFinite(Number(profile.accNum)) ? `/${Number(profile.accNum)}` : ''}`
+                              : ''}
+                          </option>
                         ))}
                       </select>
                     </div>

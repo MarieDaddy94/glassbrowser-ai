@@ -877,6 +877,7 @@ export interface ExecutionPlaybook {
 }
 
 export type TaskPlaybookMode = 'coordinate' | 'team' | 'autopilot';
+export type TaskTreeStep = string;
 
 export type TaskPlaybookStep = {
   id: string;
@@ -1487,6 +1488,10 @@ export interface PanelActionResult {
   fallbackUsed?: boolean;
   timedOut?: boolean;
   attempts?: number;
+  blocked?: boolean | null;
+  retryAfterMs?: number | null;
+  blockedReason?: string | null;
+  blockedUntilMs?: number | null;
 }
 
 export interface PanelConnectivityState {
@@ -1497,7 +1502,53 @@ export interface PanelConnectivityState {
   error?: string | null;
   updatedAt: number;
   failureCount?: number;
+  blocked?: boolean | null;
+  retryAfterMs?: number | null;
+  blockedReason?: string | null;
   blockedUntilMs?: number | null;
+}
+
+export type ExecutionSubmissionRoute = 'trade_execute' | 'ticket_execute' | 'broker_action_open';
+
+export interface ExecutionSubmissionRequest {
+  route: ExecutionSubmissionRoute;
+  executionTargets: string[];
+  snapshotAccountKey?: string | null;
+  ensureAccount: (accountKey: string, reason?: string) => Promise<{ ok: boolean; error?: string | null }>;
+  withAccountLock: <T>(fn: () => Promise<T>) => Promise<T>;
+  submitForAccount: (accountKey: string) => Promise<{
+    res: any;
+    normalized?: boolean;
+    payload?: Record<string, any> | null;
+  }>;
+  getActiveAccountKey?: () => string | null;
+  switchReason?: string | null;
+  restoreReason?: string | null;
+}
+
+export interface ExecutionSubmissionResult {
+  ok: boolean;
+  route: ExecutionSubmissionRoute;
+  attempts: number;
+  restoreAttempted: boolean;
+  restoreError?: string | null;
+  restoredAccountKey?: string | null;
+  results: Array<{
+    accountKey: string;
+    ok: boolean;
+    error?: string | null;
+    normalized: boolean;
+    payload?: Record<string, any> | null;
+    res: any;
+  }>;
+  primaryResult?: {
+    accountKey: string;
+    ok: boolean;
+    error?: string | null;
+    normalized: boolean;
+    payload?: Record<string, any> | null;
+    res: any;
+  } | null;
 }
 
 export interface CrossPanelContext {
@@ -1613,11 +1664,44 @@ export interface HealthSnapshot {
     signalScanLastDurationMs?: number | null;
     chartRefreshRequests?: number | null;
     chartRefreshCoalesced?: number | null;
+    patternWatchSyncCoalesced?: number | null;
     chartRefreshRuns?: number | null;
     chartRefreshLastDurationMs?: number | null;
     signalSnapshotWarmups?: number | null;
     signalSnapshotWarmupTimeouts?: number | null;
     signalSnapshotWarmupLastDurationMs?: number | null;
+    brokerCoordinatorRequests?: number | null;
+    brokerCoordinatorExecutions?: number | null;
+    brokerCoordinatorCacheHits?: number | null;
+    brokerCoordinatorDedupeHits?: number | null;
+    brokerCoordinatorCacheHitRate?: number | null;
+    brokerCoordinatorDedupeRate?: number | null;
+  } | null;
+  scheduler?: {
+    visible?: boolean | null;
+    taskCount?: number | null;
+    signalTaskId?: string | null;
+    signalTask?: {
+      id: string;
+      groupId: string;
+      runCount?: number | null;
+      errorCount?: number | null;
+      lastRunAtMs?: number | null;
+      lastDurationMs?: number | null;
+      paused?: boolean | null;
+      consecutiveFailures?: number | null;
+    } | null;
+    shadowTaskId?: string | null;
+    shadowTask?: {
+      id: string;
+      groupId: string;
+      runCount?: number | null;
+      errorCount?: number | null;
+      lastRunAtMs?: number | null;
+      lastDurationMs?: number | null;
+      paused?: boolean | null;
+      consecutiveFailures?: number | null;
+    } | null;
   } | null;
   cacheBudgets?: Array<{
     name: string;
@@ -1629,6 +1713,28 @@ export interface HealthSnapshot {
     ttlEvictions: number;
     hitRate: number;
   }> | null;
+  chartFrameCache?: {
+    enabled?: boolean | null;
+    entries?: number | null;
+    partitions?: string[] | null;
+    hydrate?: {
+      attempts?: number | null;
+      hits?: number | null;
+      hitRate?: number | null;
+      lastHydrateAtMs?: number | null;
+    } | null;
+    fetchMix?: {
+      full?: number | null;
+      incremental?: number | null;
+    } | null;
+    persist?: {
+      flushes?: number | null;
+      flushFailures?: number | null;
+      lastFlushAtMs?: number | null;
+      lastFlushError?: string | null;
+      lastClearAtMs?: number | null;
+    } | null;
+  } | null;
   workerFallback?: {
     updatedAtMs?: number | null;
     byDomain?: Record<string, {

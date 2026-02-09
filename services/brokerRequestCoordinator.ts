@@ -56,6 +56,10 @@ export class BrokerRequestCoordinator {
   private readonly inFlight = new Map<string, InFlightEntry>();
   private readonly cache = new Map<string, CacheEntry>();
   private maxEntries = DEFAULT_MAX_ENTRIES;
+  private requests = 0;
+  private cacheHits = 0;
+  private dedupeHits = 0;
+  private executions = 0;
 
   configure(opts?: { maxEntries?: number }) {
     const next = Number(opts?.maxEntries);
@@ -66,6 +70,7 @@ export class BrokerRequestCoordinator {
   }
 
   async run<T>(ctx: BrokerRequestContext, fn: () => Promise<T>): Promise<BrokerRequestResult<T>> {
+    this.requests += 1;
     const key = buildKey(ctx);
     const now = Date.now();
     const ttlMs = Number.isFinite(Number(ctx.maxAgeMs)) && Number(ctx.maxAgeMs) > 0
@@ -74,6 +79,7 @@ export class BrokerRequestCoordinator {
 
     const cached = this.cache.get(key);
     if (cached && cached.expiresAtMs > now) {
+      this.cacheHits += 1;
       return {
         value: cached.value as T,
         fromCache: true,
@@ -83,6 +89,7 @@ export class BrokerRequestCoordinator {
 
     const existing = this.inFlight.get(key);
     if (existing) {
+      this.dedupeHits += 1;
       const value = await existing.promise;
       return {
         value: value as T,
@@ -93,6 +100,7 @@ export class BrokerRequestCoordinator {
 
     const priority = ctx.priority || "interactive";
     const delayMs = PRIORITY_DELAY_MS[priority] ?? 10;
+    this.executions += 1;
     const promise = (async () => {
       if (delayMs > 0) {
         await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -134,10 +142,20 @@ export class BrokerRequestCoordinator {
   }
 
   getStats() {
+    const requests = Math.max(0, this.requests);
+    const cacheHits = Math.max(0, this.cacheHits);
+    const dedupeHits = Math.max(0, this.dedupeHits);
+    const executions = Math.max(0, this.executions);
     return {
       inFlight: this.inFlight.size,
       cacheEntries: this.cache.size,
-      maxEntries: this.maxEntries
+      maxEntries: this.maxEntries,
+      requests,
+      executions,
+      cacheHits,
+      dedupeHits,
+      cacheHitRate: requests > 0 ? cacheHits / requests : 0,
+      dedupeRate: requests > 0 ? dedupeHits / requests : 0
     };
   }
 
@@ -158,4 +176,3 @@ export const getBrokerRequestCoordinator = () => {
   if (!singleton) singleton = new BrokerRequestCoordinator();
   return singleton;
 };
-

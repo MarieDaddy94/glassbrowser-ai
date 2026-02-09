@@ -3,6 +3,11 @@ import type { FeatureController, FeatureControllerContext, FeatureControllerHeal
 type SignalControllerOptions = {
   tick: () => void | Promise<void>;
   intervalMs?: number;
+  taskId?: string;
+  groupId?: string;
+  jitterPct?: number;
+  visibilityMode?: "always" | "foreground" | "background";
+  priority?: "critical" | "high" | "normal" | "low";
 };
 
 export const createSignalController = (options: SignalControllerOptions): FeatureController => {
@@ -18,12 +23,12 @@ export const createSignalController = (options: SignalControllerOptions): Featur
     start(ctx: FeatureControllerContext) {
       if (dispose) return;
       dispose = ctx.scheduler.registerTask({
-        id: "controller.signal.tick",
-        groupId: "signal",
+        id: options.taskId || "controller.signal.tick",
+        groupId: options.groupId || "signal",
         intervalMs: Number(options.intervalMs || 10_000),
-        jitterPct: 0.12,
-        visibilityMode: "foreground",
-        priority: "high",
+        jitterPct: Number.isFinite(Number(options.jitterPct)) ? Number(options.jitterPct) : 0.12,
+        visibilityMode: options.visibilityMode || "foreground",
+        priority: options.priority || "high",
         run: async () => {
           try {
             await Promise.resolve(options.tick());
@@ -49,4 +54,3 @@ export const createSignalController = (options: SignalControllerOptions): Featur
     }
   };
 };
-
