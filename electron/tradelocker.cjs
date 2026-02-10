@@ -69,6 +69,85 @@ const STREAM_HEALTH_POLL_MS =
   toPositiveInt(process.env.GLASS_TRADELOCKER_STREAM_HEALTH_POLL_MS, 5_000);
 const REQUEST_CONCURRENCY =
   toPositiveInt(process.env.GLASS_TRADELOCKER_REQUEST_CONCURRENCY, 3);
+const RATE_LIMIT_WINDOW_MS =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_WINDOW_MS, 60_000);
+const RATE_LIMIT_TOP_ROUTES =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_TOP_ROUTES, 8);
+const RATE_LIMIT_ROUTE_CAP =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_ROUTE_CAP, 72);
+const RATE_LIMIT_GUARDED_THRESHOLD =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_GUARDED_THRESHOLD, 1);
+const RATE_LIMIT_COOLDOWN_THRESHOLD =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_COOLDOWN_THRESHOLD, 3);
+const RATE_LIMIT_RECOVERY_STREAK =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_RECOVERY_STREAK, 18);
+const RATE_LIMIT_MAX_INTERVAL_MS =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_MAX_INTERVAL_MS, 5_000);
+const RATE_LIMIT_ACCOUNT_CAP =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_RATE_ACCOUNT_CAP, 24);
+const RATE_LIMIT_PROFILE_DEFAULT = String(
+  process.env.GLASS_TRADELOCKER_RATE_PROFILE || 'balanced'
+).trim().toLowerCase();
+
+const RATE_LIMIT_PROFILES = Object.freeze({
+  safe: Object.freeze({
+    guardedThreshold: Math.max(1, RATE_LIMIT_GUARDED_THRESHOLD),
+    cooldownThreshold: Math.max(2, RATE_LIMIT_COOLDOWN_THRESHOLD - 1),
+    recoveryStreak: Math.max(12, RATE_LIMIT_RECOVERY_STREAK + 6),
+    maxIntervalMs: Math.max(2_500, RATE_LIMIT_MAX_INTERVAL_MS),
+    guardedIntervalMultiplier: 2.5,
+    cooldownIntervalMultiplier: 5.5,
+    guardedIntervalFloorMs: 1_400,
+    cooldownIntervalFloorMs: 2_800,
+    guardedConcurrencyDrop: 1,
+    cooldownConcurrency: 1,
+    guardedPressure: 0.72,
+    cooldownPressure: 0.95
+  }),
+  balanced: Object.freeze({
+    guardedThreshold: Math.max(1, RATE_LIMIT_GUARDED_THRESHOLD),
+    cooldownThreshold: Math.max(2, RATE_LIMIT_COOLDOWN_THRESHOLD),
+    recoveryStreak: Math.max(10, RATE_LIMIT_RECOVERY_STREAK),
+    maxIntervalMs: Math.max(2_000, RATE_LIMIT_MAX_INTERVAL_MS),
+    guardedIntervalMultiplier: 2,
+    cooldownIntervalMultiplier: 4,
+    guardedIntervalFloorMs: 1_200,
+    cooldownIntervalFloorMs: 2_200,
+    guardedConcurrencyDrop: 1,
+    cooldownConcurrency: 1,
+    guardedPressure: 0.82,
+    cooldownPressure: 1.08
+  }),
+  aggressive: Object.freeze({
+    guardedThreshold: Math.max(2, RATE_LIMIT_GUARDED_THRESHOLD + 1),
+    cooldownThreshold: Math.max(3, RATE_LIMIT_COOLDOWN_THRESHOLD + 1),
+    recoveryStreak: Math.max(8, RATE_LIMIT_RECOVERY_STREAK - 6),
+    maxIntervalMs: Math.max(1_600, Math.floor(RATE_LIMIT_MAX_INTERVAL_MS * 0.7)),
+    guardedIntervalMultiplier: 1.5,
+    cooldownIntervalMultiplier: 2.8,
+    guardedIntervalFloorMs: 900,
+    cooldownIntervalFloorMs: 1_600,
+    guardedConcurrencyDrop: 0,
+    cooldownConcurrency: 1,
+    guardedPressure: 0.96,
+    cooldownPressure: 1.22
+  })
+});
+
+const RATE_LIMIT_PROFILE_NAMES = Object.freeze(Object.keys(RATE_LIMIT_PROFILES));
+
+function normalizeRateLimitProfileName(value, fallback = RATE_LIMIT_PROFILE_DEFAULT) {
+  const preferred = String(value || '').trim().toLowerCase();
+  if (preferred && Object.prototype.hasOwnProperty.call(RATE_LIMIT_PROFILES, preferred)) return preferred;
+  const fallbackKey = String(fallback || '').trim().toLowerCase();
+  if (fallbackKey && Object.prototype.hasOwnProperty.call(RATE_LIMIT_PROFILES, fallbackKey)) return fallbackKey;
+  return 'balanced';
+}
+
+function getRateLimitProfileConfig(policy) {
+  const key = normalizeRateLimitProfileName(policy, 'balanced');
+  return RATE_LIMIT_PROFILES[key] || RATE_LIMIT_PROFILES.balanced;
+}
 
 function createQueueMetrics() {
   let maxDepth = 0;
@@ -380,6 +459,8 @@ function loadPersistedState() {
     // Ensure secrets object exists
     merged.secrets = deepMerge(DEFAULT_STATE.secrets, merged.secrets || {});
     merged.debug = normalizeDebugSettings(merged.debug);
+    merged.accountId = parseAccountIdentifier(merged.accountId);
+    merged.accNum = parseAccountIdentifier(merged.accNum);
 
     // Migration: older builds used a legacy defaultOrderQty=1000 which commonly causes broker-side risk rule rejections.
     // If the stored config still uses that legacy value, move it to the current default.
@@ -868,6 +949,13 @@ function parseNumberLoose(value) {
   if (!match) return null;
   const parsed = Number(match[0]);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseAccountIdentifier(value) {
+  const parsed = parseNumberLoose(value);
+  if (parsed == null) return null;
+  const normalized = Math.trunc(parsed);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
 }
 
 const RESOLUTION_MS = Object.freeze({
@@ -2003,10 +2091,542 @@ class TradeLockerClient {
     this.requestWakeTimer = null;
     this.lastRequestAtMs = 0;
     this.minRequestIntervalMs = 900;
+    this.baseRequestConcurrency = this.requestConcurrency;
+    this.baseMinRequestIntervalMs = this.minRequestIntervalMs;
     this.requestQueueMetrics = createQueueMetrics();
     this.rateLimitConfig = null;
     this.rateLimitBuckets = new Map();
     this.routeRateLimitedUntilMs = new Map();
+    this.rateLimitPolicy = normalizeRateLimitProfileName(RATE_LIMIT_PROFILE_DEFAULT, 'balanced');
+    this.rateLimitTelemetry = null;
+    this.rateLimitRouteStats = new Map();
+    this.rateLimitAccountStats = new Map();
+    this.resetRateLimitTelemetryState();
+  }
+
+  resetRateLimitTelemetryState() {
+    const now = nowMs();
+    const baseConcurrency = Math.max(1, Number(this.baseRequestConcurrency || REQUEST_CONCURRENCY) || 1);
+    const baseInterval = Math.max(100, Number(this.baseMinRequestIntervalMs || 900) || 900);
+    const policy = normalizeRateLimitProfileName(this.rateLimitPolicy, RATE_LIMIT_PROFILE_DEFAULT);
+    const profile = getRateLimitProfileConfig(policy);
+    this.rateLimitPolicy = policy;
+    this.requestConcurrency = baseConcurrency;
+    this.minRequestIntervalMs = baseInterval;
+    this.rateLimitTelemetry = {
+      mode: 'normal',
+      modeChangedAtMs: now,
+      policy,
+      pressure: 0,
+      policyThresholds: {
+        guardedThreshold: Number(profile.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD),
+        cooldownThreshold: Number(profile.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD),
+        guardedPressure: Number(profile.guardedPressure || 0),
+        cooldownPressure: Number(profile.cooldownPressure || 0),
+        recoveryStreak: Number(profile.recoveryStreak || RATE_LIMIT_RECOVERY_STREAK),
+        maxIntervalMs: Number(profile.maxIntervalMs || RATE_LIMIT_MAX_INTERVAL_MS)
+      },
+      windowMs: RATE_LIMIT_WINDOW_MS,
+      windowStartedAtMs: now,
+      windowRequests: 0,
+      window429: 0,
+      windowBlocked: 0,
+      totalRequests: 0,
+      total429: 0,
+      totalBlocked: 0,
+      totalErrors: 0,
+      totalSuccess: 0,
+      consecutive429: 0,
+      consecutiveSuccess: 0,
+      adaptiveMinIntervalMs: baseInterval,
+      baseMinIntervalMs: baseInterval,
+      adaptiveRequestConcurrency: baseConcurrency,
+      baseRequestConcurrency: baseConcurrency,
+      last429AtMs: 0,
+      lastSuccessAtMs: 0,
+      lastBlockedAtMs: 0,
+      lastRouteKey: null,
+      lastAccountKey: null
+    };
+    this.rateLimitRouteStats = new Map();
+    this.rateLimitAccountStats = new Map();
+  }
+
+  rotateRateLimitTelemetryWindow(now = nowMs()) {
+    if (!this.rateLimitTelemetry) return;
+    const windowMs = Math.max(5_000, Number(this.rateLimitTelemetry.windowMs || RATE_LIMIT_WINDOW_MS) || RATE_LIMIT_WINDOW_MS);
+    if (now - Number(this.rateLimitTelemetry.windowStartedAtMs || 0) < windowMs) return;
+    this.rateLimitTelemetry.windowStartedAtMs = now;
+    this.rateLimitTelemetry.windowRequests = 0;
+    this.rateLimitTelemetry.window429 = 0;
+    this.rateLimitTelemetry.windowBlocked = 0;
+    if (this.rateLimitRouteStats && this.rateLimitRouteStats.size > 0) {
+      for (const route of this.rateLimitRouteStats.values()) {
+        route.windowRequests = 0;
+        route.window429 = 0;
+        route.windowBlocked = 0;
+        if (Number(route.blockedUntilMs || 0) > 0 && Number(route.blockedUntilMs) <= now) {
+          route.blockedUntilMs = 0;
+        }
+      }
+    }
+    if (this.rateLimitAccountStats && this.rateLimitAccountStats.size > 0) {
+      for (const account of this.rateLimitAccountStats.values()) {
+        account.windowRequests = 0;
+        account.window429 = 0;
+        account.windowBlocked = 0;
+        if (Number(account.blockedUntilMs || 0) > 0 && Number(account.blockedUntilMs) <= now) {
+          account.blockedUntilMs = 0;
+        }
+      }
+    }
+  }
+
+  getRateLimitTelemetryRouteKey({ method = 'GET', pathname = '' } = {}) {
+    const routeKey = buildRouteKey(method, pathname);
+    if (routeKey) return routeKey;
+    const verb = String(method || 'GET').toUpperCase();
+    const pathKey = normalizePathForKey(pathname);
+    return `${verb} ${pathKey || '/'}`;
+  }
+
+  ensureRateLimitRouteTelemetry({ method = 'GET', pathname = '' } = {}) {
+    if (!this.rateLimitRouteStats) this.rateLimitRouteStats = new Map();
+    const key = this.getRateLimitTelemetryRouteKey({ method, pathname });
+    const verb = String(method || 'GET').toUpperCase();
+    const pathKey = normalizePathForKey(pathname);
+    const existing = this.rateLimitRouteStats.get(key);
+    if (existing) {
+      existing.method = verb;
+      if (pathKey) existing.path = pathKey;
+      return existing;
+    }
+    const next = {
+      routeKey: key,
+      method: verb,
+      path: pathKey || null,
+      windowRequests: 0,
+      window429: 0,
+      windowBlocked: 0,
+      totalRequests: 0,
+      total429: 0,
+      totalBlocked: 0,
+      lastStatus: null,
+      lastError: null,
+      lastRequestAtMs: 0,
+      last429AtMs: 0,
+      lastBlockedAtMs: 0,
+      blockedUntilMs: 0,
+      retryAfterMs: 0,
+      avgLatencyMs: null,
+      latencySamples: 0
+    };
+    this.rateLimitRouteStats.set(key, next);
+    this.trimRateLimitRouteTelemetry();
+    return next;
+  }
+
+  trimRateLimitRouteTelemetry() {
+    if (!this.rateLimitRouteStats || this.rateLimitRouteStats.size <= RATE_LIMIT_ROUTE_CAP) return;
+    const entries = Array.from(this.rateLimitRouteStats.values())
+      .sort((a, b) => Number(a.lastRequestAtMs || 0) - Number(b.lastRequestAtMs || 0));
+    const removeCount = this.rateLimitRouteStats.size - RATE_LIMIT_ROUTE_CAP;
+    for (let i = 0; i < removeCount; i += 1) {
+      const route = entries[i];
+      if (!route?.routeKey) continue;
+      this.rateLimitRouteStats.delete(route.routeKey);
+    }
+  }
+
+  getRateLimitAccountIdentity() {
+    const env = normalizeEnv(this.state?.env || 'demo');
+    const serverRaw = String(this.state?.server || '').trim();
+    const server = serverRaw ? serverRaw.toUpperCase() : null;
+    const accountId = parseAccountIdentifier(this.state?.accountId);
+    const accNum = parseAccountIdentifier(this.state?.accNum);
+    const accountKey = `${env}:${server || 'NA'}:${accountId ?? 'NA'}:${accNum ?? 'NA'}`;
+    const label = `${server || 'UNKNOWN'} (${accountId ?? '--'}/${accNum ?? '--'})`;
+    return {
+      accountKey,
+      env,
+      server,
+      accountId,
+      accNum,
+      label
+    };
+  }
+
+  ensureRateLimitAccountTelemetry() {
+    if (!this.rateLimitAccountStats) this.rateLimitAccountStats = new Map();
+    const identity = this.getRateLimitAccountIdentity();
+    const existing = this.rateLimitAccountStats.get(identity.accountKey);
+    if (existing) {
+      existing.env = identity.env;
+      existing.server = identity.server;
+      existing.accountId = identity.accountId;
+      existing.accNum = identity.accNum;
+      existing.label = identity.label;
+      return existing;
+    }
+    const row = {
+      accountKey: identity.accountKey,
+      env: identity.env,
+      server: identity.server,
+      accountId: identity.accountId,
+      accNum: identity.accNum,
+      label: identity.label,
+      windowRequests: 0,
+      window429: 0,
+      windowBlocked: 0,
+      totalRequests: 0,
+      total429: 0,
+      totalBlocked: 0,
+      lastStatus: null,
+      lastError: null,
+      lastRequestAtMs: 0,
+      last429AtMs: 0,
+      lastBlockedAtMs: 0,
+      blockedUntilMs: 0,
+      retryAfterMs: 0
+    };
+    this.rateLimitAccountStats.set(identity.accountKey, row);
+    this.trimRateLimitAccountTelemetry();
+    return row;
+  }
+
+  trimRateLimitAccountTelemetry() {
+    if (!this.rateLimitAccountStats || this.rateLimitAccountStats.size <= RATE_LIMIT_ACCOUNT_CAP) return;
+    const entries = Array.from(this.rateLimitAccountStats.values())
+      .sort((a, b) => Number(a.lastRequestAtMs || 0) - Number(b.lastRequestAtMs || 0));
+    const removeCount = this.rateLimitAccountStats.size - RATE_LIMIT_ACCOUNT_CAP;
+    for (let i = 0; i < removeCount; i += 1) {
+      const row = entries[i];
+      if (!row?.accountKey) continue;
+      this.rateLimitAccountStats.delete(row.accountKey);
+    }
+  }
+
+  noteRateLimitTelemetry({
+    method = 'GET',
+    pathname = '',
+    event = 'request',
+    status = null,
+    retryAfterMs = null,
+    blockedUntilMs = null,
+    latencyMs = null,
+    error = null
+  } = {}) {
+    if (!this.rateLimitTelemetry) this.resetRateLimitTelemetryState();
+    const now = nowMs();
+    this.rotateRateLimitTelemetryWindow(now);
+    const state = this.rateLimitTelemetry;
+    const route = this.ensureRateLimitRouteTelemetry({ method, pathname });
+    const account = this.ensureRateLimitAccountTelemetry();
+
+    route.lastRequestAtMs = now;
+    if (status != null && Number.isFinite(Number(status))) route.lastStatus = Number(status);
+    if (error != null) route.lastError = String(error);
+    if (retryAfterMs != null && Number.isFinite(Number(retryAfterMs))) {
+      route.retryAfterMs = Math.max(0, Number(retryAfterMs));
+    }
+    if (blockedUntilMs != null && Number.isFinite(Number(blockedUntilMs))) {
+      route.blockedUntilMs = Math.max(Number(route.blockedUntilMs || 0), Number(blockedUntilMs));
+    }
+    account.lastRequestAtMs = now;
+    if (status != null && Number.isFinite(Number(status))) account.lastStatus = Number(status);
+    if (error != null) account.lastError = String(error);
+    if (retryAfterMs != null && Number.isFinite(Number(retryAfterMs))) {
+      account.retryAfterMs = Math.max(0, Number(retryAfterMs));
+    }
+    if (blockedUntilMs != null && Number.isFinite(Number(blockedUntilMs))) {
+      account.blockedUntilMs = Math.max(Number(account.blockedUntilMs || 0), Number(blockedUntilMs));
+    }
+    if (latencyMs != null && Number.isFinite(Number(latencyMs)) && Number(latencyMs) >= 0) {
+      const sample = Math.max(0, Number(latencyMs));
+      route.latencySamples = Math.max(0, Number(route.latencySamples || 0)) + 1;
+      if (!Number.isFinite(Number(route.avgLatencyMs))) {
+        route.avgLatencyMs = sample;
+      } else {
+        route.avgLatencyMs = Number(route.avgLatencyMs) + (sample - Number(route.avgLatencyMs)) / route.latencySamples;
+      }
+    }
+
+    if (event === 'request') {
+      state.totalRequests += 1;
+      state.windowRequests += 1;
+      route.totalRequests += 1;
+      route.windowRequests += 1;
+      account.totalRequests += 1;
+      account.windowRequests += 1;
+    } else if (event === 'success') {
+      state.totalSuccess += 1;
+      state.consecutiveSuccess += 1;
+      state.consecutive429 = 0;
+      state.lastSuccessAtMs = now;
+    } else if (event === 'error') {
+      state.totalErrors += 1;
+      state.consecutiveSuccess = 0;
+    } else if (event === 'rate_limited') {
+      state.total429 += 1;
+      state.totalErrors += 1;
+      state.window429 += 1;
+      state.consecutive429 += 1;
+      state.consecutiveSuccess = 0;
+      state.last429AtMs = now;
+      route.total429 += 1;
+      route.window429 += 1;
+      route.last429AtMs = now;
+      account.total429 += 1;
+      account.window429 += 1;
+      account.last429AtMs = now;
+      if (blockedUntilMs != null && Number.isFinite(Number(blockedUntilMs))) {
+        route.blockedUntilMs = Math.max(Number(route.blockedUntilMs || 0), Number(blockedUntilMs));
+        account.blockedUntilMs = Math.max(Number(account.blockedUntilMs || 0), Number(blockedUntilMs));
+      }
+    } else if (event === 'blocked') {
+      state.totalBlocked += 1;
+      state.windowBlocked += 1;
+      state.lastBlockedAtMs = now;
+      route.totalBlocked += 1;
+      route.windowBlocked += 1;
+      route.lastBlockedAtMs = now;
+      account.totalBlocked += 1;
+      account.windowBlocked += 1;
+      account.lastBlockedAtMs = now;
+      if (blockedUntilMs != null && Number.isFinite(Number(blockedUntilMs))) {
+        route.blockedUntilMs = Math.max(Number(route.blockedUntilMs || 0), Number(blockedUntilMs));
+        account.blockedUntilMs = Math.max(Number(account.blockedUntilMs || 0), Number(blockedUntilMs));
+      }
+    }
+
+    state.lastRouteKey = route.routeKey || null;
+    state.lastAccountKey = account.accountKey || null;
+    this.applyRateLimitGovernor(now);
+  }
+
+  getRateLimitPolicyConfig() {
+    const policy = normalizeRateLimitProfileName(this.rateLimitPolicy, RATE_LIMIT_PROFILE_DEFAULT);
+    this.rateLimitPolicy = policy;
+    return {
+      policy,
+      profile: getRateLimitProfileConfig(policy)
+    };
+  }
+
+  computeRateLimitPressure(now = nowMs(), profile = null) {
+    if (!this.rateLimitTelemetry) return 0;
+    const activeProfile = profile || this.getRateLimitPolicyConfig().profile;
+    const state = this.rateLimitTelemetry;
+    const cooldownThreshold = Math.max(1, Number(activeProfile?.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD));
+    const guardedThreshold = Math.max(1, Number(activeProfile?.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD));
+    const window429Pressure = Number(state.window429 || 0) / cooldownThreshold;
+    const blockedPressure = Number(state.windowBlocked || 0) / Math.max(1, guardedThreshold);
+    const streakPressure = Number(state.consecutive429 || 0) / 2;
+    const queueDepth = Number(this.requestQueue?.length || 0);
+    const concurrency = Math.max(1, Number(this.requestConcurrency || this.baseRequestConcurrency || REQUEST_CONCURRENCY) || 1);
+    const queuePressure = queueDepth / Math.max(2, concurrency * 3);
+    const routePressure = this.rateLimitRouteStats && this.rateLimitRouteStats.size > 0
+      ? Array.from(this.rateLimitRouteStats.values()).reduce((max, row) => {
+          const rowPressure = Number(row?.window429 || 0) / cooldownThreshold;
+          return rowPressure > max ? rowPressure : max;
+        }, 0)
+      : 0;
+    const activeBlockBoost = Number(this.rateLimitedUntilMs || 0) > now ? 1.3 : 0;
+    const score = Math.max(
+      activeBlockBoost,
+      window429Pressure + (blockedPressure * 0.65) + (streakPressure * 0.45) + (queuePressure * 0.4) + (routePressure * 0.5)
+    );
+    return Math.max(0, Math.min(2.5, Number(score || 0)));
+  }
+
+  getRateLimitGovernorMode(now = nowMs(), profile = null) {
+    if (!this.rateLimitTelemetry) return 'normal';
+    this.rotateRateLimitTelemetryWindow(now);
+    const state = this.rateLimitTelemetry;
+    const activeProfile = profile || this.getRateLimitPolicyConfig().profile;
+    const cooldownThreshold = Math.max(1, Number(activeProfile?.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD));
+    const guardedThreshold = Math.max(1, Number(activeProfile?.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD));
+    const cooldownPressure = Math.max(0, Number(activeProfile?.cooldownPressure || 1));
+    const guardedPressure = Math.max(0, Number(activeProfile?.guardedPressure || 0));
+    const pressure = this.computeRateLimitPressure(now, activeProfile);
+    const activeGlobalBlock = Number(this.rateLimitedUntilMs || 0) > now;
+    if (
+      activeGlobalBlock ||
+      Number(state.window429 || 0) >= cooldownThreshold ||
+      Number(state.consecutive429 || 0) >= 2 ||
+      pressure >= cooldownPressure
+    ) {
+      return 'cooldown';
+    }
+    if (
+      Number(state.window429 || 0) >= guardedThreshold ||
+      Number(state.windowBlocked || 0) > 0 ||
+      pressure >= guardedPressure
+    ) {
+      return 'guarded';
+    }
+    if (state.mode !== 'normal') {
+      const last429At = Number(state.last429AtMs || 0);
+      const ageMs = last429At > 0 ? now - last429At : Number.MAX_SAFE_INTEGER;
+      const recoveryStreak = Math.max(1, Number(activeProfile?.recoveryStreak || RATE_LIMIT_RECOVERY_STREAK));
+      const windowMs = Math.max(5_000, Number(state.windowMs || RATE_LIMIT_WINDOW_MS) || RATE_LIMIT_WINDOW_MS);
+      if (ageMs < windowMs && Number(state.consecutiveSuccess || 0) < recoveryStreak) {
+        return 'guarded';
+      }
+    }
+    return 'normal';
+  }
+
+  applyRateLimitGovernor(now = nowMs()) {
+    if (!this.rateLimitTelemetry) this.resetRateLimitTelemetryState();
+    const state = this.rateLimitTelemetry;
+    const { policy, profile } = this.getRateLimitPolicyConfig();
+    const desiredMode = this.getRateLimitGovernorMode(now, profile);
+    const pressure = this.computeRateLimitPressure(now, profile);
+    const baseInterval = Math.max(100, Number(this.baseMinRequestIntervalMs || 900) || 900);
+    const baseConcurrency = Math.max(1, Number(this.baseRequestConcurrency || REQUEST_CONCURRENCY) || 1);
+    const maxIntervalMs = Math.max(baseInterval, Number(profile?.maxIntervalMs || RATE_LIMIT_MAX_INTERVAL_MS));
+    let nextInterval = baseInterval;
+    let nextConcurrency = baseConcurrency;
+
+    if (desiredMode === 'guarded') {
+      const multiplier = Math.max(1, Number(profile?.guardedIntervalMultiplier || 2));
+      const floorMs = Math.max(baseInterval, Number(profile?.guardedIntervalFloorMs || 1_000));
+      const concurrencyDrop = Math.max(0, Number(profile?.guardedConcurrencyDrop || 0));
+      nextInterval = Math.min(maxIntervalMs, Math.max(floorMs, Math.round(baseInterval * multiplier)));
+      nextConcurrency = Math.max(1, baseConcurrency - concurrencyDrop);
+    } else if (desiredMode === 'cooldown') {
+      const multiplier = Math.max(1.25, Number(profile?.cooldownIntervalMultiplier || 4));
+      const floorMs = Math.max(baseInterval, Number(profile?.cooldownIntervalFloorMs || 2_000));
+      const cooldownConcurrency = Math.max(1, Number(profile?.cooldownConcurrency || 1));
+      nextInterval = Math.min(maxIntervalMs, Math.max(floorMs, Math.round(baseInterval * multiplier)));
+      nextConcurrency = Math.min(baseConcurrency, cooldownConcurrency);
+    }
+
+    const modeChanged = state.mode !== desiredMode;
+    state.mode = desiredMode;
+    if (modeChanged) state.modeChangedAtMs = now;
+    state.policy = policy;
+    state.pressure = pressure;
+    state.policyThresholds = {
+      guardedThreshold: Math.max(1, Number(profile?.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD)),
+      cooldownThreshold: Math.max(1, Number(profile?.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD)),
+      guardedPressure: Math.max(0, Number(profile?.guardedPressure || 0)),
+      cooldownPressure: Math.max(0, Number(profile?.cooldownPressure || 1)),
+      recoveryStreak: Math.max(1, Number(profile?.recoveryStreak || RATE_LIMIT_RECOVERY_STREAK)),
+      maxIntervalMs
+    };
+    state.adaptiveMinIntervalMs = nextInterval;
+    state.baseMinIntervalMs = baseInterval;
+    state.adaptiveRequestConcurrency = nextConcurrency;
+    state.baseRequestConcurrency = baseConcurrency;
+    this.minRequestIntervalMs = nextInterval;
+    this.requestConcurrency = nextConcurrency;
+  }
+
+  getRateLimitTelemetrySnapshot() {
+    if (!this.rateLimitTelemetry) this.resetRateLimitTelemetryState();
+    const now = nowMs();
+    this.applyRateLimitGovernor(now);
+    const state = this.rateLimitTelemetry;
+    const routes = this.rateLimitRouteStats
+      ? Array.from(this.rateLimitRouteStats.values())
+          .map((route) => ({
+            routeKey: route.routeKey,
+            method: route.method || null,
+            path: route.path || null,
+            windowRequests: Number(route.windowRequests || 0),
+            window429: Number(route.window429 || 0),
+            windowBlocked: Number(route.windowBlocked || 0),
+            totalRequests: Number(route.totalRequests || 0),
+            total429: Number(route.total429 || 0),
+            totalBlocked: Number(route.totalBlocked || 0),
+            lastStatus: Number.isFinite(Number(route.lastStatus)) ? Number(route.lastStatus) : null,
+            lastError: route.lastError ? String(route.lastError) : null,
+            lastRequestAtMs: Number(route.lastRequestAtMs || 0) || null,
+            last429AtMs: Number(route.last429AtMs || 0) || null,
+            lastBlockedAtMs: Number(route.lastBlockedAtMs || 0) || null,
+            blockedUntilMs: Number(route.blockedUntilMs || 0) || null,
+            retryAfterMs: Number(route.retryAfterMs || 0) || null,
+              avgLatencyMs: Number.isFinite(Number(route.avgLatencyMs)) ? Number(route.avgLatencyMs) : null
+            }))
+          .sort((a, b) => {
+            if (b.window429 !== a.window429) return b.window429 - a.window429;
+            if (b.windowBlocked !== a.windowBlocked) return b.windowBlocked - a.windowBlocked;
+            if (b.total429 !== a.total429) return b.total429 - a.total429;
+            return Number(b.lastRequestAtMs || 0) - Number(a.lastRequestAtMs || 0);
+          })
+      : [];
+    const accounts = this.rateLimitAccountStats
+      ? Array.from(this.rateLimitAccountStats.values())
+          .map((row) => ({
+            accountKey: String(row.accountKey || ''),
+            env: row.env || null,
+            server: row.server || null,
+            accountId: Number.isFinite(Number(row.accountId)) ? Number(row.accountId) : null,
+            accNum: Number.isFinite(Number(row.accNum)) ? Number(row.accNum) : null,
+            label: row.label ? String(row.label) : null,
+            windowRequests: Number(row.windowRequests || 0),
+            window429: Number(row.window429 || 0),
+            windowBlocked: Number(row.windowBlocked || 0),
+            totalRequests: Number(row.totalRequests || 0),
+            total429: Number(row.total429 || 0),
+            totalBlocked: Number(row.totalBlocked || 0),
+            lastStatus: Number.isFinite(Number(row.lastStatus)) ? Number(row.lastStatus) : null,
+            lastError: row.lastError ? String(row.lastError) : null,
+            lastRequestAtMs: Number(row.lastRequestAtMs || 0) || null,
+            last429AtMs: Number(row.last429AtMs || 0) || null,
+            lastBlockedAtMs: Number(row.lastBlockedAtMs || 0) || null,
+            blockedUntilMs: Number(row.blockedUntilMs || 0) || null,
+            retryAfterMs: Number(row.retryAfterMs || 0) || null
+          }))
+          .sort((a, b) => {
+            if (b.window429 !== a.window429) return b.window429 - a.window429;
+            if (b.windowBlocked !== a.windowBlocked) return b.windowBlocked - a.windowBlocked;
+            if (b.total429 !== a.total429) return b.total429 - a.total429;
+            return Number(b.lastRequestAtMs || 0) - Number(a.lastRequestAtMs || 0);
+          })
+      : [];
+
+    return {
+      mode: state.mode || 'normal',
+      modeChangedAtMs: Number(state.modeChangedAtMs || now),
+      policy: normalizeRateLimitProfileName(state.policy, this.rateLimitPolicy),
+      pressure: Number.isFinite(Number(state.pressure)) ? Number(state.pressure) : 0,
+      policyThresholds: state.policyThresholds && typeof state.policyThresholds === 'object'
+        ? {
+            guardedThreshold: Math.max(1, Number(state.policyThresholds.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD)),
+            cooldownThreshold: Math.max(1, Number(state.policyThresholds.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD)),
+            guardedPressure: Math.max(0, Number(state.policyThresholds.guardedPressure || 0)),
+            cooldownPressure: Math.max(0, Number(state.policyThresholds.cooldownPressure || 1)),
+            recoveryStreak: Math.max(1, Number(state.policyThresholds.recoveryStreak || RATE_LIMIT_RECOVERY_STREAK)),
+            maxIntervalMs: Math.max(100, Number(state.policyThresholds.maxIntervalMs || RATE_LIMIT_MAX_INTERVAL_MS))
+          }
+        : null,
+      windowMs: Number(state.windowMs || RATE_LIMIT_WINDOW_MS),
+      windowStartedAtMs: Number(state.windowStartedAtMs || now),
+      windowRequests: Number(state.windowRequests || 0),
+      window429: Number(state.window429 || 0),
+      windowBlocked: Number(state.windowBlocked || 0),
+      totalRequests: Number(state.totalRequests || 0),
+      total429: Number(state.total429 || 0),
+      totalBlocked: Number(state.totalBlocked || 0),
+      totalErrors: Number(state.totalErrors || 0),
+      totalSuccess: Number(state.totalSuccess || 0),
+      consecutive429: Number(state.consecutive429 || 0),
+      consecutiveSuccess: Number(state.consecutiveSuccess || 0),
+      adaptiveMinIntervalMs: Number(state.adaptiveMinIntervalMs || this.minRequestIntervalMs || 0),
+      baseMinIntervalMs: Number(state.baseMinIntervalMs || this.baseMinRequestIntervalMs || 0),
+      adaptiveRequestConcurrency: Number(state.adaptiveRequestConcurrency || this.requestConcurrency || 0),
+      baseRequestConcurrency: Number(state.baseRequestConcurrency || this.baseRequestConcurrency || 0),
+      last429AtMs: Number(state.last429AtMs || 0) || null,
+      lastSuccessAtMs: Number(state.lastSuccessAtMs || 0) || null,
+      lastBlockedAtMs: Number(state.lastBlockedAtMs || 0) || null,
+      lastRouteKey: state.lastRouteKey || null,
+      lastAccountKey: state.lastAccountKey || null,
+      topRoutes: routes.slice(0, Math.max(1, RATE_LIMIT_TOP_ROUTES)),
+      topAccounts: accounts.slice(0, Math.max(1, Math.min(8, RATE_LIMIT_ACCOUNT_CAP)))
+    };
   }
 
   applyRateLimitConfig(config) {
@@ -2190,9 +2810,19 @@ class TradeLockerClient {
     const pathname = opts?.pathname ?? '';
     const priority = this.getRequestPriority({ method, pathname, priority: opts?.priority });
     const now = nowMs();
+    this.applyRateLimitGovernor(now);
     const blockUntil = this.getRateLimitBlockUntilMs({ method, pathname });
     if (blockUntil && blockUntil > now && priority <= REQUEST_PRIORITY.HIGH) {
       const retryAfterMs = blockUntil - now;
+      this.noteRateLimitTelemetry({
+        method,
+        pathname,
+        event: 'blocked',
+        status: 429,
+        retryAfterMs,
+        blockedUntilMs: blockUntil,
+        error: 'throttle_blocked'
+      });
       return Promise.reject(
         new HttpError(`TradeLocker rate limited. Retry in ${Math.ceil(retryAfterMs / 1000)}s.`, {
           status: 429,
@@ -2247,6 +2877,16 @@ class TradeLockerClient {
 
     const globalBucket = this.rateLimitBuckets?.get?.('global');
     if (globalBucket) globalBucket.blockUntil(until);
+
+    this.noteRateLimitTelemetry({
+      method,
+      pathname,
+      event: 'rate_limited',
+      status: 429,
+      retryAfterMs: cooldownMs,
+      blockedUntilMs: until,
+      error: 'http_429'
+    });
   }
 
 
@@ -2318,7 +2958,40 @@ class TradeLockerClient {
     return custom || authUrlForEnv();
   }
 
+  getRateLimitPolicy() {
+    const { policy, profile } = this.getRateLimitPolicyConfig();
+    return {
+      ok: true,
+      policy,
+      profile: {
+        guardedThreshold: Math.max(1, Number(profile?.guardedThreshold || RATE_LIMIT_GUARDED_THRESHOLD)),
+        cooldownThreshold: Math.max(1, Number(profile?.cooldownThreshold || RATE_LIMIT_COOLDOWN_THRESHOLD)),
+        guardedPressure: Math.max(0, Number(profile?.guardedPressure || 0)),
+        cooldownPressure: Math.max(0, Number(profile?.cooldownPressure || 1)),
+        recoveryStreak: Math.max(1, Number(profile?.recoveryStreak || RATE_LIMIT_RECOVERY_STREAK)),
+        maxIntervalMs: Math.max(100, Number(profile?.maxIntervalMs || RATE_LIMIT_MAX_INTERVAL_MS)),
+        guardedIntervalMultiplier: Math.max(1, Number(profile?.guardedIntervalMultiplier || 2)),
+        cooldownIntervalMultiplier: Math.max(1.25, Number(profile?.cooldownIntervalMultiplier || 4)),
+        guardedConcurrencyDrop: Math.max(0, Number(profile?.guardedConcurrencyDrop || 0)),
+        cooldownConcurrency: Math.max(1, Number(profile?.cooldownConcurrency || 1))
+      },
+      availablePolicies: RATE_LIMIT_PROFILE_NAMES.slice()
+    };
+  }
+
+  setRateLimitPolicy(input = {}) {
+    const nextPolicy = normalizeRateLimitProfileName(input?.policy, this.rateLimitPolicy);
+    this.rateLimitPolicy = nextPolicy;
+    this.applyRateLimitGovernor(nowMs());
+    const current = this.getRateLimitPolicy();
+    return {
+      ok: true,
+      ...current
+    };
+  }
+
   getStatus() {
+    this.applyRateLimitGovernor(nowMs());
     const queueMetrics = this.requestQueueMetrics ? this.requestQueueMetrics.snapshot() : { maxDepth: 0, maxWaitMs: 0 };
     return {
       ok: true,
@@ -2342,7 +3015,10 @@ class TradeLockerClient {
       requestQueueMaxWaitMs: queueMetrics.maxWaitMs,
       requestInFlight: this.requestInFlightCount || 0,
       requestConcurrency: this.requestConcurrency,
-      minRequestIntervalMs: this.minRequestIntervalMs || 0
+      minRequestIntervalMs: this.minRequestIntervalMs || 0,
+      rateLimitPolicy: this.rateLimitPolicy,
+      rateLimitPolicies: RATE_LIMIT_PROFILE_NAMES.slice(),
+      rateLimitTelemetry: this.getRateLimitTelemetrySnapshot()
     };
   }
 
@@ -3100,8 +3776,8 @@ class TradeLockerClient {
       server: this.state.server || '',
       email: this.state.email || '',
       autoConnect: !!this.state.autoConnect,
-      accountId: this.state.accountId,
-      accNum: this.state.accNum,
+      accountId: parseAccountIdentifier(this.state.accountId),
+      accNum: parseAccountIdentifier(this.state.accNum),
       tradingEnabled: !!this.state.tradingEnabled,
       autoPilotEnabled: !!this.state.autoPilotEnabled,
       defaultOrderQty: this.state.defaultOrderQty,
@@ -3126,6 +3802,8 @@ class TradeLockerClient {
     next.env = normalizeEnv(next.env);
     next.apiBaseUrl = normalizeBaseUrl(next.apiBaseUrl);
     next.authBaseUrl = normalizeBaseUrl(next.authBaseUrl);
+    next.accountId = parseAccountIdentifier(next.accountId);
+    next.accNum = parseAccountIdentifier(next.accNum);
     if (!['market', 'limit', 'stop'].includes(String(next.defaultOrderType || '').toLowerCase())) {
       next.defaultOrderType = DEFAULT_STATE.defaultOrderType;
     }
@@ -3147,6 +3825,8 @@ class TradeLockerClient {
     const env = normalizeEnv(opts?.env);
     const server = String(opts?.server || this.state.server || '').trim();
     const email = String(opts?.email || this.state.email || '').trim();
+    const requestedAccountId = parseAccountIdentifier(opts?.accountId);
+    const requestedAccNum = parseAccountIdentifier(opts?.accNum);
 
     const rememberPassword = opts?.rememberPassword === true;
     const rememberDeveloperApiKey = opts?.rememberDeveloperApiKey === true;
@@ -3164,11 +3844,24 @@ class TradeLockerClient {
 
     this.lastError = null;
 
+    const prevEnv = normalizeEnv(this.state.env);
+    const prevServer = String(this.state.server || '').trim().toLowerCase();
+    const prevEmail = String(this.state.email || '').trim().toLowerCase();
+    const nextServer = String(server || '').trim().toLowerCase();
+    const nextEmail = String(email || '').trim().toLowerCase();
+    const contextChanged = prevEnv !== env || prevServer !== nextServer || prevEmail !== nextEmail;
+    const currentAccountId = parseAccountIdentifier(this.state.accountId);
+    const currentAccNum = parseAccountIdentifier(this.state.accNum);
+    const nextAccountId = requestedAccountId != null ? requestedAccountId : (contextChanged ? null : currentAccountId);
+    const nextAccNum = requestedAccNum != null ? requestedAccNum : (contextChanged ? null : currentAccNum);
+
     // Update persisted non-secret config immediately
     this.updateSavedConfig({
       env,
       server,
-      email
+      email,
+      accountId: nextAccountId,
+      accNum: nextAccNum
     });
 
     const warnings = [];
@@ -3298,6 +3991,7 @@ class TradeLockerClient {
       this.rateLimitConfig = null;
       this.rateLimitBuckets = new Map();
       this.routeRateLimitedUntilMs = new Map();
+      this.resetRateLimitTelemetryState();
       this.instruments = null;
       this.instrumentsByTradableId = new Map();
       this.instrumentsByNameLower = new Map();
@@ -3314,26 +4008,28 @@ class TradeLockerClient {
         const accounts = Array.isArray(accountsJson?.accounts) ? accountsJson.accounts : [];
         this.accountsCache = { accounts, fetchedAtMs: nowMs() };
 
-        const hasAccountId = Number.isFinite(Number(this.state.accountId));
-        const hasAccNum = Number.isFinite(Number(this.state.accNum));
+        const activeAccountId = parseAccountIdentifier(this.state.accountId);
+        const activeAccNum = parseAccountIdentifier(this.state.accNum);
+        const hasAccountId = activeAccountId != null;
+        const hasAccNum = activeAccNum != null;
 
         const match = accounts.find((a) => {
-          const aId = Number(a?.id);
-          const aAccNum = Number(a?.accNum);
-          if (hasAccountId && Number.isFinite(aId) && aId === Number(this.state.accountId)) return true;
-          if (hasAccNum && Number.isFinite(aAccNum) && aAccNum === Number(this.state.accNum)) return true;
+          const aId = parseAccountIdentifier(a?.id);
+          const aAccNum = parseAccountIdentifier(a?.accNum);
+          if (hasAccountId && aId != null && aId === activeAccountId) return true;
+          if (hasAccNum && aAccNum != null && aAccNum === activeAccNum) return true;
           return false;
         });
 
-        if (match && Number.isFinite(Number(match.id)) && Number.isFinite(Number(match.accNum))) {
-          this.state.accountId = Number(match.id);
-          this.state.accNum = Number(match.accNum);
+        if (match && parseAccountIdentifier(match.id) != null && parseAccountIdentifier(match.accNum) != null) {
+          this.state.accountId = parseAccountIdentifier(match.id);
+          this.state.accNum = parseAccountIdentifier(match.accNum);
           persistState(this.state);
         } else if ((!hasAccountId || !hasAccNum) && accounts.length === 1) {
           const only = accounts[0];
-          if (Number.isFinite(Number(only?.id)) && Number.isFinite(Number(only?.accNum))) {
-            this.state.accountId = Number(only.id);
-            this.state.accNum = Number(only.accNum);
+          if (parseAccountIdentifier(only?.id) != null && parseAccountIdentifier(only?.accNum) != null) {
+            this.state.accountId = parseAccountIdentifier(only.id);
+            this.state.accNum = parseAccountIdentifier(only.accNum);
             persistState(this.state);
           }
         }
@@ -3375,6 +4071,7 @@ class TradeLockerClient {
     this.rateLimitConfig = null;
     this.rateLimitBuckets = new Map();
     this.routeRateLimitedUntilMs = new Map();
+    this.resetRateLimitTelemetryState();
     this.instruments = null;
     this.instrumentsByTradableId = new Map();
     this.instrumentsByNameLower = new Map();
@@ -3401,8 +4098,8 @@ class TradeLockerClient {
   }
 
   setActiveAccount({ accountId, accNum }) {
-    const parsedAccountId = Number.isFinite(Number(accountId)) ? Number(accountId) : null;
-    const parsedAccNum = Number.isFinite(Number(accNum)) ? Number(accNum) : null;
+    const parsedAccountId = parseAccountIdentifier(accountId);
+    const parsedAccNum = parseAccountIdentifier(accNum);
     this.state.accountId = parsedAccountId;
     this.state.accNum = parsedAccNum;
     persistState(this.state);
@@ -3413,6 +4110,7 @@ class TradeLockerClient {
     this.dailyBarCache = new Map();
     this.historyCache = new Map();
     this.infoRouteCache = new Map();
+    this.resetRateLimitTelemetryState();
     return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum };
   }
 
@@ -3608,7 +4306,7 @@ class TradeLockerClient {
 
       await this.ensureAccessTokenValid();
       const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
-      if (includeAccNumFinal && !Number.isFinite(Number(this.state.accNum))) {
+      if (includeAccNumFinal && parseAccountIdentifier(this.state.accNum) == null) {
         await this.ensureAccountContext();
       }
       const url = `${this.getBaseUrl()}${pathname.startsWith('/') ? '' : '/'}${pathname}`;
@@ -3619,6 +4317,8 @@ class TradeLockerClient {
       const hasBody = body !== undefined;
       if (hasBody) finalHeaders['content-type'] = 'application/json';
 
+      const requestStartedAtMs = nowMs();
+      this.noteRateLimitTelemetry({ method, pathname, event: 'request' });
       let res = null;
       try {
         res = await fetch(url, {
@@ -3630,6 +4330,14 @@ class TradeLockerClient {
         const msg = redactErrorMessage(e?.message || String(e));
         this.lastError = msg;
         this.noteUpstreamFailure(0, msg);
+        this.noteRateLimitTelemetry({
+          method,
+          pathname,
+          event: 'error',
+          status: 0,
+          latencyMs: nowMs() - requestStartedAtMs,
+          error: msg
+        });
         throw new HttpError(msg, { status: 0, code: 'UPSTREAM_UNAVAILABLE' });
       }
 
@@ -3666,6 +4374,16 @@ class TradeLockerClient {
         })();
         if (res.status === 429) {
           this.noteRateLimitHit({ method, pathname, retryAfterMs });
+        } else {
+          this.noteRateLimitTelemetry({
+            method,
+            pathname,
+            event: 'error',
+            status: res.status,
+            retryAfterMs,
+            latencyMs: nowMs() - requestStartedAtMs,
+            error: errWithEndpoint
+          });
         }
         if (isUpstreamStatus(res.status)) {
           this.noteUpstreamFailure(res.status, errWithEndpoint);
@@ -3677,6 +4395,13 @@ class TradeLockerClient {
         });
       }
       this.noteUpstreamSuccess();
+      this.noteRateLimitTelemetry({
+        method,
+        pathname,
+        event: 'success',
+        status: res.status,
+        latencyMs: nowMs() - requestStartedAtMs
+      });
       return json;
     }, { method, pathname });
   }
@@ -3705,7 +4430,7 @@ class TradeLockerClient {
         try {
           await this.ensureAccessTokenValid();
           const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
-          if (includeAccNumFinal && !Number.isFinite(Number(this.state.accNum))) {
+          if (includeAccNumFinal && parseAccountIdentifier(this.state.accNum) == null) {
             await this.ensureAccountContext();
           }
         } catch (e) {
@@ -3735,6 +4460,8 @@ class TradeLockerClient {
         const hasBody = body !== undefined;
         if (hasBody) finalHeaders['content-type'] = 'application/json';
 
+        const requestStartedAtMs = nowMs();
+        this.noteRateLimitTelemetry({ method, pathname, event: 'request' });
         let res = null;
         try {
           res = await fetch(url, {
@@ -3746,6 +4473,14 @@ class TradeLockerClient {
           const msg = redactErrorMessage(e?.message || String(e));
           this.lastError = msg;
           this.noteUpstreamFailure(0, msg);
+          this.noteRateLimitTelemetry({
+            method,
+            pathname,
+            event: 'error',
+            status: 0,
+            latencyMs: nowMs() - requestStartedAtMs,
+            error: msg
+          });
           return { ok: false, status: 0, statusText: 'Network Error', error: msg, code: 'UPSTREAM_UNAVAILABLE', url, headers: {}, text: '', json: null };
         }
 
@@ -3787,6 +4522,17 @@ class TradeLockerClient {
           const endpoint = `${method} ${pathname.startsWith('/') ? pathname : `/${pathname}`}`;
           out.error = `${err} [${endpoint}]`;
           this.lastError = out.error;
+          if (res.status !== 429) {
+            this.noteRateLimitTelemetry({
+              method,
+              pathname,
+              event: 'error',
+              status: res.status,
+              retryAfterMs,
+              latencyMs: nowMs() - requestStartedAtMs,
+              error: out.error
+            });
+          }
           if (isUpstreamStatus(res.status)) {
             this.noteUpstreamFailure(res.status, out.error);
             out.code = 'UPSTREAM_UNAVAILABLE';
@@ -3795,7 +4541,16 @@ class TradeLockerClient {
           }
         }
 
-        if (res.ok) this.noteUpstreamSuccess();
+        if (res.ok) {
+          this.noteUpstreamSuccess();
+          this.noteRateLimitTelemetry({
+            method,
+            pathname,
+            event: 'success',
+            status: res.status,
+            latencyMs: nowMs() - requestStartedAtMs
+          });
+        }
         return out;
       }, { method, pathname });
     } catch (e) {
@@ -3860,10 +4615,10 @@ class TradeLockerClient {
   }
 
   async ensureAccountContext() {
-    const accountId = Number(this.state.accountId);
-    const accNum = Number(this.state.accNum);
-    const hasAccountId = Number.isFinite(accountId);
-    const hasAccNum = Number.isFinite(accNum);
+    const accountId = parseAccountIdentifier(this.state.accountId);
+    const accNum = parseAccountIdentifier(this.state.accNum);
+    const hasAccountId = accountId != null;
+    const hasAccNum = accNum != null;
     if (hasAccountId && hasAccNum) return { ok: true, accountId, accNum };
 
     const accounts = await this.ensureAllAccountsCache(60_000);
@@ -3877,9 +4632,9 @@ class TradeLockerClient {
       };
     }
     const selected = this.findSelectedAccount(accounts);
-    if (selected && Number.isFinite(Number(selected.id)) && Number.isFinite(Number(selected.accNum))) {
-      this.state.accountId = Number(selected.id);
-      this.state.accNum = Number(selected.accNum);
+    if (selected && parseAccountIdentifier(selected.id) != null && parseAccountIdentifier(selected.accNum) != null) {
+      this.state.accountId = parseAccountIdentifier(selected.id);
+      this.state.accNum = parseAccountIdentifier(selected.accNum);
       persistState(this.state);
       return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum };
     }
@@ -3889,16 +4644,16 @@ class TradeLockerClient {
 
   findSelectedAccount(accounts) {
     const safeAccounts = Array.isArray(accounts) ? accounts : [];
-    const accountId = Number(this.state.accountId);
-    const accNum = Number(this.state.accNum);
-    const hasAccountId = Number.isFinite(accountId);
-    const hasAccNum = Number.isFinite(accNum);
+    const accountId = parseAccountIdentifier(this.state.accountId);
+    const accNum = parseAccountIdentifier(this.state.accNum);
+    const hasAccountId = accountId != null;
+    const hasAccNum = accNum != null;
 
     const match = safeAccounts.find((a) => {
-      const aId = Number(a?.id);
-      const aAccNum = Number(a?.accNum);
-      if (hasAccountId && Number.isFinite(aId) && aId === accountId) return true;
-      if (hasAccNum && Number.isFinite(aAccNum) && aAccNum === accNum) return true;
+      const aId = parseAccountIdentifier(a?.id);
+      const aAccNum = parseAccountIdentifier(a?.accNum);
+      if (hasAccountId && aId != null && aId === accountId) return true;
+      if (hasAccNum && aAccNum != null && aAccNum === accNum) return true;
       return false;
     });
 
@@ -4166,11 +4921,13 @@ class TradeLockerClient {
     // Fallback: /auth/jwt/all-accounts sometimes contains the most reliable account balance.
     try {
       const accounts = await this.ensureAllAccountsCache(60_000);
+      const activeAccountId = parseAccountIdentifier(this.state.accountId);
+      const activeAccNum = parseAccountIdentifier(this.state.accNum);
       const selected = accounts.find((a) => {
-        const aId = Number(a?.id);
-        const aAccNum = Number(a?.accNum);
-        if (Number.isFinite(Number(this.state.accountId)) && Number.isFinite(aId) && aId === Number(this.state.accountId)) return true;
-        if (Number.isFinite(Number(this.state.accNum)) && Number.isFinite(aAccNum) && aAccNum === Number(this.state.accNum)) return true;
+        const aId = parseAccountIdentifier(a?.id);
+        const aAccNum = parseAccountIdentifier(a?.accNum);
+        if (activeAccountId != null && aId != null && aId === activeAccountId) return true;
+        if (activeAccNum != null && aAccNum != null && aAccNum === activeAccNum) return true;
         return false;
       });
       const fallbackBalance = parseNumberLoose(selected?.aaccountBalance ?? selected?.accountBalance ?? selected?.balance);

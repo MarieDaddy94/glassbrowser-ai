@@ -183,8 +183,8 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
               {tlProfiles.map((profile: any) => (
                 <option key={profile.id} value={profile.id}>
                   {profile.label}
-                  {Number.isFinite(Number(profile?.accountId))
-                    ? ` • acct ${Number(profile.accountId)}${Number.isFinite(Number(profile?.accNum)) ? `/${Number(profile.accNum)}` : ''}`
+                  {Number.isFinite(Number(profile?.accountId)) && Number(profile.accountId) > 0
+                    ? ` • acct ${Number(profile.accountId)}${Number.isFinite(Number(profile?.accNum)) && Number(profile.accNum) > 0 ? `/${Number(profile.accNum)}` : ''}`
                     : ''}
                 </option>
               ))}

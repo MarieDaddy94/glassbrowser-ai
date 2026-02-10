@@ -1,7 +1,7 @@
 {
   "name": "glassbrowser-ai",
   "private": true,
-  "version": "0.1.223",
+  "version": "0.1.229",
   "type": "module",
   "description": "GlassBrowser AI — a desktop AI trading browser with a Gemini-powered side panel.",
   "author": "GlassBrowser AI Team",

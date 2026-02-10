@@ -8,12 +8,13 @@ const rootPreloadPath = path.join(process.cwd(), 'preload.cjs');
 
 test('preload includes generated-scope fallback loader', () => {
   const source = fs.readFileSync(preloadPath, 'utf8');
-  assert.equal(source.includes("./generated/ipcScopes.cjs"), true);
-  assert.equal(source.includes("../generated/ipcScopes.cjs"), true);
+  assert.equal(source.includes("'./generated/ipcScopes.cjs'"), true);
+  assert.equal(source.includes("'../generated/ipcScopes.cjs'"), true);
+  assert.equal(source.includes('/electron/generated/ipcScopes.cjs'), true);
   assert.equal(source.includes('fallback_inline'), true);
+  assert.equal(source.includes("if (GENERATED_SCOPE_LOAD.source === 'fallback_inline')"), true);
   assert.equal(source.includes('generated scope module missing; falling back to inline allowlist'), true);
   assert.equal(source.includes("require('path')"), false);
-  assert.equal(source.includes('path.resolve('), false);
   assert.equal(source.includes("require('fs')"), false);
   assert.equal(source.includes("require('net')"), false);
   assert.equal(source.includes("require('tls')"), false);

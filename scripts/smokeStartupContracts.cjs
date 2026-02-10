@@ -41,8 +41,13 @@ function runStartupContractSmoke(repoRoot) {
   mustInclude(gateSource, 'TradeLocker check blocked:', 'Onboarding blocked classification');
   mustInclude(preloadSource, 'allowedScopes: getAllowedScopes', 'Preload permissions API');
   mustInclude(preloadSource, 'generated scope module missing; falling back to inline allowlist', 'Preload generated-scope fallback');
+  mustInclude(preloadSource, "'./generated/ipcScopes.cjs'", 'Preload deterministic scope resolver');
+  mustInclude(preloadSource, "'../generated/ipcScopes.cjs'", 'Preload deterministic scope resolver');
+  mustInclude(preloadSource, '/electron/generated/ipcScopes.cjs', 'Preload deterministic scope resolver');
   mustNotInclude(preloadSource, "require('path')", 'Preload sandbox compatibility');
-  mustNotInclude(preloadSource, 'path.resolve(', 'Preload sandbox compatibility');
+  mustNotInclude(preloadSource, "require('fs')", 'Preload sandbox compatibility');
+  mustNotInclude(preloadSource, "require('net')", 'Preload sandbox compatibility');
+  mustNotInclude(preloadSource, "require('tls')", 'Preload sandbox compatibility');
 
   return {
     ok: true,

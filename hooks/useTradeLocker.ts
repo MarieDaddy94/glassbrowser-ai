@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerOrderHistory, TradeLockerQuote } from "../types";
+import { Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerOrderHistory, TradeLockerQuote, TradeLockerRateLimitTelemetry } from "../types";
 import { normalizeSymbolKey, normalizeSymbolLoose } from "../services/symbols";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
@@ -86,6 +86,13 @@ function readNumber(value: any): number | null {
   if (value == null || value === "") return null;
   const n = typeof value === "number" ? value : Number(String(value).replace(/,/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+function parseTradeLockerAccountId(value: any): number | null {
+  const parsed = readNumber(value);
+  if (parsed == null) return null;
+  const normalized = Math.trunc(parsed);
+  return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
 }
 
 function normalizeSide(value: any): "BUY" | "SELL" {
@@ -413,8 +420,8 @@ function mergeOrdersFromStream(prev: TradeLockerOrder[], rawList: any[], replace
 function mapStreamAccountMetrics(raw: any, prev: TradeLockerAccountMetrics | null, atMs: number): TradeLockerAccountMetrics | null {
   if (!raw && !prev) return null;
 
-  const accountId = readNumber(pickFirstValue(raw, ["accountId", "id"])) ?? prev?.accountId ?? null;
-  const accNum = readNumber(pickFirstValue(raw, ["accNum", "accountNumber"])) ?? prev?.accNum ?? null;
+  const accountId = parseTradeLockerAccountId(pickFirstValue(raw, ["accountId", "id"])) ?? prev?.accountId ?? null;
+  const accNum = parseTradeLockerAccountId(pickFirstValue(raw, ["accNum", "accountNumber"])) ?? prev?.accNum ?? null;
   const currency = pickFirstValue(raw, ["currency", "accountCurrency", "baseCurrency"]) ?? prev?.currency ?? null;
 
   const balance = readNumber(pickFirstValue(raw, ["balance", "accountBalance", "cash", "cashBalance"])) ?? prev?.balance ?? 0;
@@ -510,6 +517,29 @@ function mapStreamAccountMetrics(raw: any, prev: TradeLockerAccountMetrics | nul
   };
 }
 
+const clampMs = (value: number, minMs: number, maxMs: number) => {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return minMs;
+  return Math.max(minMs, Math.min(maxMs, Math.round(next)));
+};
+
+const scaleByRateLimitGovernor = (
+  baseMs: number,
+  mode: string | null | undefined,
+  adaptiveMinIntervalMs: number,
+  opts?: { minMs?: number; maxMs?: number; modeWeight?: number }
+) => {
+  const base = Math.max(250, Math.round(Number(baseMs) || 0));
+  const floor = Math.max(0, Math.round(Number(adaptiveMinIntervalMs) || 0));
+  const modeKey = String(mode || "").toLowerCase();
+  const weight = Number.isFinite(Number(opts?.modeWeight)) ? Math.max(0.25, Number(opts?.modeWeight)) : 1;
+  const modeFactor = modeKey === "cooldown" ? (1.5 * weight) : modeKey === "guarded" ? (1.2 * weight) : 1;
+  const candidate = Math.max(base, floor > 0 ? floor * modeFactor : base);
+  const minMs = Math.max(250, Math.round(Number(opts?.minMs) || 0) || base);
+  const maxMs = Math.max(minMs, Math.round(Number(opts?.maxMs) || 0) || Math.max(candidate, base * 8));
+  return clampMs(candidate, minMs, maxMs);
+};
+
 export function useTradeLocker(
   isActive: boolean,
   opts?: {
@@ -532,6 +562,9 @@ export function useTradeLocker(
     requestInFlight?: number | null;
     requestConcurrency?: number | null;
     minRequestIntervalMs?: number | null;
+    rateLimitPolicy?: 'safe' | 'balanced' | 'aggressive' | null;
+    rateLimitPolicies?: Array<'safe' | 'balanced' | 'aggressive'> | null;
+    rateLimitTelemetry?: TradeLockerRateLimitTelemetry | null;
   } | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
 
@@ -794,6 +827,16 @@ export function useTradeLocker(
     return `${seconds}s`;
   }, []);
 
+  const rateLimitGovernorMode = String(statusMeta?.rateLimitTelemetry?.mode || "normal").trim().toLowerCase();
+  const adaptiveMinIntervalMs = Math.max(
+    0,
+    toNumber(
+      statusMeta?.rateLimitTelemetry?.adaptiveMinIntervalMs,
+      toNumber(statusMeta?.minRequestIntervalMs, 0)
+    )
+  );
+  const adaptivePressure = Math.max(0, toNumber(statusMeta?.rateLimitTelemetry?.pressure, 0));
+
   useEffect(() => {
     if (!rateLimitedUntilMs) return;
     const now = Date.now();
@@ -863,7 +906,23 @@ export function useTradeLocker(
           requestQueueMaxWaitMs: readNumber(res?.requestQueueMaxWaitMs),
           requestInFlight: readNumber(res?.requestInFlight),
           requestConcurrency: readNumber(res?.requestConcurrency),
-          minRequestIntervalMs: readNumber(res?.minRequestIntervalMs)
+          minRequestIntervalMs: readNumber(res?.minRequestIntervalMs),
+          rateLimitPolicy: (
+            String(res?.rateLimitPolicy || "").trim().toLowerCase() === "safe" ||
+            String(res?.rateLimitPolicy || "").trim().toLowerCase() === "aggressive" ||
+            String(res?.rateLimitPolicy || "").trim().toLowerCase() === "balanced"
+          )
+            ? (String(res?.rateLimitPolicy || "").trim().toLowerCase() as 'safe' | 'balanced' | 'aggressive')
+            : null,
+          rateLimitPolicies: Array.isArray(res?.rateLimitPolicies)
+            ? (res.rateLimitPolicies
+                .map((entry: any) => String(entry || "").trim().toLowerCase())
+                .filter((entry: string) => entry === "safe" || entry === "balanced" || entry === "aggressive") as Array<'safe' | 'balanced' | 'aggressive'>)
+            : null,
+          rateLimitTelemetry:
+            res?.rateLimitTelemetry && typeof res.rateLimitTelemetry === 'object'
+              ? (res.rateLimitTelemetry as TradeLockerRateLimitTelemetry)
+              : null
         });
         return res;
       } catch (e: any) {
@@ -1225,8 +1284,8 @@ export function useTradeLocker(
       if (res?.rateLimited) noteRateLimit(res?.retryAtMs);
 
       const next: TradeLockerAccountMetrics = {
-        accountId: res.accountId != null ? toNumber(res.accountId, 0) : null,
-        accNum: res.accNum != null ? toNumber(res.accNum, 0) : null,
+        accountId: parseTradeLockerAccountId(res.accountId),
+        accNum: parseTradeLockerAccountId(res.accNum),
         currency: res.currency != null ? String(res.currency) : null,
         balance: toNumber(res.balance, 0),
         equity: toNumber(res.equity, 0),
@@ -1629,13 +1688,18 @@ export function useTradeLocker(
     const hasOpenPositions = positions.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
-    const interval = streamConnected
+    const baseInterval = streamConnected
       ? 15000
       : isRl
         ? 15000
         : hasOpenPositions
           ? 2500
           : 12000;
+    const interval = scaleByRateLimitGovernor(baseInterval, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: baseInterval,
+      maxMs: 90_000,
+      modeWeight: 1 + (adaptivePressure * 0.15)
+    });
     pollTimerRef.current = runtimeScheduler.registerTask({
       id: "tradelocker.snapshot.refresh",
       groupId: "broker",
@@ -1652,7 +1716,7 @@ export function useTradeLocker(
       if (pollTimerRef.current) pollTimerRef.current();
       pollTimerRef.current = null;
     };
-  }, [isActive, positions.length, rateLimitedUntilMs, refreshSnapshot, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, positions.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshSnapshot, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
 
   useEffect(() => {
     if (ordersTimerRef.current) {
@@ -1665,7 +1729,18 @@ export function useTradeLocker(
 
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
-    const interval = streamConnected ? (isRl ? 60_000 : 45_000) : (isRl ? 45_000 : 30_000);
+    const baseInterval = streamConnected ? (isRl ? 60_000 : 45_000) : (isRl ? 45_000 : 30_000);
+    const interval = scaleByRateLimitGovernor(baseInterval, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: baseInterval,
+      maxMs: 150_000,
+      modeWeight: 1 + (adaptivePressure * 0.2)
+    });
+    const baseKickoffDelay = streamConnected ? (isRl ? 8_000 : 4_000) : (isRl ? 6_000 : 2_500);
+    const kickoffDelay = scaleByRateLimitGovernor(baseKickoffDelay, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: 1_000,
+      maxMs: Math.max(baseInterval, 25_000),
+      modeWeight: 0.6 + (adaptivePressure * 0.2)
+    });
     const kickoff = window.setTimeout(() => {
       refreshOrders();
       ordersTimerRef.current = runtimeScheduler.registerTask({
@@ -1679,13 +1754,13 @@ export function useTradeLocker(
           await refreshOrders();
         }
       });
-    }, streamConnected ? (isRl ? 8_000 : 4_000) : (isRl ? 6_000 : 2_500));
+    }, kickoffDelay);
     return () => {
       if (ordersTimerRef.current) ordersTimerRef.current();
       ordersTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [isActive, rateLimitedUntilMs, refreshOrders, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrders, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
 
   useEffect(() => {
     if (ordersHistoryTimerRef.current) {
@@ -1699,7 +1774,18 @@ export function useTradeLocker(
 
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
-    const interval = streamConnected ? (isRl ? 120_000 : 60_000) : (isRl ? 90_000 : 45_000);
+    const baseInterval = streamConnected ? (isRl ? 120_000 : 60_000) : (isRl ? 90_000 : 45_000);
+    const interval = scaleByRateLimitGovernor(baseInterval, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: baseInterval,
+      maxMs: 240_000,
+      modeWeight: 1 + (adaptivePressure * 0.25)
+    });
+    const baseKickoffDelay = streamConnected ? (isRl ? 12_000 : 6_000) : (isRl ? 9_000 : 4_000);
+    const kickoffDelay = scaleByRateLimitGovernor(baseKickoffDelay, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: 1_500,
+      maxMs: Math.max(baseInterval, 40_000),
+      modeWeight: 0.65 + (adaptivePressure * 0.2)
+    });
     const kickoff = window.setTimeout(() => {
       refreshOrdersHistory();
       ordersHistoryTimerRef.current = runtimeScheduler.registerTask({
@@ -1713,13 +1799,13 @@ export function useTradeLocker(
           await refreshOrdersHistory();
         }
       });
-    }, streamConnected ? (isRl ? 12_000 : 6_000) : (isRl ? 9_000 : 4_000));
+    }, kickoffDelay);
     return () => {
       if (ordersHistoryTimerRef.current) ordersHistoryTimerRef.current();
       ordersHistoryTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [api, isActive, rateLimitedUntilMs, refreshOrdersHistory, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, api, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrdersHistory, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
 
   useEffect(() => {
     if (metricsTimerRef.current) {
@@ -1733,9 +1819,20 @@ export function useTradeLocker(
     const hasOpenPositions = positions.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
-    const interval = streamConnected
+    const baseInterval = streamConnected
       ? (isRl ? 45_000 : 30_000)
       : (isRl ? 20_000 : hasOpenPositions ? 12_000 : 15_000);
+    const interval = scaleByRateLimitGovernor(baseInterval, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: baseInterval,
+      maxMs: 120_000,
+      modeWeight: 1 + (adaptivePressure * 0.18)
+    });
+    const baseKickoffDelay = streamConnected ? (isRl ? 6_000 : 3_000) : (isRl ? 4_000 : 1_200);
+    const kickoffDelay = scaleByRateLimitGovernor(baseKickoffDelay, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: 800,
+      maxMs: Math.max(baseInterval, 20_000),
+      modeWeight: 0.55 + (adaptivePressure * 0.2)
+    });
     const kickoff = window.setTimeout(() => {
       refreshAccountMetrics();
       metricsTimerRef.current = runtimeScheduler.registerTask({
@@ -1749,13 +1846,13 @@ export function useTradeLocker(
           await refreshAccountMetrics();
         }
       });
-    }, streamConnected ? (isRl ? 6_000 : 3_000) : (isRl ? 4_000 : 1_200));
+    }, kickoffDelay);
     return () => {
       if (metricsTimerRef.current) metricsTimerRef.current();
       metricsTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [isActive, positions.length, rateLimitedUntilMs, refreshAccountMetrics, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, positions.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshAccountMetrics, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
 
   useEffect(() => {
     if (quotesTimerRef.current) {
@@ -1769,9 +1866,20 @@ export function useTradeLocker(
     const hasTargets = positionsRaw.length > 0 || orders.length > 0 || watchSymbols.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
-    const interval = streamConnected
+    const baseInterval = streamConnected
       ? (isRl ? 20_000 : hasTargets ? 12_000 : 15_000)
       : (isRl ? 15000 : hasTargets ? 2500 : 10_000);
+    const interval = scaleByRateLimitGovernor(baseInterval, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: baseInterval,
+      maxMs: 100_000,
+      modeWeight: hasTargets ? (1 + (adaptivePressure * 0.1)) : (1 + (adaptivePressure * 0.2))
+    });
+    const baseKickoffDelay = streamConnected ? (isRl ? 6_000 : 3_000) : (isRl ? 5_000 : 1_500);
+    const kickoffDelay = scaleByRateLimitGovernor(baseKickoffDelay, rateLimitGovernorMode, adaptiveMinIntervalMs, {
+      minMs: 800,
+      maxMs: Math.max(baseInterval, 16_000),
+      modeWeight: hasTargets ? (0.5 + (adaptivePressure * 0.15)) : (0.65 + (adaptivePressure * 0.2))
+    });
     const kickoff = window.setTimeout(() => {
       refreshQuotes();
       quotesTimerRef.current = runtimeScheduler.registerTask({
@@ -1785,14 +1893,14 @@ export function useTradeLocker(
           await refreshQuotes();
         }
       });
-    }, streamConnected ? (isRl ? 6_000 : 3_000) : (isRl ? 5_000 : 1_500));
+    }, kickoffDelay);
 
     return () => {
       if (quotesTimerRef.current) quotesTimerRef.current();
       quotesTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [isActive, orders.length, positionsRaw.length, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, startupBridgeOperational, status, watchSymbols.length, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, orders.length, positionsRaw.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, startupBridgeOperational, status, watchSymbols.length, streamStatus]);
 
   useEffect(() => {
     if (!startupBridgeOperational) return;
@@ -1981,9 +2089,9 @@ export function useTradeLocker(
     const onAccountChanged = (evt: Event) => {
       const custom = evt as CustomEvent<any>;
       const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
-      const accountId = Number(detail?.accountId);
-      const accNum = Number(detail?.accNum);
-      if (Number.isFinite(accountId) && Number.isFinite(accNum)) {
+      const accountId = parseTradeLockerAccountId(detail?.accountId);
+      const accNum = parseTradeLockerAccountId(detail?.accNum);
+      if (accountId != null && accNum != null) {
         setSavedConfig((prev) => {
           if (!prev) return prev;
           return {

@@ -1,7 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, RefreshCw } from 'lucide-react';
 import VirtualItem from './VirtualItem';
-import type { CalendarRule } from '../types';
+import type {
+  CalendarPnlAccountOption,
+  CalendarPnlDayAccountOverlay,
+  CalendarPnlDayCell,
+  CalendarPnlSnapshot,
+  CalendarPnlTrade,
+  CalendarRule
+} from '../types';
 import { createPanelActionRunner } from '../services/panelConnectivityEngine';
 
 type SymbolSuggestion = {
@@ -61,8 +68,35 @@ type NormalizedCalendarEvent = {
 };
 
 const STORAGE_KEY = 'glass_calendar_panel_v1';
+const PNL_STORAGE_KEY = 'glass_calendar_pnl_ui_v1';
 const DEFAULT_LIMIT = 800;
 const DEFAULT_RANGE_HOURS = 168;
+const PNL_TIMEZONE_PRESETS = ['UTC', 'America/New_York', 'America/Chicago', 'Europe/London', 'Asia/Tokyo'];
+
+type CalendarTab = 'events' | 'pnl';
+type CalendarPnlLoadInput = {
+  monthKey: string;
+  timezone: string;
+  symbol?: string | null;
+  agentId?: string | null;
+  broker?: string | null;
+  accountKey?: string | null;
+  accountId?: number | null;
+  accNum?: number | null;
+};
+
+const PNL_ACCOUNT_COLORS = [
+  '#22c55e',
+  '#38bdf8',
+  '#a78bfa',
+  '#fb7185',
+  '#f59e0b',
+  '#34d399',
+  '#f472b6',
+  '#60a5fa',
+  '#14b8a6',
+  '#f97316'
+];
 
 const readStoredConfig = () => {
   try {
@@ -72,6 +106,123 @@ const readStoredConfig = () => {
   } catch {
     return null;
   }
+};
+
+const readStoredPnlConfig = () => {
+  try {
+    const raw = localStorage.getItem(PNL_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredPnlConfig = (payload: any) => {
+  try {
+    localStorage.setItem(PNL_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+};
+
+const getMonthKeyForTimezone = (timezone: string, timestampMs: number = Date.now()) => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit'
+    }).formatToParts(new Date(timestampMs));
+    const year = Number(parts.find((part) => part.type === 'year')?.value || '0');
+    const month = Number(parts.find((part) => part.type === 'month')?.value || '0');
+    if (year > 0 && month > 0) return `${year}-${String(month).padStart(2, '0')}`;
+  } catch {
+    // ignore
+  }
+  return new Date(timestampMs).toISOString().slice(0, 7);
+};
+
+const shiftMonthKey = (monthKey: string, delta: number) => {
+  const raw = String(monthKey || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return raw;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return raw;
+  const date = new Date(Date.UTC(year, month - 1 + Number(delta || 0), 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+const formatMonthLabel = (monthKey: string, timezone: string) => {
+  const raw = String(monthKey || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return raw || '--';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  try {
+    const dt = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: timezone,
+      month: 'long',
+      year: 'numeric'
+    }).format(dt);
+  } catch {
+    return `${match[2]}/${match[1]}`;
+  }
+};
+
+const getWeekdayIndex = (dateKey: string, timezone: string) => {
+  const match = String(dateKey || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return 0;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return 0;
+  try {
+    const dt = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    const short = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(dt).slice(0, 3);
+    const order = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const idx = order.findIndex((item) => item === short);
+    if (idx >= 0) return idx;
+  } catch {
+    // ignore
+  }
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+};
+
+const buildMonthGrid = (monthKey: string, timezone: string): Array<string | null> => {
+  const match = String(monthKey || '').trim().match(/^(\d{4})-(\d{2})$/);
+  if (!match) return [];
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return [];
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const firstDateKey = `${monthKey}-01`;
+  const firstWeekday = getWeekdayIndex(firstDateKey, timezone);
+  const result: Array<string | null> = [];
+  for (let i = 0; i < firstWeekday; i += 1) result.push(null);
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    result.push(`${monthKey}-${String(day).padStart(2, '0')}`);
+  }
+  while (result.length % 7 !== 0) result.push(null);
+  return result;
+};
+
+const formatMoney = (value?: number | null) => {
+  if (!Number.isFinite(Number(value))) return '--';
+  const next = Number(value);
+  const sign = next >= 0 ? '+' : '-';
+  return `${sign}$${Math.abs(next).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+};
+
+const formatPct = (value?: number | null) => {
+  if (!Number.isFinite(Number(value))) return '--';
+  return `${(Number(value) * 100).toFixed(1)}%`;
+};
+
+const formatProfitFactor = (value?: number | null) => {
+  if (!Number.isFinite(Number(value))) return '--';
+  return Number(value).toFixed(2);
 };
 
 const writeStoredConfig = (payload: any) => {
@@ -158,6 +309,10 @@ interface CalendarInterfaceProps {
   onToggleRule?: (id: string, enabled: boolean) => Promise<any> | any;
   onSearchSymbols?: (query: string) => Promise<SymbolSuggestion[]>;
   onSyncEvents?: () => Promise<any> | any;
+  onLoadPnlSnapshot?: (input: CalendarPnlLoadInput) => Promise<CalendarPnlSnapshot> | CalendarPnlSnapshot;
+  pnlAccountOptions?: CalendarPnlAccountOption[];
+  pnlActiveAccountKey?: string | null;
+  pnlEnabled?: boolean;
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
 }
 
@@ -168,6 +323,10 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
   onToggleRule,
   onSearchSymbols,
   onSyncEvents,
+  onLoadPnlSnapshot,
+  pnlAccountOptions = [],
+  pnlActiveAccountKey = null,
+  pnlEnabled = false,
   onRunActionCatalog
 }) => {
   const runPanelAction = useMemo(
@@ -181,6 +340,7 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
     [onRunActionCatalog]
   );
   const stored = readStoredConfig();
+  const pnlStored = readStoredPnlConfig();
   const [events, setEvents] = useState<NormalizedCalendarEvent[]>([]);
   const [limit, setLimit] = useState(stored?.limit ?? DEFAULT_LIMIT);
   const [rangeHours, setRangeHours] = useState(stored?.rangeHours ?? DEFAULT_RANGE_HOURS);
@@ -206,6 +366,28 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
       return 'UTC';
     }
   }, []);
+
+  const [activeTab, setActiveTab] = useState<CalendarTab>(() =>
+    pnlEnabled && pnlStored?.activeTab === 'pnl' ? 'pnl' : 'events'
+  );
+  const [pnlTimezone, setPnlTimezone] = useState<string>(() => {
+    const raw = String(pnlStored?.timezone || '').trim();
+    return raw || defaultTimezone;
+  });
+  const [pnlMonthKey, setPnlMonthKey] = useState<string>(() => {
+    const raw = String(pnlStored?.monthKey || '').trim();
+    if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+    return getMonthKeyForTimezone(defaultTimezone);
+  });
+  const [pnlAccountKey, setPnlAccountKey] = useState<string>(() => String(pnlStored?.accountKey || '').trim());
+  const [pnlSnapshot, setPnlSnapshot] = useState<CalendarPnlSnapshot | null>(null);
+  const [pnlSelectedDateKey, setPnlSelectedDateKey] = useState<string | null>(() => {
+    const raw = String(pnlStored?.selectedDateKey || '').trim();
+    return raw || null;
+  });
+  const [pnlLoading, setPnlLoading] = useState(false);
+  const [pnlError, setPnlError] = useState<string | null>(null);
+  const pnlCacheRef = useRef<Map<string, CalendarPnlSnapshot>>(new Map());
 
   const [ruleDraft, setRuleDraft] = useState<CalendarRule>(() => ({
     id: '',
@@ -258,7 +440,83 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
     loadEvents();
   }, [loadEvents]);
 
+  const loadPnlSnapshot = useCallback(async (opts?: { force?: boolean; monthKey?: string; timezone?: string }) => {
+    if (!pnlEnabled) return;
+    const monthKey = String(opts?.monthKey || pnlMonthKey || '').trim() || getMonthKeyForTimezone(pnlTimezone || defaultTimezone);
+    const timezone = String(opts?.timezone || pnlTimezone || defaultTimezone).trim() || defaultTimezone;
+    const symbol = String(filterSymbol || '').trim() || null;
+    const agentId = String(filterAgent || '').trim() || null;
+    const accountKeyRaw = String(pnlAccountKey || '').trim();
+    const selectedAccount = accountKeyRaw
+      ? (Array.isArray(pnlAccountOptions) ? pnlAccountOptions : []).find(
+          (entry) => String(entry?.accountKey || '').trim().toLowerCase() === accountKeyRaw.toLowerCase()
+        ) || null
+      : null;
+    const payload: CalendarPnlLoadInput = {
+      monthKey,
+      timezone,
+      symbol,
+      agentId,
+      accountKey: accountKeyRaw || null,
+      accountId: selectedAccount?.accountId ?? null,
+      accNum: selectedAccount?.accNum ?? null
+    };
+    const cacheKey = [monthKey, timezone, symbol || '', agentId || '', accountKeyRaw || 'all'].join('|').toLowerCase();
+    if (opts?.force !== true) {
+      const cached = pnlCacheRef.current.get(cacheKey);
+      if (cached) {
+        setPnlSnapshot(cached);
+        setPnlError(null);
+        return;
+      }
+    }
+    setPnlLoading(true);
+    setPnlError(null);
+    try {
+      const res = await runPanelAction(
+        'calendar.pnl.snapshot',
+        payload as Record<string, any>,
+        {
+          fallback: async () => {
+            if (!onLoadPnlSnapshot) {
+              return { ok: false, error: 'P&L snapshot unavailable.' };
+            }
+            const data = await onLoadPnlSnapshot(payload);
+            return { ok: true, data };
+          },
+          fallbackSource: 'ledger',
+          timeoutMs: 12_000
+        }
+      );
+      if (!res?.ok) {
+        setPnlError(res?.error ? String(res.error) : 'Failed to load P&L snapshot.');
+        return;
+      }
+      const snapshot = (res.data || null) as CalendarPnlSnapshot | null;
+      if (!snapshot || typeof snapshot !== 'object') {
+        setPnlError('P&L snapshot response is empty.');
+        return;
+      }
+      pnlCacheRef.current.set(cacheKey, snapshot);
+      setPnlSnapshot(snapshot);
+      setPnlSelectedDateKey((prev) => {
+        if (prev && snapshot.tradesByDate && Array.isArray(snapshot.tradesByDate[prev])) return prev;
+        const firstKey = Object.keys(snapshot.tradesByDate || {}).sort()[0];
+        return firstKey || null;
+      });
+      setPnlError(null);
+    } catch (err: any) {
+      setPnlError(err?.message ? String(err.message) : 'Failed to load P&L snapshot.');
+    } finally {
+      setPnlLoading(false);
+    }
+  }, [defaultTimezone, filterAgent, filterSymbol, onLoadPnlSnapshot, pnlAccountKey, pnlAccountOptions, pnlEnabled, pnlMonthKey, pnlTimezone, runPanelAction]);
+
   const handleRefresh = useCallback(async () => {
+    if (activeTab === 'pnl' && pnlEnabled) {
+      await loadPnlSnapshot({ force: true });
+      return;
+    }
     if (isSyncing) return;
     setSyncError(null);
     if (onSyncEvents) {
@@ -275,7 +533,7 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
       }
     }
     await loadEvents();
-  }, [isSyncing, loadEvents, onSyncEvents]);
+  }, [activeTab, isSyncing, loadEvents, loadPnlSnapshot, onSyncEvents, pnlEnabled]);
 
   useEffect(() => {
     writeStoredConfig({
@@ -287,6 +545,28 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
       filterAgent
     });
   }, [filterAgent, filterOutcome, filterSymbol, filterType, limit, rangeHours]);
+
+  useEffect(() => {
+    if (!pnlEnabled && activeTab === 'pnl') {
+      setActiveTab('events');
+    }
+  }, [activeTab, pnlEnabled]);
+
+  useEffect(() => {
+    writeStoredPnlConfig({
+      activeTab,
+      timezone: pnlTimezone,
+      monthKey: pnlMonthKey,
+      accountKey: pnlAccountKey,
+      selectedDateKey: pnlSelectedDateKey
+    });
+  }, [activeTab, pnlAccountKey, pnlMonthKey, pnlSelectedDateKey, pnlTimezone]);
+
+  useEffect(() => {
+    if (!pnlEnabled) return;
+    if (activeTab !== 'pnl') return;
+    void loadPnlSnapshot({ force: false });
+  }, [activeTab, filterAgent, filterSymbol, loadPnlSnapshot, pnlAccountKey, pnlEnabled, pnlMonthKey, pnlTimezone]);
 
   const localSymbolSuggestions = useMemo(() => {
     const seen = new Set<string>();
@@ -594,6 +874,112 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
   }, [filteredEvents]);
 
   const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const pnlMonthGrid = useMemo(() => buildMonthGrid(pnlMonthKey, pnlTimezone), [pnlMonthKey, pnlTimezone]);
+  const pnlCellByDate = useMemo(() => {
+    const map = new Map<string, CalendarPnlDayCell>();
+    const cells = Array.isArray(pnlSnapshot?.cells) ? pnlSnapshot?.cells : [];
+    cells.forEach((cell) => {
+      if (!cell?.dateKey) return;
+      map.set(cell.dateKey, cell);
+    });
+    return map;
+  }, [pnlSnapshot]);
+  const pnlSelectedTrades = useMemo(() => {
+    if (!pnlSelectedDateKey) return [] as CalendarPnlTrade[];
+    const trades = pnlSnapshot?.tradesByDate?.[pnlSelectedDateKey];
+    return Array.isArray(trades) ? trades : [];
+  }, [pnlSelectedDateKey, pnlSnapshot]);
+  const pnlMaxAbsDayPnl = useMemo(() => {
+    const cells = Array.isArray(pnlSnapshot?.cells) ? pnlSnapshot?.cells : [];
+    let maxAbs = 0;
+    cells.forEach((cell) => {
+      const abs = Math.abs(Number(cell?.netPnl || 0));
+      if (abs > maxAbs) maxAbs = abs;
+    });
+    return maxAbs;
+  }, [pnlSnapshot]);
+  const getPnlCellTone = useCallback((netPnl: number, tradeCount: number) => {
+    if (!tradeCount) return 'border-white/10 bg-white/[0.02] text-gray-500';
+    if (netPnl === 0) return 'border-white/15 bg-slate-500/10 text-slate-100';
+    const ratio = pnlMaxAbsDayPnl > 0 ? Math.min(1, Math.abs(netPnl) / pnlMaxAbsDayPnl) : 0;
+    if (netPnl > 0) {
+      if (ratio > 0.66) return 'border-emerald-300/50 bg-emerald-500/30 text-emerald-50';
+      if (ratio > 0.33) return 'border-emerald-300/40 bg-emerald-500/20 text-emerald-100';
+      return 'border-emerald-300/30 bg-emerald-500/12 text-emerald-100';
+    }
+    if (ratio > 0.66) return 'border-rose-300/50 bg-rose-500/30 text-rose-50';
+    if (ratio > 0.33) return 'border-rose-300/40 bg-rose-500/20 text-rose-100';
+    return 'border-rose-300/30 bg-rose-500/12 text-rose-100';
+  }, [pnlMaxAbsDayPnl]);
+  const pnlMergedAccountOptions = useMemo(() => {
+    const map = new Map<string, CalendarPnlAccountOption>();
+    const add = (entry: any) => {
+      const key = String(entry?.accountKey || '').trim();
+      if (!key) return;
+      const normalized = key.toLowerCase();
+      if (map.has(normalized)) return;
+      const label = String(entry?.label || '').trim() || key;
+      map.set(normalized, {
+        accountKey: key,
+        label,
+        broker: entry?.broker ? String(entry.broker) : null,
+        accountId: Number.isFinite(Number(entry?.accountId)) ? Number(entry.accountId) : null,
+        accNum: Number.isFinite(Number(entry?.accNum)) ? Number(entry.accNum) : null,
+        env: entry?.env ? String(entry.env) : null,
+        server: entry?.server ? String(entry.server) : null,
+        isActive: false
+      });
+    };
+    (Array.isArray(pnlAccountOptions) ? pnlAccountOptions : []).forEach(add);
+    (Array.isArray(pnlSnapshot?.availableAccounts) ? pnlSnapshot?.availableAccounts : []).forEach(add);
+    const activeKey = String(pnlActiveAccountKey || '').trim().toLowerCase();
+    return Array.from(map.values())
+      .map((item) => ({ ...item, isActive: !!activeKey && activeKey === item.accountKey.toLowerCase() }))
+      .sort((a, b) => {
+        if (a.isActive && !b.isActive) return -1;
+        if (!a.isActive && b.isActive) return 1;
+        return String(a.label).localeCompare(String(b.label));
+      });
+  }, [pnlAccountOptions, pnlActiveAccountKey, pnlSnapshot?.availableAccounts]);
+  const selectedPnlAccount = useMemo(() => {
+    const key = String(pnlAccountKey || '').trim().toLowerCase();
+    if (!key) return null;
+    return pnlMergedAccountOptions.find((entry) => String(entry.accountKey || '').trim().toLowerCase() === key) || null;
+  }, [pnlAccountKey, pnlMergedAccountOptions]);
+  useEffect(() => {
+    const key = String(pnlAccountKey || '').trim().toLowerCase();
+    if (!key) return;
+    if (pnlLoading) return;
+    const hasOptions = pnlMergedAccountOptions.length > 0 || !!pnlSnapshot;
+    if (!hasOptions) return;
+    const exists = pnlMergedAccountOptions.some(
+      (entry) => String(entry.accountKey || '').trim().toLowerCase() === key
+    );
+    if (!exists) setPnlAccountKey('');
+  }, [pnlAccountKey, pnlLoading, pnlMergedAccountOptions, pnlSnapshot]);
+  const pnlIsAllAccounts = !String(pnlAccountKey || '').trim();
+  const pnlAccountColorByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    const summaries = Array.isArray(pnlSnapshot?.accountSummaries) ? pnlSnapshot.accountSummaries : [];
+    summaries.forEach((summary: any, idx) => {
+      const key = String(summary?.accountKey || '').trim();
+      if (!key) return;
+      map.set(key, PNL_ACCOUNT_COLORS[idx % PNL_ACCOUNT_COLORS.length]);
+    });
+    return map;
+  }, [pnlSnapshot?.accountSummaries]);
+  const pnlAccountOverlaysByDate = useMemo(() => {
+    const map = new Map<string, CalendarPnlDayAccountOverlay[]>();
+    const source = pnlSnapshot?.accountOverlaysByDate && typeof pnlSnapshot.accountOverlaysByDate === 'object'
+      ? pnlSnapshot.accountOverlaysByDate
+      : {};
+    Object.entries(source).forEach(([dateKey, items]) => {
+      if (!Array.isArray(items)) return;
+      map.set(dateKey, items as CalendarPnlDayAccountOverlay[]);
+    });
+    return map;
+  }, [pnlSnapshot]);
+  const pnlSourceSummary = pnlSnapshot?.sourceSummary || null;
 
   const handleToggleDraftDay = (day: number) => {
     setRuleDraft((prev) => {
@@ -641,26 +1027,335 @@ const CalendarInterface: React.FC<CalendarInterfaceProps> = ({
           </button>
         </div>
         <div className="mt-2 text-[11px] text-gray-500">
-          {isLoading ? 'Loading calendar events...' : `${filteredEvents.length} events • ${summary.symbols} symbols`}
+          {activeTab === 'pnl' && pnlEnabled
+            ? `${formatMonthLabel(pnlMonthKey, pnlTimezone)} • ${Number(pnlSnapshot?.monthSummary?.tradeCount || 0)} closed trades${
+                selectedPnlAccount ? ` • ${selectedPnlAccount.label}` : ' • all accounts'
+              }`
+            : (isLoading ? 'Loading calendar events...' : `${filteredEvents.length} events • ${summary.symbols} symbols`)}
         </div>
-        <div className="mt-1 text-[10px] text-gray-500">
-          {performanceSummary.winRate != null
-            ? `Win rate ${performanceSummary.winRate}% • Top hour ${performanceSummary.topHour != null ? `${performanceSummary.topHour}:00` : '--'} • Top day ${performanceSummary.topDay != null ? dayLabels[performanceSummary.topDay] : '--'}`
-            : 'No resolved outcomes yet.'}
-        </div>
-        <div className="mt-1 text-[10px] text-gray-500">
-          {sessionAnalytics.cycleStats.avgToOutcomeMin != null
-            ? `Avg to execute ${sessionAnalytics.cycleStats.avgToExecuteMin ?? '--'}m • Avg to resolve ${sessionAnalytics.cycleStats.avgToResolveMin ?? '--'}m • Avg to outcome ${sessionAnalytics.cycleStats.avgToOutcomeMin ?? '--'}m`
-            : 'No signal cycle timing yet.'}
-        </div>
+        {activeTab === 'events' || !pnlEnabled ? (
+          <>
+            <div className="mt-1 text-[10px] text-gray-500">
+              {performanceSummary.winRate != null
+                ? `Win rate ${performanceSummary.winRate}% • Top hour ${performanceSummary.topHour != null ? `${performanceSummary.topHour}:00` : '--'} • Top day ${performanceSummary.topDay != null ? dayLabels[performanceSummary.topDay] : '--'}`
+                : 'No resolved outcomes yet.'}
+            </div>
+            <div className="mt-1 text-[10px] text-gray-500">
+              {sessionAnalytics.cycleStats.avgToOutcomeMin != null
+                ? `Avg to execute ${sessionAnalytics.cycleStats.avgToExecuteMin ?? '--'}m • Avg to resolve ${sessionAnalytics.cycleStats.avgToResolveMin ?? '--'}m • Avg to outcome ${sessionAnalytics.cycleStats.avgToOutcomeMin ?? '--'}m`
+                : 'No signal cycle timing yet.'}
+            </div>
+          </>
+        ) : (
+          <div className="mt-1 text-[10px] text-gray-500">
+            Win rate {formatPct(pnlSnapshot?.monthSummary?.winRate)} • Profit factor {formatProfitFactor(pnlSnapshot?.monthSummary?.profitFactor)} • Active days {Number(pnlSnapshot?.monthSummary?.activeDays || 0)}
+          </div>
+        )}
         {syncError && (
           <div className="mt-2 text-[10px] text-amber-300">
             Calendar sync failed: {syncError}
           </div>
         )}
+        <div className="mt-3 flex items-center gap-2 text-[11px]">
+          <button
+            type="button"
+            onClick={() => setActiveTab('events')}
+            className={`px-2 py-1 rounded border ${
+              activeTab === 'events'
+                ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
+                : 'border-white/10 text-gray-400 hover:bg-white/5'
+            }`}
+          >
+            Events / Rules
+          </button>
+          {pnlEnabled && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('pnl')}
+              className={`px-2 py-1 rounded border ${
+                activeTab === 'pnl'
+                  ? 'border-sky-400/40 bg-sky-500/10 text-sky-100'
+                  : 'border-white/10 text-gray-400 hover:bg-white/5'
+              }`}
+            >
+              PnL Calendar
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col">
+      {pnlEnabled && activeTab === 'pnl' && (
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="p-4 border-b border-white/5 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPnlMonthKey((prev) => shiftMonthKey(prev, -1))}
+                className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]"
+              >
+                Prev
+              </button>
+              <div className="text-sm font-semibold text-gray-100 min-w-[170px]">
+                {formatMonthLabel(pnlMonthKey, pnlTimezone)}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPnlMonthKey((prev) => shiftMonthKey(prev, 1))}
+                className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]"
+              >
+                Next
+              </button>
+              <label className="flex items-center gap-2 text-[11px] text-gray-400">
+                <span>Account</span>
+                <select
+                  value={pnlAccountKey}
+                  onChange={(event) => setPnlAccountKey(String(event.target.value || '').trim())}
+                  className="bg-black/40 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-100 min-w-[220px]"
+                >
+                  <option value="">All accounts</option>
+                  {pnlMergedAccountOptions.map((entry) => (
+                    <option key={entry.accountKey} value={entry.accountKey}>
+                      {entry.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedPnlAccount && (
+                <div
+                  className={`text-[10px] px-2 py-1 rounded border ${
+                    selectedPnlAccount.isActive
+                      ? 'border-emerald-400/40 text-emerald-200 bg-emerald-500/10'
+                      : 'border-amber-400/40 text-amber-200 bg-amber-500/10'
+                  }`}
+                  title={selectedPnlAccount.isActive ? 'Selected account is active in TradeLocker' : 'Selected account is not currently active in TradeLocker'}
+                >
+                  {selectedPnlAccount.isActive ? 'Active account' : 'Not active'}
+                </div>
+              )}
+              <label className="ml-auto flex items-center gap-2 text-[11px] text-gray-400">
+                <span>Timezone</span>
+                <input
+                  list="calendar-pnl-timezones"
+                  value={pnlTimezone}
+                  onChange={(event) => setPnlTimezone(String(event.target.value || '').trim() || defaultTimezone)}
+                  className="bg-black/40 border border-white/10 rounded-md px-2 py-1 text-xs text-gray-100 w-[180px]"
+                />
+                <datalist id="calendar-pnl-timezones">
+                  {PNL_TIMEZONE_PRESETS.map((timezone) => (
+                    <option key={timezone} value={timezone} />
+                  ))}
+                </datalist>
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  pnlCacheRef.current.clear();
+                  void loadPnlSnapshot({ force: true });
+                }}
+                className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]"
+              >
+                <span className="inline-flex items-center gap-1">
+                  <RefreshCw size={12} />
+                  {pnlLoading ? 'Refreshing...' : 'Refresh'}
+                </span>
+              </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+              <div className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-3 py-2">
+                <div className="text-[10px] text-emerald-200/80 uppercase tracking-wider">Net P&amp;L</div>
+                <div className="text-lg font-semibold text-emerald-100">{formatMoney(pnlSnapshot?.kpis?.netPnl ?? 0)}</div>
+              </div>
+              <div className="rounded-lg border border-sky-400/20 bg-sky-500/10 px-3 py-2">
+                <div className="text-[10px] text-sky-200/80 uppercase tracking-wider">Account Balance &amp; P&amp;L</div>
+                <div className="text-sm text-sky-100">Balance {formatMoney(pnlSnapshot?.kpis?.accountBalance)}</div>
+                <div className="text-sm text-sky-100">Equity {formatMoney(pnlSnapshot?.kpis?.accountEquity)}</div>
+              </div>
+              <div className="rounded-lg border border-indigo-400/20 bg-indigo-500/10 px-3 py-2">
+                <div className="text-[10px] text-indigo-200/80 uppercase tracking-wider">Profit Factor</div>
+                <div className="text-lg font-semibold text-indigo-100">{formatProfitFactor(pnlSnapshot?.kpis?.profitFactor)}</div>
+              </div>
+              <div className="rounded-lg border border-violet-400/20 bg-violet-500/10 px-3 py-2">
+                <div className="text-[10px] text-violet-200/80 uppercase tracking-wider">Trade Win %</div>
+                <div className="text-lg font-semibold text-violet-100">{formatPct(pnlSnapshot?.kpis?.winRate)}</div>
+              </div>
+            </div>
+            <div className="text-[11px] text-gray-400 flex flex-wrap items-center gap-4">
+              <span>Monthly stats: {formatMoney(pnlSnapshot?.monthSummary?.netPnl ?? 0)}</span>
+              <span>Active days: {Number(pnlSnapshot?.monthSummary?.activeDays || 0)}</span>
+              <span>Trades: {Number(pnlSnapshot?.monthSummary?.tradeCount || 0)}</span>
+              <span>Wins/Losses: {Number(pnlSnapshot?.monthSummary?.wins || 0)}/{Number(pnlSnapshot?.monthSummary?.losses || 0)}</span>
+              <span>PF: {formatProfitFactor(pnlSnapshot?.monthSummary?.profitFactor)}</span>
+            </div>
+            {pnlSourceSummary && (
+              <div className="flex flex-wrap items-center gap-2 text-[10px] text-gray-400">
+                <span className="text-gray-500">Realized PnL source:</span>
+                <span className="px-2 py-0.5 rounded border border-emerald-400/30 bg-emerald-500/10 text-emerald-100">
+                  Ledger {pnlSourceSummary.ledgerTrades} ({formatMoney(pnlSourceSummary.ledgerNetPnl)})
+                </span>
+                <span className="px-2 py-0.5 rounded border border-sky-400/30 bg-sky-500/10 text-sky-100">
+                  Broker {pnlSourceSummary.brokerTrades} ({formatMoney(pnlSourceSummary.brokerNetPnl)})
+                </span>
+                {pnlSourceSummary.unknownTrades > 0 && (
+                  <span className="px-2 py-0.5 rounded border border-amber-400/30 bg-amber-500/10 text-amber-100">
+                    Unknown {pnlSourceSummary.unknownTrades} ({formatMoney(pnlSourceSummary.unknownNetPnl)})
+                  </span>
+                )}
+              </div>
+            )}
+            {(filterSymbol || filterAgent || selectedPnlAccount) && (
+              <div className="text-[10px] text-gray-500">
+                Filters applied to PnL:
+                {filterSymbol ? ` symbol=${filterSymbol}` : ''}
+                {filterAgent ? ` agent=${filterAgent}` : ''}
+                {selectedPnlAccount ? ` account=${selectedPnlAccount.label}` : ''}
+              </div>
+            )}
+            {Array.isArray(pnlSnapshot?.accountSummaries) && pnlSnapshot.accountSummaries.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wide">Per-account month overlay</div>
+                <div className="flex flex-wrap gap-2">
+                  {pnlSnapshot.accountSummaries.slice(0, 10).map((summary) => {
+                    const key = String(summary.accountKey || '');
+                    const color = pnlAccountColorByKey.get(key) || '#64748b';
+                    const isSelected = !!pnlAccountKey && pnlAccountKey.toLowerCase() === key.toLowerCase();
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setPnlAccountKey((prev) => (prev.toLowerCase() === key.toLowerCase() ? '' : key))}
+                        className={`px-2 py-1 rounded border text-[10px] text-left ${
+                          isSelected
+                            ? 'border-sky-300/50 bg-sky-500/15 text-sky-100'
+                            : 'border-white/10 bg-black/30 text-gray-300 hover:bg-white/5'
+                        }`}
+                        title={`${summary.label} • ${summary.tradeCount} trades • ${formatMoney(summary.netPnl)}`}
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                          <span className="font-medium">{summary.label}</span>
+                        </div>
+                        <div className="opacity-80">
+                          {formatMoney(summary.netPnl)} • {summary.tradeCount} trade{summary.tradeCount === 1 ? '' : 's'}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {pnlError && (
+              <div className="text-xs text-red-300 border border-red-500/30 bg-red-500/10 rounded-md px-3 py-2">
+                {pnlError}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-hidden grid grid-cols-1 xl:grid-cols-[1fr_360px]">
+            <div className="overflow-y-auto custom-scrollbar p-4">
+              <div className="grid grid-cols-7 gap-2 text-[10px] uppercase tracking-wider text-gray-500 mb-2">
+                {dayLabels.map((label) => (
+                  <div key={`pnl-day-header-${label}`} className="px-1">{label}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-2">
+                {pnlMonthGrid.map((dateKey, idx) => {
+                  if (!dateKey) {
+                    return <div key={`pnl-empty-${idx}`} className="min-h-[84px] rounded-md border border-transparent" />;
+                  }
+                  const cell = pnlCellByDate.get(dateKey) || null;
+                  const tradeCount = Number(cell?.tradeCount || 0);
+                  const netPnl = Number(cell?.netPnl || 0);
+                  const isSelected = pnlSelectedDateKey === dateKey;
+                  const dayOverlays = pnlIsAllAccounts
+                    ? (pnlAccountOverlaysByDate.get(dateKey) || []).slice(0, 3)
+                    : [];
+                  return (
+                    <button
+                      key={dateKey}
+                      type="button"
+                      onClick={() => setPnlSelectedDateKey(dateKey)}
+                      className={`min-h-[84px] rounded-md border px-2 py-1 text-left transition ${getPnlCellTone(netPnl, tradeCount)} ${
+                        isSelected ? 'ring-1 ring-sky-300/70' : ''
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold">{dateKey.slice(-2)}</div>
+                      {cell ? (
+                        <div className="mt-1 space-y-0.5">
+                          <div className="text-[11px]">{formatMoney(cell.netPnl)}</div>
+                          <div className="text-[10px] opacity-80">Win {formatPct(cell.winRate)}</div>
+                          <div className="text-[10px] opacity-70">{cell.tradeCount} trade{cell.tradeCount === 1 ? '' : 's'}</div>
+                          {dayOverlays.length > 0 && (
+                            <div className="mt-1 flex items-center gap-1" title={dayOverlays.map((item) => `${item.label}: ${formatMoney(item.netPnl)}`).join(' • ')}>
+                              {dayOverlays.map((overlay) => (
+                                <span
+                                  key={`${dateKey}:${overlay.accountKey}`}
+                                  className="inline-block h-1.5 flex-1 rounded-sm"
+                                  style={{ backgroundColor: pnlAccountColorByKey.get(overlay.accountKey || '') || '#64748b' }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[10px] opacity-70">$0</div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="border-t xl:border-t-0 xl:border-l border-white/5 p-4 overflow-y-auto custom-scrollbar space-y-3">
+              <div className="text-[11px] uppercase tracking-wider text-gray-400">
+                {pnlSelectedDateKey ? `Closed Trades • ${pnlSelectedDateKey}` : 'Closed Trades'}
+              </div>
+              {!pnlSelectedDateKey && (
+                <div className="text-xs text-gray-500">Select a day to view closed trades.</div>
+              )}
+              {pnlSelectedDateKey && pnlSelectedTrades.length === 0 && (
+                <div className="text-xs text-gray-500">No closed trades for this day.</div>
+              )}
+              {pnlSelectedTrades.map((trade) => (
+                <div key={trade.id} className="rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="text-gray-100 font-semibold">{trade.symbol || '--'} • {trade.side}</div>
+                    <div className={`${trade.realizedPnl >= 0 ? 'text-emerald-300' : 'text-rose-300'} font-semibold`}>
+                      {formatMoney(trade.realizedPnl)}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span
+                      className={`px-1.5 py-0.5 rounded border ${
+                        trade.pnlSourceKind === 'broker'
+                          ? 'border-sky-400/40 bg-sky-500/10 text-sky-200'
+                          : trade.pnlSourceKind === 'ledger'
+                            ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200'
+                            : 'border-amber-400/40 bg-amber-500/10 text-amber-200'
+                      }`}
+                      title={trade.realizedPnlSource || 'No source metadata'}
+                    >
+                      Src {String(trade.pnlSourceKind || 'unknown').toUpperCase()}
+                    </span>
+                    {trade.accountLabel && (
+                      <span className="px-1.5 py-0.5 rounded border border-white/15 bg-white/5 text-gray-300">
+                        {trade.accountLabel}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-[10px] text-gray-400">
+                    <span>{new Date(trade.closedAtMs).toLocaleTimeString()}</span>
+                    <span>Broker {trade.broker || '--'}</span>
+                    <span>Agent {trade.agentId || '--'}</span>
+                    <span>R {trade.rMultiple != null ? trade.rMultiple.toFixed(2) : '--'}</span>
+                    <span>Result {String(trade.winLoss || '').toUpperCase()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={`flex-1 overflow-hidden flex flex-col ${activeTab === 'events' || !pnlEnabled ? '' : 'hidden'}`}>
         <div className="p-4 border-b border-white/5 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
           <label className="flex flex-col gap-1">
             Range

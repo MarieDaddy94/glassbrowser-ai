@@ -11,16 +11,17 @@ test('TradeLocker panel profiles include persisted account identity and restore 
   const source = fs.readFileSync(tradeLockerPanelPath, 'utf8');
   assert.equal(source.includes('accountId?: number | null;'), true);
   assert.equal(source.includes('accNum?: number | null;'), true);
-  assert.equal(source.includes("accountId: Number.isFinite(Number(entry?.accountId)) ? Number(entry.accountId) : null"), true);
-  assert.equal(source.includes("accNum: Number.isFinite(Number(entry?.accNum)) ? Number(entry.accNum) : null"), true);
+  assert.equal(source.includes('const parseTradeLockerAccountId = (value: any): number | null => {'), true);
+  assert.equal(source.includes('accountId: parseTradeLockerAccountId(entry?.accountId),'), true);
+  assert.equal(source.includes('accNum: parseTradeLockerAccountId(entry?.accNum),'), true);
   assert.equal(source.includes("runPanelAction('tradelocker.set_active_account'"), true);
   assert.equal(source.includes('const savedCfg = await tlApi?.getSavedConfig?.();'), true);
 });
 
 test('Settings modal saves/restores account identity with TradeLocker login profiles', () => {
   const source = fs.readFileSync(settingsModalPath, 'utf8');
-  assert.equal(source.includes('const accountId = Number.isFinite(Number(tlSelectedAccountId)) ? Number(tlSelectedAccountId) : null;'), true);
-  assert.equal(source.includes('const accNum = Number.isFinite(Number(tlSelectedAccNum)) ? Number(tlSelectedAccNum) : null;'), true);
+  assert.equal(source.includes('const accountId = parseTradeLockerId(tlSelectedAccountId);'), true);
+  assert.equal(source.includes('const accNum = parseTradeLockerId(tlSelectedAccNum);'), true);
   assert.equal(source.includes('setTlSelectedAccountId(accountId != null ? String(accountId) : "");'), true);
   assert.equal(source.includes('setTlSelectedAccNum(accNum != null ? String(accNum) : "");'), true);
   assert.equal(source.includes('void applyTradeLockerActiveAccount(accountId, accNum);'), true);

@@ -28,19 +28,35 @@ const FALLBACK_ALLOWED_SCOPES = [
   'calendar'
 ];
 
+const resolveScopeModuleAttempts = () => {
+  const cwd =
+    typeof process !== 'undefined' && process && typeof process.cwd === 'function'
+      ? process.cwd()
+      : '';
+  const cwdNormalized = String(cwd || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+  const cwdAttempts = cwdNormalized
+    ? [`${cwdNormalized}/electron/generated/ipcScopes.cjs`, `${cwdNormalized}/generated/ipcScopes.cjs`]
+    : [];
+  return [
+    './generated/ipcScopes.cjs',
+    '../generated/ipcScopes.cjs',
+    ...cwdAttempts
+  ];
+};
+
 const loadGeneratedAllowedScopes = () => {
-  const attempts = ['./generated/ipcScopes.cjs', '../generated/ipcScopes.cjs'];
-  for (const relativePath of attempts) {
+  const attempts = resolveScopeModuleAttempts();
+  for (const modulePath of attempts) {
     try {
       // eslint-disable-next-line global-require, import/no-dynamic-require
-      const loaded = require(relativePath);
+      const loaded = require(modulePath);
       const scopes = Array.isArray(loaded?.ALLOWED_SCOPES)
         ? loaded.ALLOWED_SCOPES.map((scope) => String(scope || '').trim()).filter(Boolean)
         : [];
       if (scopes.length > 0) {
         return {
           scopes,
-          source: relativePath,
+          source: modulePath,
           attempts
         };
       }
@@ -488,6 +504,8 @@ contextBridge.exposeInMainWorld('glass', {
     connect: (opts) => guardedInvoke('tradelocker', 'tradelocker:connect', opts),
     disconnect: () => guardedInvoke('tradelocker', 'tradelocker:disconnect'),
     getStatus: () => guardedInvoke('tradelocker', 'tradelocker:status'),
+    getRateLimitPolicy: () => guardedInvoke('tradelocker', 'tradelocker:getRateLimitPolicy'),
+    setRateLimitPolicy: (args) => guardedInvoke('tradelocker', 'tradelocker:setRateLimitPolicy', args),
 
     getAccounts: () => guardedInvoke('tradelocker', 'tradelocker:getAccounts'),
     setActiveAccount: (account) => guardedInvoke('tradelocker', 'tradelocker:setActiveAccount', account),

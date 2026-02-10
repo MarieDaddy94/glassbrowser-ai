@@ -1696,6 +1696,11 @@ app.whenReady().then(async () => {
     return tradeLockerClient.disconnect();
   });
   ipcMain.handle('tradelocker:status', async () => tradeLockerClient.getStatus());
+  ipcMain.handle('tradelocker:getRateLimitPolicy', async () => tradeLockerClient.getRateLimitPolicy());
+  ipcMain.handle('tradelocker:setRateLimitPolicy', async (evt, args) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    return tradeLockerClient.setRateLimitPolicy(args || {});
+  });
 
   ipcMain.handle('tradelocker:getAccounts', async () => tradeLockerClient.getAllAccounts());
   ipcMain.handle('tradelocker:setActiveAccount', async (evt, account) => {

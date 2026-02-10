@@ -13,6 +13,8 @@ dist-ssr
 release
 release-*
 release-*/**
+release_*
+release_*/**
 artifacts
 tmp-*
 tmp-*/**

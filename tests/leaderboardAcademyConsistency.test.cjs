@@ -8,10 +8,16 @@ const read = (relPath) => fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 
 test('app marks leaderboard/academy/audit/changes against the same outcome feed cursor', () => {
   const app = read('App.tsx');
-  assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('leaderboard', cursor);"), true);
+  assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('leaderboard', outcomeFeedCursor);"), true);
   assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('academy', outcomeFeedCursor);"), true);
   assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('audit', outcomeFeedCursor);"), true);
   assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('changes', outcomeFeedCursor);"), true);
+});
+
+test('leaderboard mark-read does not rebuild a separate cursor', () => {
+  const app = read('App.tsx');
+  assert.equal(app.includes("outcomeConsistencyEngine.markPanelRead('leaderboard', cursor);"), false);
+  assert.equal(app.includes('buildOutcomeFeedCursorFromHistory(leaderboardHistory)'), false);
 });
 
 test('leaderboard, academy, audit, and changes panels expose shared outcome feed state', () => {

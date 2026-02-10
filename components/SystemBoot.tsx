@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import App from '../App';
 import { Package, Play, Cpu, Zap, Terminal, HardDrive, Wifi, ShieldCheck, Power } from 'lucide-react';
 
+const STARTUP_WALLPAPER_URL = new URL('../assets/startup-wallpaper.svg', import.meta.url).href;
+
 // --- Installer Component ---
 const Installer = ({ onComplete }: { onComplete: () => void }) => {
   const [progress, setProgress] = useState(0);
@@ -104,15 +106,43 @@ const Installer = ({ onComplete }: { onComplete: () => void }) => {
 const Launcher = ({ onLaunch }: { onLaunch: () => void }) => {
   const [isHovering, setIsHovering] = useState(false);
   const [time, setTime] = useState(new Date());
+  const [wallpaperAvailable, setWallpaperAvailable] = useState(true);
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const image = new Image();
+    image.onload = () => {
+      if (!cancelled) setWallpaperAvailable(true);
+    };
+    image.onerror = () => {
+      if (!cancelled) setWallpaperAvailable(false);
+    };
+    image.src = STARTUP_WALLPAPER_URL;
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const launcherBackgroundStyle = wallpaperAvailable
+    ? {
+        backgroundColor: '#030712',
+        backgroundImage: `linear-gradient(180deg, rgba(4, 6, 14, 0.74) 0%, rgba(2, 3, 9, 0.9) 100%), url("${STARTUP_WALLPAPER_URL}")`,
+        backgroundSize: 'cover, cover',
+        backgroundPosition: 'center center'
+      }
+    : {
+        background: 'radial-gradient(circle at 20% 20%, rgba(59,130,246,0.22) 0%, rgba(7,11,24,0.94) 42%, #02040a 100%)'
+      };
+
   return (
     <div className="flex flex-col min-h-screen w-full relative overflow-hidden font-sans text-gray-100 selection:bg-purple-500/30">
-       
+       <div className="absolute inset-0" style={launcherBackgroundStyle} />
+
        {/* Wallpaper Overlay to darken the body background */}
        <div className="absolute inset-0 bg-black/20 backdrop-blur-[1px]"></div>
 

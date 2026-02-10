@@ -501,10 +501,11 @@ import { buildExperimentRegistryEntry, evaluateAutoDemotionPolicy, evaluatePromo
 import { getLivePolicyService } from './services/livePolicyService';
 import { getPanelConnectivityEngine } from './services/panelConnectivityEngine';
 import { getCrossPanelContextEngine } from './services/crossPanelContextEngine';
-import { getOutcomeConsistencyEngine, buildOutcomeFeedCursorFromHistory } from './services/outcomeConsistencyEngine';
+import { getOutcomeConsistencyEngine } from './services/outcomeConsistencyEngine';
 import { GLASS_EVENT, dispatchGlassEvent } from './services/glassEvents';
 import { submitTradeLockerOrderBatch } from './services/executionSubmissionService';
 import { cancelTimer, deferMs, sleepMs, type TimerHandle } from './services/timerPrimitives';
+import { buildCalendarPnlSnapshot } from './services/calendarPnlEngine';
 import { buildMirrorExecutions } from './orchestrators/executionOrchestrator';
 import { normalizePanelConnectivitySnapshot } from './orchestrators/panelOrchestrator';
 import { buildSystemInitializedMessage } from './orchestrators/startupOrchestrator';
@@ -514,7 +515,7 @@ import { evaluateAutoPilotState, mergeAutoPilotState } from './services/autopilo
 import { normalizeAgentCapabilities } from './services/agentCapabilities';
 import { getTechAgentLogs } from './services/techAgentLog';
 import { getCacheBudgetManager } from './services/cacheBudgetManager';
-import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
+import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
 import type { SignalEntry, SignalEntryStatus, SignalExecutionTarget, SignalSessionWindow, SignalSnapshotStatus, SignalStrategyMode } from './components/SignalInterface';
@@ -1290,11 +1291,14 @@ const buildTradeLockerAccountKey = (input?: {
   accNum?: number | null;
 } | null) => {
   if (!input) return '';
-  const env = input.env ? String(input.env) : '';
-  const server = input.server ? String(input.server) : '';
-  const accountId = input.accountId != null ? String(input.accountId) : '';
-  const accNum = input.accNum != null ? String(input.accNum) : '';
-  return [env, server, accountId, accNum].filter(Boolean).join(':');
+  const env = input.env ? String(input.env).trim() : '';
+  const server = input.server ? String(input.server).trim() : '';
+  const accountId = Number(input.accountId);
+  const accNum = Number(input.accNum);
+  if (!env || !server || !Number.isFinite(accountId) || accountId <= 0 || !Number.isFinite(accNum) || accNum <= 0) {
+    return '';
+  }
+  return [env, server, String(Math.trunc(accountId)), String(Math.trunc(accNum))].join(':');
 };
 
 const parseTradeLockerAccountKey = (key: string) => {
@@ -1303,8 +1307,15 @@ const parseTradeLockerAccountKey = (key: string) => {
   const [env, server, accountIdRaw, accNumRaw] = parts;
   const accountId = Number(accountIdRaw);
   const accNum = Number(accNumRaw);
-  if (!env || !server || !Number.isFinite(accountId) || !Number.isFinite(accNum)) return null;
-  return { env, server, accountId, accNum };
+  if (!env || !server || !Number.isFinite(accountId) || accountId <= 0 || !Number.isFinite(accNum) || accNum <= 0) return null;
+  return { env, server, accountId: Math.trunc(accountId), accNum: Math.trunc(accNum) };
+};
+
+const parseTradeLockerAccountNumber = (value: any): number | null => {
+  if (value == null) return null;
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  return Math.trunc(raw);
 };
 
 const computeMedian = (values: number[]) => {
@@ -12348,8 +12359,8 @@ const App: React.FC = () => {
   const getTradeLockerAccountKey = useCallback(() => {
     const meta = tradeLockerExecRef.current || {};
     if (!meta.connected) return null;
-    const accountId = meta.accountId;
-    const accNum = meta.accNum;
+    const accountId = parseTradeLockerAccountNumber(meta.accountId);
+    const accNum = parseTradeLockerAccountNumber(meta.accNum);
     if (accountId == null || accNum == null) return null;
     const env = meta.env != null ? String(meta.env) : '';
     const server = meta.server != null ? String(meta.server) : '';
@@ -13016,6 +13027,308 @@ const App: React.FC = () => {
       calendarIngestRef.current.inFlight = false;
     }
   }, [upsertCalendarEvent]);
+
+  const loadCalendarPnlSnapshot = useCallback(async (input?: {
+    monthKey?: string;
+    timezone?: string;
+    symbol?: string | null;
+    agentId?: string | null;
+    broker?: string | null;
+    accountKey?: string | null;
+    accountId?: number | null;
+    accNum?: number | null;
+    limit?: number;
+  }): Promise<CalendarPnlSnapshot> => {
+    const ledger = window.glass?.tradeLedger;
+    let entries: any[] = [];
+    if (ledger?.list) {
+      const limitRaw = Number(input?.limit);
+      const limit = Number.isFinite(limitRaw) ? Math.max(200, Math.min(10_000, Math.floor(limitRaw))) : 5_000;
+      const res = await ledger.list({ limit });
+      if (!res?.ok) {
+        throw new Error(res?.error ? String(res.error) : 'Failed to load trade ledger.');
+      }
+      entries = Array.isArray(res.entries) ? res.entries : [];
+    }
+    const timezone = String(
+      input?.timezone ||
+      (() => {
+        try {
+          return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+        } catch {
+          return 'UTC';
+        }
+      })()
+    ).trim() || 'UTC';
+    const meta = tradeLockerExecRef.current || {};
+    const savedCfg = tlSavedConfigRef.current || {};
+    const requestedAccountKeyRaw = String(input?.accountKey || '').trim();
+    const normalizeKey = (value: any) => String(value || '').trim().toLowerCase();
+    const parseAccountIdentityFromKey = (value: any) => {
+      const raw = String(value || '').trim();
+      if (!raw) return null;
+      const parts = raw.split(':').map((part) => part.trim()).filter(Boolean);
+      if (parts.length < 4) return null;
+      const accNum = parseTradeLockerAccountNumber(parts[parts.length - 1]);
+      const accountId = parseTradeLockerAccountNumber(parts[parts.length - 2]);
+      if (accountId == null || accNum == null) return null;
+      const server = String(parts[parts.length - 3] || '').trim();
+      const env = String(parts[parts.length - 4] || '').trim();
+      if (!env || !server) return null;
+      return { env, server, accountId, accNum };
+    };
+    const requestedFromKey = requestedAccountKeyRaw
+      ? (parseTradeLockerAccountKey(requestedAccountKeyRaw) || parseAccountIdentityFromKey(requestedAccountKeyRaw))
+      : null;
+    const requestedAccountId = parseTradeLockerAccountNumber(input?.accountId) ?? (requestedFromKey?.accountId ?? null);
+    const requestedAccNum = parseTradeLockerAccountNumber(input?.accNum) ?? (requestedFromKey?.accNum ?? null);
+    const requestedEnv = requestedFromKey?.env ? String(requestedFromKey.env) : '';
+    const requestedServer = requestedFromKey?.server ? String(requestedFromKey.server) : '';
+    const activeEnv = String(meta?.env || savedCfg?.env || '').trim();
+    const activeServer = String(meta?.server || savedCfg?.server || '').trim();
+    const activeAccountId = parseTradeLockerAccountNumber(meta?.accountId)
+      ?? parseTradeLockerAccountNumber(savedCfg?.accountId);
+    const activeAccNum = parseTradeLockerAccountNumber(meta?.accNum)
+      ?? parseTradeLockerAccountNumber(savedCfg?.accNum);
+    const activeAccountKey = buildTradeLockerAccountKey({
+      env: activeEnv || null,
+      server: activeServer || null,
+      accountId: activeAccountId,
+      accNum: activeAccNum
+    });
+    const requestedHasIdentity =
+      requestedAccountId != null ||
+      requestedAccNum != null ||
+      !!requestedEnv ||
+      !!requestedServer;
+    const accountMetrics = meta?.accountMetrics && typeof meta.accountMetrics === 'object'
+      ? meta.accountMetrics
+      : null;
+    const toLooseNumber = (value: any): number | null => {
+      if (value == null || value === '') return null;
+      const raw = typeof value === 'number' ? value : Number(String(value).replace(/,/g, '').trim());
+      return Number.isFinite(raw) ? raw : null;
+    };
+    const toEpochMs = (value: any): number | null => {
+      if (value == null || value === '') return null;
+      if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;
+      const parsed = Date.parse(String(value));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const readHistoryPnl = (order: any): number | null => {
+      const raw = order?.raw && typeof order.raw === 'object' ? order.raw : {};
+      const candidates = [
+        order?.realizedPnl,
+        order?.positionClosedPnl,
+        order?.pnl,
+        order?.profit,
+        order?.profitLoss,
+        order?.netPnl,
+        order?.closedPnl,
+        raw?.realizedPnl,
+        raw?.positionClosedPnl,
+        raw?.pnl,
+        raw?.profit,
+        raw?.profitLoss,
+        raw?.netPnl,
+        raw?.closedPnl,
+        raw?.openNetPnL,
+        raw?.openNetPnl,
+        raw?.openGrossPnL,
+        raw?.openGrossPnl
+      ];
+      for (const candidate of candidates) {
+        const next = toLooseNumber(candidate);
+        if (next != null) return next;
+      }
+      return null;
+    };
+    const entryMatchesRequestedAccount = (entry: any) => {
+      const requestedKey = normalizeKey(requestedAccountKeyRaw);
+      const entryEnv = String(entry?.env || '').trim();
+      const entryServer = String(entry?.server || '').trim();
+      const entryAccountId = parseTradeLockerAccountNumber(entry?.accountId);
+      const entryAccNum = parseTradeLockerAccountNumber(entry?.accNum);
+      const synthesizedKey =
+        buildTradeLockerAccountKey({
+          env: entryEnv || null,
+          server: entryServer || null,
+          accountId: entryAccountId,
+          accNum: entryAccNum
+        }) ||
+        String(entry?.accountKey || '').trim();
+
+      if (requestedKey) {
+        if (requestedKey === 'unassigned') return !synthesizedKey && entryAccountId == null;
+        if (normalizeKey(synthesizedKey) === requestedKey) return true;
+        if (!requestedHasIdentity) return false;
+      }
+      if (requestedAccountId != null) {
+        if (entryAccountId == null || entryAccountId !== requestedAccountId) return false;
+      }
+      if (requestedAccNum != null) {
+        if (entryAccNum == null || entryAccNum !== requestedAccNum) return false;
+      }
+      if (requestedEnv) {
+        if (!entryEnv || normalizeKey(entryEnv) !== normalizeKey(requestedEnv)) return false;
+      }
+      if (requestedServer) {
+        if (!entryServer || normalizeKey(entryServer) !== normalizeKey(requestedServer)) return false;
+      }
+      return true;
+    };
+    const activeAccountMatchState = (() => {
+      const requestedKey = normalizeKey(requestedAccountKeyRaw);
+      const activeKey = normalizeKey(activeAccountKey);
+      if (!requestedKey && !requestedHasIdentity) return 'match';
+      if (requestedKey && activeKey && requestedKey === activeKey) return 'match';
+      if (!requestedHasIdentity) return 'unknown';
+      if (requestedAccountId != null && activeAccountId != null && activeAccountId !== requestedAccountId) {
+        return 'mismatch';
+      }
+      if (requestedAccNum != null && activeAccNum != null && activeAccNum !== requestedAccNum) {
+        return 'mismatch';
+      }
+      if (requestedEnv && activeEnv && normalizeKey(activeEnv) !== normalizeKey(requestedEnv)) {
+        return 'mismatch';
+      }
+      if (requestedServer && activeServer && normalizeKey(activeServer) !== normalizeKey(requestedServer)) {
+        return 'mismatch';
+      }
+      if (
+        (requestedAccountId != null && activeAccountId == null) ||
+        (requestedAccNum != null && activeAccNum == null) ||
+        (requestedEnv && !activeEnv) ||
+        (requestedServer && !activeServer)
+      ) {
+        return 'unknown';
+      }
+      return 'match';
+    })();
+    let accountBalance = Number.isFinite(Number(accountMetrics?.balance))
+      ? Number(accountMetrics.balance)
+      : (Number.isFinite(Number(meta?.balance)) ? Number(meta.balance) : null);
+    let accountEquity = Number.isFinite(Number(accountMetrics?.equity))
+      ? Number(accountMetrics.equity)
+      : (Number.isFinite(Number(meta?.equity)) ? Number(meta.equity) : null);
+    const tradeLockerApi = window.glass?.tradelocker;
+
+    if (activeAccountMatchState === 'mismatch') {
+      accountBalance = null;
+      accountEquity = null;
+    }
+
+    if (activeAccountMatchState !== 'mismatch' && (accountBalance == null || accountEquity == null) && tradeLockerApi?.getAccountMetrics) {
+      try {
+        const metricsRes = await tradeLockerApi.getAccountMetrics({ maxAgeMs: 12_000 });
+        if (metricsRes?.ok) {
+          const fallbackBalance = toLooseNumber(metricsRes?.balance);
+          const fallbackEquity = toLooseNumber(metricsRes?.equity);
+          if (accountBalance == null && fallbackBalance != null) accountBalance = fallbackBalance;
+          if (accountEquity == null && fallbackEquity != null) accountEquity = fallbackEquity;
+        }
+      } catch {
+        // Keep ledger/ref-derived values on API fetch failures.
+      }
+    }
+
+    const isTradeLedgerClosedTrade = (entry: any) => {
+      if (!entry || typeof entry !== 'object') return false;
+      if (String(entry?.broker || '').trim().toLowerCase() !== 'tradelocker') return false;
+      const status = String(entry?.status || '').trim().toUpperCase();
+      const positionStatus = String(entry?.positionStatus || '').trim().toUpperCase();
+      const closedAtMs = Number(entry?.positionClosedAtMs || entry?.closedAtMs || 0);
+      if (!(status === 'CLOSED' || positionStatus === 'CLOSED' || closedAtMs > 0)) return false;
+      return entryMatchesRequestedAccount(entry);
+    };
+
+    const hasTradeLockerClosedLedgerEntries = entries.some((entry) => isTradeLedgerClosedTrade(entry));
+    if (activeAccountMatchState !== 'mismatch' && !hasTradeLockerClosedLedgerEntries && tradeLockerApi?.getOrdersHistory) {
+      try {
+        const historyRes = await tradeLockerApi.getOrdersHistory();
+        const historyOrders = historyRes?.ok && Array.isArray(historyRes.orders) ? historyRes.orders : [];
+        if (historyOrders.length > 0) {
+          const seenKeys = new Set<string>();
+          for (const entry of entries) {
+            const id = String(entry?.brokerOrderId || entry?.orderId || entry?.id || '').trim();
+            if (id) seenKeys.add(id.toUpperCase());
+          }
+          const derivedEntries = historyOrders
+            .map((order: any) => {
+              const orderId = String(order?.id || '').trim();
+              if (!orderId) return null;
+              if (seenKeys.has(orderId.toUpperCase())) return null;
+              const side = String(order?.side || '').trim().toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+              const createdAtMs =
+                toEpochMs(order?.createdAt) ||
+                toEpochMs(order?.filledAt) ||
+                toEpochMs(order?.closedAt) ||
+                Date.now();
+              const closedAtMs =
+                toEpochMs(order?.closedAt) ||
+                toEpochMs(order?.filledAt) ||
+                createdAtMs;
+              const realizedPnl = readHistoryPnl(order);
+              return {
+                id: `tradelocker_history_${orderId}`,
+                brokerOrderId: orderId,
+                orderId,
+                kind: 'trade',
+                broker: 'tradelocker',
+                symbol: order?.symbol ? String(order.symbol) : null,
+                action: side,
+                side,
+                orderType: order?.type ? String(order.type) : null,
+                qty: toLooseNumber(order?.qty),
+                brokerQty: toLooseNumber(order?.qty),
+                qtyNormalized: toLooseNumber(order?.qty),
+                entryPrice: toLooseNumber(order?.price),
+                brokerEntryPrice: toLooseNumber(order?.price),
+                brokerClosePrice: toLooseNumber(order?.stopPrice),
+                stopLoss: toLooseNumber(order?.stopLoss),
+                takeProfit: toLooseNumber(order?.takeProfit),
+                status: 'CLOSED',
+                positionStatus: 'CLOSED',
+                createdAtMs,
+                updatedAtMs: closedAtMs,
+                brokerOpenTimeMs: createdAtMs,
+                positionOpenedAtMs: createdAtMs,
+                positionClosedAtMs: closedAtMs,
+                closedAtMs,
+                realizedPnl: realizedPnl ?? 0,
+                positionClosedPnl: realizedPnl ?? 0,
+                realizedPnlSource: realizedPnl != null ? 'tradelocker_orders_history' : 'tradelocker_orders_history_unavailable',
+                env: activeEnv || null,
+                server: activeServer || null,
+                accountId: activeAccountId ?? null,
+                accNum: activeAccNum ?? null,
+                accountKey: activeAccountKey || null
+              };
+            })
+            .filter(Boolean);
+          if (derivedEntries.length > 0) {
+            entries = [...entries, ...derivedEntries];
+          }
+        }
+      } catch {
+        // Broker history fallback is best effort; calendar still works off ledger entries.
+      }
+    }
+
+    return buildCalendarPnlSnapshot({
+      entries,
+      monthKey: input?.monthKey || null,
+      timezone,
+      accountBalance,
+      accountEquity,
+      symbol: input?.symbol || null,
+      agentId: input?.agentId || null,
+      broker: input?.broker || null,
+      accountKey: requestedAccountKeyRaw || null,
+      accountId: requestedAccountId ?? null,
+      accNum: requestedAccNum ?? null
+    });
+  }, []);
 
   const resolveCalendarSignalEventType = useCallback((status: SignalEntry['status'], outcome?: string | null) => {
     const raw = String(status || '').toUpperCase();
@@ -30148,13 +30461,12 @@ const App: React.FC = () => {
   }, [mode, refreshSnapshotPanelStatus]);
 
   useEffect(() => {
-    const cursor = buildOutcomeFeedCursorFromHistory(leaderboardHistory);
-    outcomeConsistencyEngine.markPanelRead('leaderboard', cursor);
+    outcomeConsistencyEngine.markPanelRead('leaderboard', outcomeFeedCursor);
     if (mode === 'leaderboard') {
       setOutcomeFeedConsistency(outcomeConsistencyEngine.getConsistencyState());
       setPanelFreshness(outcomeConsistencyEngine.getPanelFreshness());
     }
-  }, [leaderboardHistory, mode]);
+  }, [leaderboardHistory, mode, outcomeFeedCursor]);
 
   useEffect(() => {
     if (mode !== 'academy') return;
@@ -30725,9 +31037,9 @@ const App: React.FC = () => {
     const server = tlSavedConfig?.server ? String(tlSavedConfig.server) : '';
     if (env && server && accountsList.length > 0) {
       for (const acct of accountsList) {
-        const accountId = Number(acct?.id);
-        const accNum = acct?.accNum != null ? Number(acct.accNum) : null;
-        if (!Number.isFinite(accountId) || accountId <= 0 || accNum == null) continue;
+        const accountId = parseTradeLockerAccountNumber(acct?.id);
+        const accNum = parseTradeLockerAccountNumber(acct?.accNum);
+        if (accountId == null || accNum == null) continue;
         const key = buildTradeLockerAccountKey({ env, server, accountId, accNum });
         if (!key) continue;
         map.set(key, { env, server, accountId, accNum });
@@ -31693,8 +32005,10 @@ const App: React.FC = () => {
       watchSymbols: brokerWatchSymbols,
       env: tlSavedConfig?.env || null,
       server: tlSavedConfig?.server || null,
-      accountId: tlSavedConfig?.accountId ?? null,
-      accNum: tlSavedConfig?.accNum ?? null,
+      accountId: parseTradeLockerAccountNumber(tlSavedConfig?.accountId),
+      accNum: parseTradeLockerAccountNumber(tlSavedConfig?.accNum),
+      balance: tlAccountMetrics && Number.isFinite(Number(tlAccountMetrics.balance)) ? Number(tlAccountMetrics.balance) : tlBalance,
+      equity: tlAccountMetrics && Number.isFinite(Number(tlAccountMetrics.equity)) ? Number(tlAccountMetrics.equity) : tlEquity,
       snapshotUpdatedAtMs: tlSnapshotUpdatedAtMs ?? null,
       accountMetrics: tlAccountMetrics ?? null,
       orders: tlOrders ?? null,
@@ -31709,7 +32023,7 @@ const App: React.FC = () => {
       modifyOrder: tlModifyOrder,
       cancelOrder: tlCancelOrder
     };
-  }, [brokerWatchSymbols, tlAccountMetrics, tlCancelOrder, tlClosePosition, tlLastError, tlModifyOrder, tlModifyPosition, tlRefreshAccountMetrics, tlRefreshOrders, tlRefreshQuotes, tlRefreshSnapshot, tlSavedConfig, tlSnapshotUpdatedAtMs, tlStatus, tlUpstreamBlockedUntilMs, tlUpstreamLastError, tlUpstreamLastStatus]);
+  }, [brokerWatchSymbols, tlAccountMetrics, tlBalance, tlCancelOrder, tlClosePosition, tlEquity, tlLastError, tlModifyOrder, tlModifyPosition, tlRefreshAccountMetrics, tlRefreshOrders, tlRefreshQuotes, tlRefreshSnapshot, tlSavedConfig, tlSnapshotUpdatedAtMs, tlStatus, tlUpstreamBlockedUntilMs, tlUpstreamLastError, tlUpstreamLastStatus]);
 
   useEffect(() => {
     const prev = tradeLockerExecRef.current || {};
@@ -31910,6 +32224,7 @@ const App: React.FC = () => {
       tradelockerRequestInFlight: tlStatusMeta?.requestInFlight ?? null,
       tradelockerRequestConcurrency: tlStatusMeta?.requestConcurrency ?? null,
       tradelockerMinRequestIntervalMs: tlStatusMeta?.minRequestIntervalMs ?? null,
+      tradelockerRateLimitTelemetry: tlStatusMeta?.rateLimitTelemetry ?? null,
       nativeChartSymbol: meta?.symbol || null,
       nativeChartUpdatedAtMs: meta?.updatedAtMs ?? null,
       nativeChartFrames: Array.isArray(meta?.frames) ? meta.frames.length : null,
@@ -34439,6 +34754,36 @@ const App: React.FC = () => {
                       onToggleRule={toggleCalendarRule}
                       onSearchSymbols={searchSymbolSuggestions}
                       onSyncEvents={() => syncEconomicCalendar({ force: true, reason: 'panel' })}
+                      onLoadPnlSnapshot={loadCalendarPnlSnapshot}
+                      pnlAccountOptions={(Array.isArray(tlAccounts) ? tlAccounts : [])
+                        .map((acct: any) => {
+                          const env = tlSavedConfig?.env ? String(tlSavedConfig.env) : '';
+                          const server = tlSavedConfig?.server ? String(tlSavedConfig.server) : '';
+                          const accountId = parseTradeLockerAccountNumber(acct?.id);
+                          const accNum = parseTradeLockerAccountNumber(acct?.accNum);
+                          if (accountId == null || accNum == null) return null;
+                          const accountKey = buildTradeLockerAccountKey({
+                            env: env || null,
+                            server: server || null,
+                            accountId,
+                            accNum
+                          });
+                          if (!accountKey) return null;
+                          const labelRaw = acct?.name ? String(acct.name).trim() : '';
+                          const label = labelRaw || `TradeLocker ${accountId}/${accNum}`;
+                          return {
+                            accountKey,
+                            label,
+                            broker: 'tradelocker',
+                            accountId,
+                            accNum,
+                            env: env || null,
+                            server: server || null
+                          };
+                        })
+                        .filter(Boolean)}
+                      pnlActiveAccountKey={getTradeLockerAccountKey()}
+                      pnlEnabled
                       onRunActionCatalog={runActionCatalog}
                     />
                 )}
@@ -34695,6 +35040,7 @@ const App: React.FC = () => {
                           streamStatus={tlStreamStatus}
                           streamUpdatedAtMs={tlStreamUpdatedAtMs}
                           streamError={tlStreamError}
+                          rateLimitTelemetry={tlStatusMeta?.rateLimitTelemetry ?? null}
                           serverLabel={tlServerLabel}
                           connectionLabel={tlConnectionMeta.label}
                           connectionDotClass={tlConnectionMeta.dot}

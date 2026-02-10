@@ -841,6 +841,15 @@ export const IPC_CONTRACT = {
       "inPreload": true
     },
     {
+      "name": "tradelocker:getRateLimitPolicy",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "tradelocker:getSavedConfig",
       "domain": "tradelocker",
       "scopes": [
@@ -923,6 +932,15 @@ export const IPC_CONTRACT = {
     },
     {
       "name": "tradelocker:setActiveAccount",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "tradelocker:setRateLimitPolicy",
       "domain": "tradelocker",
       "scopes": [
         "tradelocker"

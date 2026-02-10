@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Lock, TrendingUp, TrendingDown, Clock, RotateCw, Settings, Send, X, ChevronUp, ChevronDown, Link2, Plus, Eye, EyeOff } from 'lucide-react';
-import { EvidenceCard, Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerQuote } from '../types';
+import { EvidenceCard, Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerQuote, TradeLockerRateLimitTelemetry } from '../types';
 import type { SymbolMapEntry } from '../services/brokerLink';
 import { normalizeSymbolKey } from '../services/symbols';
 import { getRuntimeScheduler } from '../services/runtimeScheduler';
@@ -29,6 +29,7 @@ interface TradeLockerInterfaceProps {
     streamStatus?: string | null;
     streamUpdatedAtMs?: number | null;
     streamError?: string | null;
+    rateLimitTelemetry?: TradeLockerRateLimitTelemetry | null;
     accounts?: Array<{
       id: number;
       name: string;
@@ -81,6 +82,8 @@ const PANEL_STORAGE_KEY = 'glass_panel_tradelocker_v1';
 const PRESET_STORAGE_KEY = 'glass_tradelocker_ticket_presets_v1';
 const TL_PROFILES_KEY = 'glass_tradelocker_profiles_v1';
 const TL_ACTIVE_PROFILE_KEY = 'glass_tradelocker_active_profile_v1';
+const HISTORY_CACHE_STORAGE_KEY = 'glass_tradelocker_history_cache_v1';
+const HISTORY_CACHE_ENTRY_LIMIT = 600;
 
 type TradeLockerProfile = {
   id: string;
@@ -136,6 +139,16 @@ const normalizeTicketType = (value: any): TicketType => {
   return 'market';
 };
 
+const parseTradeLockerAccountId = (value: any): number | null => {
+  if (value == null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const next = Number(raw);
+  if (!Number.isFinite(next)) return null;
+  const normalized = Math.trunc(next);
+  return normalized > 0 ? normalized : null;
+};
+
 const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
   try {
     const raw = localStorage.getItem(TL_PROFILES_KEY);
@@ -149,8 +162,8 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
         env: entry?.env === 'live' ? 'live' : 'demo',
         server: String(entry?.server || ''),
         email: String(entry?.email || ''),
-        accountId: Number.isFinite(Number(entry?.accountId)) ? Number(entry.accountId) : null,
-        accNum: Number.isFinite(Number(entry?.accNum)) ? Number(entry.accNum) : null,
+        accountId: parseTradeLockerAccountId(entry?.accountId),
+        accNum: parseTradeLockerAccountId(entry?.accNum),
         rememberPassword: entry?.rememberPassword === true,
         rememberDeveloperKey: entry?.rememberDeveloperKey === true
       }))
@@ -244,11 +257,26 @@ const buildAccountKey = (account?: {
   accNum?: number | null;
 } | null) => {
   if (!account) return '';
-  const env = account.env ? String(account.env) : '';
-  const server = account.server ? String(account.server) : '';
-  const accountId = account.accountId != null ? String(account.accountId) : '';
-  const accNum = account.accNum != null ? String(account.accNum) : '';
-  return [env, server, accountId, accNum].filter(Boolean).join(':');
+  const env = account.env ? String(account.env).trim() : '';
+  const server = account.server ? String(account.server).trim() : '';
+  const accountId = parseTradeLockerAccountId(account.accountId);
+  const accNum = parseTradeLockerAccountId(account.accNum);
+  if (!env || !server || accountId == null) return '';
+  return [env, server, String(accountId), accNum != null ? String(accNum) : ''].filter(Boolean).join(':');
+};
+
+const buildHistoryCacheKey = (
+  account?: {
+    env?: 'demo' | 'live' | null;
+    server?: string | null;
+    accountId?: number | null;
+    accNum?: number | null;
+  } | null,
+  includeAll = false
+) => {
+  if (includeAll) return 'all_accounts';
+  const accountKey = buildAccountKey(account);
+  return accountKey ? `account:${accountKey}` : 'account:default';
 };
 
 const inferPriceDecimals = (value: number | null | undefined) => {
@@ -279,6 +307,7 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     streamStatus = null,
     streamUpdatedAtMs = null,
     streamError = null,
+    rateLimitTelemetry = null,
     accountsError = null,
     accounts = [],
     activeAccount = null,
@@ -344,9 +373,9 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     if (!env || !server || !Array.isArray(accounts)) return [];
     return accounts
       .map((acct) => {
-        const accountId = Number(acct?.id);
-        const accNum = acct?.accNum != null ? Number(acct.accNum) : null;
-        if (!Number.isFinite(accountId) || accountId <= 0) return null;
+        const accountId = parseTradeLockerAccountId(acct?.id);
+        const accNum = parseTradeLockerAccountId(acct?.accNum);
+        if (accountId == null) return null;
         const key = buildAccountKey({ env, server, accountId, accNum });
         if (!key) return null;
         const label = acct?.name
@@ -503,6 +532,62 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     [runPanelAction]
   );
 
+  const reconnectSavedProfile = useCallback(async (
+    profile: TradeLockerProfile,
+    accountId: number | null,
+    accNum: number | null
+  ) => {
+    const payload = {
+      env: profile.env === 'live' ? 'live' : 'demo',
+      server: String(profile.server || '').trim(),
+      email: String(profile.email || '').trim(),
+      password: '',
+      developerApiKey: '',
+      rememberPassword: profile.rememberPassword !== false,
+      rememberDeveloperApiKey: profile.rememberDeveloperKey === true,
+      accountId,
+      accNum
+    };
+    if (!payload.server || !payload.email) {
+      return { ok: false as const, error: 'Saved profile is missing server/email.' };
+    }
+    const res = await runPanelAction('tradelocker.connect', payload, {
+      fallback: async () => {
+        const tl = (window as any)?.glass?.tradelocker;
+        if (!tl?.connect) return { ok: false, error: 'TradeLocker bridge is not available.' };
+        return await tl.connect(payload);
+      }
+    });
+    if (res?.ok === false) {
+      return {
+        ok: false as const,
+        error: res?.error ? String(res.error) : 'Failed to switch TradeLocker profile.'
+      };
+    }
+    if (accountId != null && accNum != null) {
+      await runPanelAction('tradelocker.set_active_account', { accountId, accNum }, {
+        fallback: async () => {
+          const tl = (window as any)?.glass?.tradelocker;
+          if (!tl?.setActiveAccount) return { ok: false, error: 'TradeLocker account switching unavailable.' };
+          await tl.setActiveAccount({ accountId, accNum });
+          try {
+            dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+              accountId,
+              accNum,
+              source: 'tradelocker_panel_direct',
+              atMs: Date.now()
+            });
+          } catch {
+            // ignore renderer event dispatch failures
+          }
+          return { ok: true, data: null };
+        }
+      });
+    }
+    onRefreshAccounts?.();
+    return { ok: true as const };
+  }, [onRefreshAccounts, runPanelAction]);
+
   const handleSavedProfileSelect = useCallback((profileId: string) => {
     setSavedProfileId(profileId);
     const profile = savedProfiles.find((entry) => entry.id === profileId);
@@ -517,14 +602,27 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     setAddAccountEmail(profile.email);
     setAddAccountRememberPassword(!!profile.rememberPassword);
     setAddAccountRememberDeveloperKey(!!profile.rememberDeveloperKey);
-    const accountId = Number.isFinite(Number(profile.accountId)) ? Number(profile.accountId) : null;
-    const accNum = Number.isFinite(Number(profile.accNum)) ? Number(profile.accNum) : null;
-    if (accountId == null || accNum == null) return;
+    const accountId = parseTradeLockerAccountId(profile.accountId);
+    const accNum = parseTradeLockerAccountId(profile.accNum);
     const activeEnv = String(activeAccount?.env || '').trim().toLowerCase();
     const activeServer = String(activeAccount?.server || '').trim().toLowerCase();
     const profileEnv = String(profile.env || '').trim().toLowerCase();
     const profileServer = String(profile.server || '').trim().toLowerCase();
-    const shouldApplyAccount = !!isConnected && activeEnv === profileEnv && activeServer === profileServer;
+    const shouldReconnect = !!isConnected && (activeEnv !== profileEnv || activeServer !== profileServer);
+    if (shouldReconnect) {
+      setAddAccountSubmitting(true);
+      setAddAccountError(null);
+      void reconnectSavedProfile(profile, accountId, accNum)
+        .then((result) => {
+          if (!result?.ok) {
+            setAddAccountError(result?.error || 'Failed to switch saved TradeLocker login.');
+          }
+        })
+        .finally(() => setAddAccountSubmitting(false));
+      return;
+    }
+    if (!isConnected || accountId == null || accNum == null) return;
+    const shouldApplyAccount = activeEnv === profileEnv && activeServer === profileServer;
     if (!shouldApplyAccount) return;
     void runPanelAction('tradelocker.set_active_account', { accountId, accNum }, {
       fallback: async () => {
@@ -547,7 +645,7 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         return { ok: true, data: null };
       }
     });
-  }, [activeAccount?.env, activeAccount?.server, isConnected, onRefreshAccounts, runPanelAction, savedProfiles]);
+  }, [activeAccount?.env, activeAccount?.server, isConnected, onRefreshAccounts, reconnectSavedProfile, runPanelAction, savedProfiles]);
 
   const upsertProfile = useCallback((env: 'demo' | 'live', server: string, email: string, account?: {
     accountId?: number | null;
@@ -556,8 +654,8 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     if (!server || !email) return;
     const id = buildTradeLockerProfileId(env, server, email);
     const label = buildTradeLockerProfileLabel(env, server, email);
-    const accountId = Number.isFinite(Number(account?.accountId)) ? Number(account?.accountId) : null;
-    const accNum = Number.isFinite(Number(account?.accNum)) ? Number(account?.accNum) : null;
+    const accountId = parseTradeLockerAccountId(account?.accountId);
+    const accNum = parseTradeLockerAccountId(account?.accNum);
     const next: TradeLockerProfile[] = [
       ...savedProfiles.filter((profile) => profile.id !== id),
       {
@@ -617,19 +715,15 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         return;
       }
       const tlApi = (window as any)?.glass?.tradelocker;
-      let accountId = activeAccount?.accountId != null && Number.isFinite(Number(activeAccount.accountId))
-        ? Number(activeAccount.accountId)
-        : null;
-      let accNum = activeAccount?.accNum != null && Number.isFinite(Number(activeAccount.accNum))
-        ? Number(activeAccount.accNum)
-        : null;
+      let accountId = parseTradeLockerAccountId(activeAccount?.accountId);
+      let accNum = parseTradeLockerAccountId(activeAccount?.accNum);
       try {
         const savedCfg = await tlApi?.getSavedConfig?.();
         if (savedCfg?.ok) {
-          const cfgAccountId = Number(savedCfg?.accountId);
-          const cfgAccNum = Number(savedCfg?.accNum);
-          if (Number.isFinite(cfgAccountId)) accountId = cfgAccountId;
-          if (Number.isFinite(cfgAccNum)) accNum = cfgAccNum;
+          const cfgAccountId = parseTradeLockerAccountId(savedCfg?.accountId);
+          const cfgAccNum = parseTradeLockerAccountId(savedCfg?.accNum);
+          if (cfgAccountId != null) accountId = cfgAccountId;
+          if (cfgAccNum != null) accNum = cfgAccNum;
         }
       } catch {
         // ignore saved config read failures for profile persistence
@@ -775,6 +869,48 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
   const [blotterUpdatedAtMs, setBlotterUpdatedAtMs] = useState<number | null>(null);
   const lastHistoryFetchAtRef = useRef<number>(0);
   const lastBlotterFetchAtRef = useRef<number>(0);
+  const historyCacheRef = useRef<Map<string, { entries: any[]; updatedAtMs: number }>>(new Map());
+  const historyCacheHydratedRef = useRef(false);
+
+  const hydrateHistoryCache = useCallback(() => {
+    if (historyCacheHydratedRef.current) return;
+    historyCacheHydratedRef.current = true;
+    try {
+      const raw = sessionStorage.getItem(HISTORY_CACHE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      const next = new Map<string, { entries: any[]; updatedAtMs: number }>();
+      for (const [key, payload] of Object.entries(parsed as Record<string, any>)) {
+        const entries = Array.isArray((payload as any)?.entries) ? (payload as any).entries : [];
+        const updatedAtMs = Number((payload as any)?.updatedAtMs || 0);
+        if (!key || entries.length === 0) continue;
+        next.set(String(key), {
+          entries: entries.slice(0, HISTORY_CACHE_ENTRY_LIMIT),
+          updatedAtMs: Number.isFinite(updatedAtMs) ? updatedAtMs : 0
+        });
+      }
+      historyCacheRef.current = next;
+    } catch {
+      // ignore cache hydration issues
+    }
+  }, []);
+
+  const persistHistoryCache = useCallback(() => {
+    try {
+      const payload: Record<string, { entries: any[]; updatedAtMs: number }> = {};
+      for (const [key, value] of historyCacheRef.current.entries()) {
+        if (!key || !Array.isArray(value?.entries) || value.entries.length === 0) continue;
+        payload[key] = {
+          entries: value.entries.slice(0, HISTORY_CACHE_ENTRY_LIMIT),
+          updatedAtMs: Number.isFinite(Number(value?.updatedAtMs)) ? Number(value.updatedAtMs) : Date.now()
+        };
+      }
+      sessionStorage.setItem(HISTORY_CACHE_STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // ignore cache persistence failures
+    }
+  }, []);
 
   const parseLooseNumber = useCallback((value: string): number | null => {
     const raw = String(value ?? '').trim();
@@ -782,6 +918,164 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     const n = Number(raw.replace(/,/g, ''));
     return Number.isFinite(n) ? n : null;
   }, []);
+
+  const parseTimestampMs = useCallback((value: any): number | null => {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value > 1e12 ? value : value * 1000;
+    }
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  }, []);
+
+  const readBrokerHistoryNumber = useCallback((order: any, keys: string[]): number | null => {
+    const raw = order?.raw && typeof order.raw === 'object' ? order.raw : {};
+    for (const key of keys) {
+      const candidate = order?.[key] ?? raw?.[key];
+      const next = parseLooseNumber(String(candidate ?? ''));
+      if (next != null) return next;
+    }
+    return null;
+  }, [parseLooseNumber]);
+
+  const readBrokerHistoryTimestampMs = useCallback((order: any, keys: string[]): number | null => {
+    const raw = order?.raw && typeof order.raw === 'object' ? order.raw : {};
+    for (const key of keys) {
+      const next = parseTimestampMs(order?.[key] ?? raw?.[key]);
+      if (next != null) return next;
+    }
+    return null;
+  }, [parseTimestampMs]);
+
+  const parseBrokerHistoryRealizedPnl = useCallback((order: any): number | null => {
+    return readBrokerHistoryNumber(order, [
+      'realizedPnl',
+      'positionClosedPnl',
+      'pnl',
+      'profit',
+      'profitLoss',
+      'netPnl',
+      'netProfit',
+      'closedPnl',
+      'closedProfit',
+      'profitValue',
+      'realized',
+      'openNetPnL',
+      'openNetPnl',
+      'openGrossPnL',
+      'openGrossPnl'
+    ]);
+  }, [readBrokerHistoryNumber]);
+
+  const mapBrokerOrderHistoryEntry = useCallback((order: any) => {
+    if (!order || typeof order !== 'object') return null;
+    const raw = order?.raw && typeof order.raw === 'object' ? order.raw : {};
+    const orderId = String(order?.id || raw?.orderId || raw?.id || '').trim();
+    if (!orderId) return null;
+    const side = String(order?.side || raw?.side || '').trim().toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+    const createdAtMs =
+      readBrokerHistoryTimestampMs(order, [
+        'createdAt',
+        'submittedAt',
+        'openedAt',
+        'openTime',
+        'filledAt',
+        'closedAt'
+      ]) || Date.now();
+    const closedAtMs =
+      readBrokerHistoryTimestampMs(order, [
+        'closedAt',
+        'closeTime',
+        'closedTime',
+        'filledAt',
+        'updatedAt'
+      ]) || createdAtMs;
+    const qty =
+      readBrokerHistoryNumber(order, [
+        'qty',
+        'quantity',
+        'filledQty',
+        'filledQuantity',
+        'size',
+        'volume'
+      ]);
+    const entryPrice =
+      readBrokerHistoryNumber(order, [
+        'price',
+        'entryPrice',
+        'openPrice',
+        'avgPrice',
+        'averagePrice',
+        'filledPrice',
+        'fillPrice'
+      ]);
+    const closePrice =
+      readBrokerHistoryNumber(order, [
+        'closePrice',
+        'exitPrice',
+        'filledPrice',
+        'fillPrice',
+        'avgClosePrice',
+        'stopPrice'
+      ]);
+    const stopLoss = readBrokerHistoryNumber(order, ['stopLoss', 'sl', 'slPrice', 'stop', 'stopPrice']);
+    const takeProfit = readBrokerHistoryNumber(order, ['takeProfit', 'tp', 'tpPrice', 'take', 'takePrice']);
+    const realizedPnl = parseBrokerHistoryRealizedPnl(order);
+    const env = activeAccount?.env != null ? String(activeAccount.env) : (raw?.env != null ? String(raw.env) : null);
+    const server = activeAccount?.server != null ? String(activeAccount.server) : (raw?.server != null ? String(raw.server) : null);
+    const accountId = parseTradeLockerAccountId(activeAccount?.accountId) ?? parseTradeLockerAccountId(raw?.accountId);
+    const accNum = parseTradeLockerAccountId(activeAccount?.accNum) ?? parseTradeLockerAccountId(raw?.accNum ?? raw?.accountNum);
+    const accountIdentity = {
+      env: env || null,
+      server: server || null,
+      accountId: accountId ?? null,
+      accNum: accNum ?? null
+    };
+    const accountKey = buildAccountKey({
+      env: accountIdentity.env as 'demo' | 'live' | null,
+      server: accountIdentity.server,
+      accountId: accountIdentity.accountId,
+      accNum: accountIdentity.accNum
+    }) || null;
+    return {
+      id: `broker_history_${orderId}`,
+      brokerOrderId: orderId,
+      orderId,
+      kind: 'trade',
+      broker: 'tradelocker',
+      symbol: order?.symbol ? String(order.symbol) : (raw?.symbol ? String(raw.symbol) : null),
+      action: side,
+      side,
+      orderType: order?.type ? String(order.type) : (raw?.type ? String(raw.type) : null),
+      qty,
+      brokerQty: qty,
+      qtyNormalized: qty,
+      entryPrice,
+      brokerEntryPrice: entryPrice,
+      closePrice,
+      brokerClosePrice: closePrice,
+      stopLoss,
+      takeProfit,
+      status: 'CLOSED',
+      positionStatus: 'CLOSED',
+      createdAtMs,
+      updatedAtMs: closedAtMs,
+      brokerOpenTimeMs: createdAtMs,
+      positionOpenedAtMs: createdAtMs,
+      positionClosedAtMs: closedAtMs,
+      closedAtMs,
+      realizedPnl: realizedPnl,
+      positionClosedPnl: realizedPnl,
+      realizedPnlSource: realizedPnl != null ? 'tradelocker_orders_history' : 'tradelocker_orders_history_unavailable',
+      account: accountIdentity,
+      acct: accountIdentity,
+      env: accountIdentity.env,
+      server: accountIdentity.server,
+      accountId: accountIdentity.accountId,
+      accNum: accountIdentity.accNum,
+      accountKey
+    };
+  }, [activeAccount?.accNum, activeAccount?.accountId, activeAccount?.env, activeAccount?.server, parseBrokerHistoryRealizedPnl, readBrokerHistoryNumber, readBrokerHistoryTimestampMs]);
 
   const formatTs = useCallback((ms: any) => {
     const n = Number(ms || 0);
@@ -829,9 +1123,32 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
   const streamStatusLine = streamLabel
     ? `Stream: ${streamLabel}${streamAgeLabel ? ` ${streamAgeLabel}` : ''}${streamReasonLabel ? ` (${streamReasonLabel})` : ''}`
     : '';
+  const rateLimitMode = rateLimitTelemetry?.mode ? String(rateLimitTelemetry.mode).toUpperCase() : '';
+  const rateLimitPolicy = rateLimitTelemetry?.policy ? String(rateLimitTelemetry.policy).toUpperCase() : '';
+  const rateLimitPressure = Number.isFinite(Number(rateLimitTelemetry?.pressure)) ? Number(rateLimitTelemetry?.pressure) : null;
+  const rateLimitLast429Age = rateLimitTelemetry?.last429AtMs ? formatAge(rateLimitTelemetry.last429AtMs) : '';
+  const rateLimitLine = rateLimitMode
+    ? `Rate governor: ${rateLimitMode}${rateLimitPolicy ? `/${rateLimitPolicy}` : ''} • 429s ${Number(rateLimitTelemetry?.window429 || 0)}`
+      + `${rateLimitLast429Age ? ` • last ${rateLimitLast429Age}` : ''}`
+      + `${rateLimitPressure != null ? ` • pressure ${rateLimitPressure.toFixed(2)}` : ''}`
+      + ` • interval ${Math.max(0, Number(rateLimitTelemetry?.adaptiveMinIntervalMs || 0))}ms`
+      + ` • concurrency ${Math.max(0, Number(rateLimitTelemetry?.adaptiveRequestConcurrency || 0))}`
+    : '';
+  const rateLimitTone =
+    rateLimitTelemetry?.mode === 'cooldown'
+      ? 'text-red-300/90'
+      : rateLimitTelemetry?.mode === 'guarded'
+        ? 'text-amber-300/90'
+        : 'text-cyan-300/80';
   const tradeLedgerBridge = requireBridge('tradelocker.trade_ledger');
-  const tradeLedgerUnavailableMessage = !((window as any)?.glass?.tradeLedger?.list)
-    ? (tradeLedgerBridge.ok ? 'Trade ledger not available in this build.' : tradeLedgerBridge.error)
+  const tradeLedgerAvailable = !!((window as any)?.glass?.tradeLedger?.list);
+  const brokerHistoryAvailable = !!((window as any)?.glass?.tradelocker?.getOrdersHistory);
+  const tradeLedgerUnavailableMessage = !tradeLedgerAvailable
+    ? (tradeLedgerBridge.ok
+        ? (brokerHistoryAvailable
+            ? 'Trade ledger unavailable; showing broker order history only.'
+            : 'Trade ledger not available in this build.')
+        : tradeLedgerBridge.error)
     : null;
 
   const getQuoteForSymbol = useCallback((symbol: string) => {
@@ -845,8 +1162,12 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
       setHistoryError(bridge.error);
       return;
     }
+    hydrateHistoryCache();
+    const historyCacheKey = buildHistoryCacheKey(activeAccount, historyAllAccounts);
+    const cachedHistory = historyCacheRef.current.get(historyCacheKey);
     const ledger = (window as any)?.glass?.tradeLedger;
-    if (!ledger?.list) return;
+    const tlApi = (window as any)?.glass?.tradelocker;
+    if (!ledger?.list && !tlApi?.getOrdersHistory) return;
     if (!force) {
       const now = Date.now();
       if (now - lastHistoryFetchAtRef.current < 5_000) return;
@@ -858,23 +1179,39 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     setHistoryLoading(true);
     setHistoryError(null);
     try {
-      const res = await ledger.list({ limit: 600 });
-      if (!res?.ok || !Array.isArray(res.entries)) {
-        setHistoryError(res?.error ? String(res.error) : 'Failed to load trade history.');
-        return;
-      }
-
       const env = activeAccount?.env ?? null;
       const server = activeAccount?.server ?? null;
-      const accountId = activeAccount?.accountId ?? null;
-      const accNum = activeAccount?.accNum ?? null;
+      const accountId = parseTradeLockerAccountId(activeAccount?.accountId);
+      const accNum = parseTradeLockerAccountId(activeAccount?.accNum);
+      const [ledgerRes, brokerHistoryRes] = await Promise.all([
+        ledger?.list
+          ? ledger.list({ limit: 600 }).catch((err: any) => ({
+              ok: false,
+              error: err?.message ? String(err.message) : 'Failed to load trade ledger history.'
+            }))
+          : Promise.resolve(null),
+        tlApi?.getOrdersHistory
+          ? tlApi.getOrdersHistory().catch((err: any) => ({
+              ok: false,
+              error: err?.message ? String(err.message) : 'Failed to load broker order history.'
+            }))
+          : Promise.resolve(null)
+      ]);
 
       const normStr = (v: any) => String(v ?? '').trim().toUpperCase();
 
       const accountMatches = (entry: any) => {
         if (historyAllAccounts) return true;
         if (!env && !server && !accountId && !accNum) return true;
-        const a = entry?.account || entry?.acct || null;
+        const a =
+          entry?.account ||
+          entry?.acct ||
+          {
+            env: entry?.env ?? null,
+            server: entry?.server ?? null,
+            accountId: entry?.accountId ?? null,
+            accNum: entry?.accNum ?? null
+          };
         const eEnv = a?.env != null ? String(a.env) : null;
         const eServer = a?.server != null ? String(a.server) : null;
         const eAccountId = a?.accountId != null ? Number(a.accountId) : null;
@@ -906,24 +1243,94 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         return status === 'CLOSED' || posStatus === 'CLOSED' || closedAt > 0;
       };
 
-      const filtered = (res.entries as any[])
-        .filter((e) => e?.broker === 'tradelocker')
-        .filter(accountMatches)
-        .filter(isClosed);
+      const ledgerEntries = ledgerRes?.ok && Array.isArray((ledgerRes as any).entries)
+        ? ((ledgerRes as any).entries as any[])
+            .filter((e) => e?.broker === 'tradelocker')
+            .filter(accountMatches)
+            .filter(isClosed)
+        : [];
+      const brokerHistoryEntries = brokerHistoryRes?.ok && Array.isArray((brokerHistoryRes as any).orders)
+        ? (((brokerHistoryRes as any).orders as any[])
+            .map((order) => mapBrokerOrderHistoryEntry(order))
+            .filter(Boolean) as any[])
+        : [];
 
-      const sorted = [...filtered].sort((a, b) => {
+      const dedupeKeys = new Set<string>();
+      for (const entry of ledgerEntries) {
+        const primary = String(entry?.brokerOrderId || entry?.orderId || entry?.id || '').trim();
+        if (primary) dedupeKeys.add(primary.toUpperCase());
+        const fallback = `${String(entry?.symbol || '').toUpperCase()}|${Number(entry?.positionClosedAtMs || entry?.closedAtMs || 0)}`;
+        if (fallback && !fallback.endsWith('|0')) dedupeKeys.add(fallback);
+      }
+      const merged = [...ledgerEntries];
+      for (const entry of brokerHistoryEntries) {
+        const key = String(entry?.brokerOrderId || entry?.orderId || entry?.id || '').trim().toUpperCase();
+        const fallback = `${String(entry?.symbol || '').toUpperCase()}|${Number(entry?.positionClosedAtMs || entry?.closedAtMs || 0)}`;
+        if ((key && dedupeKeys.has(key)) || (fallback && dedupeKeys.has(fallback))) continue;
+        if (key) dedupeKeys.add(key);
+        if (fallback) dedupeKeys.add(fallback);
+        merged.push(entry);
+      }
+
+      const sorted = [...merged].sort((a, b) => {
         const aClose = Number(a?.positionClosedAtMs || 0) || Number(a?.updatedAtMs || 0) || Number(a?.createdAtMs || 0);
         const bClose = Number(b?.positionClosedAtMs || 0) || Number(b?.updatedAtMs || 0) || Number(b?.createdAtMs || 0);
         return bClose - aClose;
       });
 
+      const errors: string[] = [];
+      if (ledgerRes && !ledgerRes.ok) errors.push(String((ledgerRes as any)?.error || 'Trade ledger history unavailable.'));
+      if (brokerHistoryRes && !brokerHistoryRes.ok) errors.push(String((brokerHistoryRes as any)?.error || 'Broker order history unavailable.'));
+      const brokerError = brokerHistoryRes && !brokerHistoryRes.ok
+        ? String((brokerHistoryRes as any)?.error || 'Broker order history unavailable.')
+        : '';
+      const brokerLikelyTransient =
+        brokerError.trim().length > 0 &&
+        /429|rate|cloudflare|denied|temporar|unavailable|timeout|upstream|gateway/i.test(brokerError);
+      const shouldUseCached =
+        sorted.length === 0 &&
+        Array.isArray(cachedHistory?.entries) &&
+        cachedHistory.entries.length > 0 &&
+        (errors.length > 0 || (brokerLikelyTransient && brokerHistoryEntries.length === 0));
+
+      if (shouldUseCached) {
+        const ageSec = cachedHistory?.updatedAtMs
+          ? Math.max(1, Math.round((Date.now() - Number(cachedHistory.updatedAtMs)) / 1000))
+          : null;
+        const stalePrefix = errors.length > 0 ? `${errors.join(' | ')} | ` : '';
+        setHistoryEntries(cachedHistory!.entries);
+        setHistoryError(`${stalePrefix}Showing cached history${ageSec != null ? ` (${ageSec}s old)` : ''}.`);
+        return;
+      }
+
       setHistoryEntries(sorted);
+      if (sorted.length > 0) {
+        historyCacheRef.current.set(historyCacheKey, {
+          entries: sorted.slice(0, HISTORY_CACHE_ENTRY_LIMIT),
+          updatedAtMs: Date.now()
+        });
+        persistHistoryCache();
+      }
+      if (errors.length > 0 && sorted.length === 0) {
+        setHistoryError(errors.join(' | '));
+      } else {
+        setHistoryError(null);
+      }
     } catch (e: any) {
-      setHistoryError(e?.message ? String(e.message) : 'Failed to load trade history.');
+      const msg = e?.message ? String(e.message) : 'Failed to load trade history.';
+      if (Array.isArray(cachedHistory?.entries) && cachedHistory.entries.length > 0) {
+        const ageSec = cachedHistory?.updatedAtMs
+          ? Math.max(1, Math.round((Date.now() - Number(cachedHistory.updatedAtMs)) / 1000))
+          : null;
+        setHistoryEntries(cachedHistory.entries);
+        setHistoryError(`${msg} | Showing cached history${ageSec != null ? ` (${ageSec}s old)` : ''}.`);
+      } else {
+        setHistoryError(msg);
+      }
     } finally {
       setHistoryLoading(false);
     }
-  }, [activeAccount?.accNum, activeAccount?.accountId, activeAccount?.env, activeAccount?.server, historyAllAccounts]);
+  }, [activeAccount, activeAccount?.accNum, activeAccount?.accountId, activeAccount?.env, activeAccount?.server, historyAllAccounts, hydrateHistoryCache, mapBrokerOrderHistoryEntry, persistHistoryCache]);
 
   const fetchBlotter = useCallback(async (force: boolean = false) => {
     const bridge = requireBridge('tradelocker.blotter');
@@ -960,11 +1367,19 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
       const accountMatches = (entry: any) => {
         if (blotterAllAccounts) return true;
         if (!env && !server && !accountId && !accNum) return true;
-        const a = entry?.account || entry?.acct || null;
+        const a =
+          entry?.account ||
+          entry?.acct ||
+          {
+            env: entry?.env ?? null,
+            server: entry?.server ?? null,
+            accountId: entry?.accountId ?? null,
+            accNum: entry?.accNum ?? null
+          };
         const eEnv = a?.env != null ? String(a.env) : null;
         const eServer = a?.server != null ? String(a.server) : null;
-        const eAccountId = a?.accountId != null ? Number(a.accountId) : null;
-        const eAccNum = a?.accNum != null ? Number(a.accNum) : null;
+        const eAccountId = parseTradeLockerAccountId(a?.accountId);
+        const eAccNum = parseTradeLockerAccountId(a?.accNum);
 
         if (env != null) {
           if (!eEnv) return false;
@@ -1653,6 +2068,12 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
               </div>
             )}
 
+            {rateLimitLine && (
+              <div className={`mt-2 text-[10px] font-mono ${rateLimitTone}`}>
+                {rateLimitLine}
+              </div>
+            )}
+
             {!brokerQuotesError && brokerQuotesUpdatedAtMs && (
               <div className={`mt-2 text-[10px] font-mono ${quotesFresh ? 'text-green-300/90' : 'text-gray-500'}`}>
                 Broker quotes updated {formatAge(brokerQuotesUpdatedAtMs)} ago
@@ -2192,7 +2613,7 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                   </div>
                 </div>
                 <div className="mb-3 text-[10px] text-gray-600">
-                  Note: History tracks trades executed through this app (Glass trade ledger). Trades opened outside the app won't appear yet.
+                  Note: History prefers Glass trade-ledger records and augments with TradeLocker broker order history when available.
                 </div>
 
                 {tradeLedgerUnavailableMessage && (
@@ -2257,9 +2678,22 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                             ? Number(e.positionClosedPnl)
                             : Number.isFinite(Number(e?.positionClosedPnlEstimate))
                               ? Number(e.positionClosedPnlEstimate)
-                              : 0;
+                              : null;
 
-                      const pnlClass = realized >= 0 ? 'text-green-400' : 'text-red-400';
+                      const pnlClass =
+                        realized == null
+                          ? 'text-gray-400'
+                          : realized >= 0
+                            ? 'text-green-400'
+                            : 'text-red-400';
+                      const stopLoss =
+                        Number.isFinite(Number(e?.stopLoss)) && Number(e.stopLoss) > 0
+                          ? Number(e.stopLoss)
+                          : null;
+                      const takeProfit =
+                        Number.isFinite(Number(e?.takeProfit)) && Number(e.takeProfit) > 0
+                          ? Number(e.takeProfit)
+                          : null;
                       const closeAtMs = Number(e?.positionClosedAtMs || 0);
                       const openAtMs = Number(e?.brokerOpenTimeMs || e?.positionOpenedAtMs || 0);
                       const durationSec =
@@ -2280,7 +2714,7 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                               )}
                             </div>
                             <div className={`font-mono font-bold text-sm ${pnlClass}`}>
-                              {realized >= 0 ? '+' : ''}{realized.toFixed(2)}
+                              {realized == null ? '--' : `${realized >= 0 ? '+' : ''}${realized.toFixed(2)}`}
                             </div>
                           </div>
 
@@ -2299,11 +2733,11 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                             </div>
                             <div className="flex justify-between">
                               <span>SL:</span>
-                              <span className="text-red-500/70">{Number(e?.stopLoss || 0) || 0}</span>
+                              <span className="text-red-500/70">{stopLoss != null ? formatPrice(stopLoss) : '--'}</span>
                             </div>
                             <div className="flex justify-between">
                               <span>TP:</span>
-                              <span className="text-green-500/70">{Number(e?.takeProfit || 0) || 0}</span>
+                              <span className="text-green-500/70">{takeProfit != null ? formatPrice(takeProfit) : '--'}</span>
                             </div>
                           </div>
 
@@ -2843,8 +3277,8 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                         {savedProfiles.map((profile) => (
                           <option key={profile.id} value={profile.id}>
                             {profile.label}
-                            {Number.isFinite(Number(profile.accountId))
-                              ? ` • acct ${Number(profile.accountId)}${Number.isFinite(Number(profile.accNum)) ? `/${Number(profile.accNum)}` : ''}`
+                            {parseTradeLockerAccountId(profile.accountId) != null
+                              ? ` • acct ${parseTradeLockerAccountId(profile.accountId)}${parseTradeLockerAccountId(profile.accNum) != null ? `/${parseTradeLockerAccountId(profile.accNum)}` : ''}`
                               : ''}
                           </option>
                         ))}

@@ -156,6 +156,119 @@ export interface CalendarRule {
   updatedAtMs?: number | null;
 }
 
+export interface CalendarPnlTrade {
+  id: string;
+  symbol: string | null;
+  side: 'BUY' | 'SELL';
+  broker: string | null;
+  agentId: string | null;
+  closedAtMs: number;
+  realizedPnl: number;
+  rMultiple: number | null;
+  winLoss: 'win' | 'loss' | 'be';
+  accountKey: string | null;
+  accountLabel: string | null;
+  accountId: number | null;
+  accNum: number | null;
+  realizedPnlSource: string | null;
+  pnlSourceKind: 'ledger' | 'broker' | 'unknown';
+}
+
+export interface CalendarPnlDayCell {
+  dateKey: string;
+  dayOfMonth: number;
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  netPnl: number;
+  grossProfit: number;
+  grossLoss: number;
+  winRate: number | null;
+  profitFactor: number | null;
+  topSymbol: string | null;
+}
+
+export interface CalendarPnlMonthSummary {
+  monthKey: string;
+  netPnl: number;
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  profitFactor: number | null;
+  bestDayPnl: number | null;
+  worstDayPnl: number | null;
+  activeDays: number;
+}
+
+export interface CalendarPnlKpis {
+  netPnl: number;
+  accountBalance: number | null;
+  accountEquity: number | null;
+  profitFactor: number | null;
+  winRate: number | null;
+  avgWin: number | null;
+  avgLoss: number | null;
+}
+
+export interface CalendarPnlAccountOption {
+  accountKey: string;
+  label: string;
+  broker: string | null;
+  accountId: number | null;
+  accNum: number | null;
+  env?: string | null;
+  server?: string | null;
+  isActive?: boolean;
+}
+
+export interface CalendarPnlAccountSummary {
+  accountKey: string;
+  label: string;
+  broker: string | null;
+  accountId: number | null;
+  accNum: number | null;
+  netPnl: number;
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  activeDays: number;
+}
+
+export interface CalendarPnlDayAccountOverlay {
+  accountKey: string;
+  label: string;
+  broker: string | null;
+  netPnl: number;
+  tradeCount: number;
+  wins: number;
+  losses: number;
+}
+
+export interface CalendarPnlSourceSummary {
+  ledgerTrades: number;
+  brokerTrades: number;
+  unknownTrades: number;
+  ledgerNetPnl: number;
+  brokerNetPnl: number;
+  unknownNetPnl: number;
+}
+
+export interface CalendarPnlSnapshot {
+  timezone: string;
+  monthKey: string;
+  selectedAccountKey: string | null;
+  kpis: CalendarPnlKpis;
+  monthSummary: CalendarPnlMonthSummary;
+  cells: CalendarPnlDayCell[];
+  tradesByDate: Record<string, CalendarPnlTrade[]>;
+  availableAccounts: CalendarPnlAccountOption[];
+  accountSummaries: CalendarPnlAccountSummary[];
+  accountOverlaysByDate: Record<string, CalendarPnlDayAccountOverlay[]>;
+  sourceSummary: CalendarPnlSourceSummary;
+}
+
 export interface SignalHistoryEntry {
   id: string;
   signalId: string;
@@ -1584,6 +1697,91 @@ export interface OutcomeFeedConsistencyState {
   updatedAtMs: number;
 }
 
+export type TradeLockerRateLimitGovernorMode = 'normal' | 'guarded' | 'cooldown';
+export type TradeLockerRateLimitPolicy = 'safe' | 'balanced' | 'aggressive';
+
+export interface TradeLockerRateLimitPolicyThresholds {
+  guardedThreshold: number;
+  cooldownThreshold: number;
+  guardedPressure: number;
+  cooldownPressure: number;
+  recoveryStreak: number;
+  maxIntervalMs: number;
+}
+
+export interface TradeLockerRateLimitRouteTelemetry {
+  routeKey: string;
+  method?: string | null;
+  path?: string | null;
+  windowRequests: number;
+  window429: number;
+  windowBlocked: number;
+  totalRequests: number;
+  total429: number;
+  totalBlocked: number;
+  lastStatus?: number | null;
+  lastError?: string | null;
+  lastRequestAtMs?: number | null;
+  last429AtMs?: number | null;
+  lastBlockedAtMs?: number | null;
+  blockedUntilMs?: number | null;
+  retryAfterMs?: number | null;
+  avgLatencyMs?: number | null;
+}
+
+export interface TradeLockerRateLimitAccountTelemetry {
+  accountKey: string;
+  env?: 'demo' | 'live' | null;
+  server?: string | null;
+  accountId?: number | null;
+  accNum?: number | null;
+  label?: string | null;
+  windowRequests: number;
+  window429: number;
+  windowBlocked: number;
+  totalRequests: number;
+  total429: number;
+  totalBlocked: number;
+  lastStatus?: number | null;
+  lastError?: string | null;
+  lastRequestAtMs?: number | null;
+  last429AtMs?: number | null;
+  lastBlockedAtMs?: number | null;
+  blockedUntilMs?: number | null;
+  retryAfterMs?: number | null;
+}
+
+export interface TradeLockerRateLimitTelemetry {
+  mode: TradeLockerRateLimitGovernorMode;
+  modeChangedAtMs: number;
+  policy?: TradeLockerRateLimitPolicy;
+  pressure?: number;
+  policyThresholds?: TradeLockerRateLimitPolicyThresholds | null;
+  windowMs: number;
+  windowStartedAtMs: number;
+  windowRequests: number;
+  window429: number;
+  windowBlocked: number;
+  totalRequests: number;
+  total429: number;
+  totalBlocked: number;
+  totalErrors: number;
+  totalSuccess: number;
+  consecutive429: number;
+  consecutiveSuccess: number;
+  adaptiveMinIntervalMs: number;
+  baseMinIntervalMs: number;
+  adaptiveRequestConcurrency: number;
+  baseRequestConcurrency: number;
+  last429AtMs?: number | null;
+  lastSuccessAtMs?: number | null;
+  lastBlockedAtMs?: number | null;
+  lastRouteKey?: string | null;
+  lastAccountKey?: string | null;
+  topRoutes: TradeLockerRateLimitRouteTelemetry[];
+  topAccounts?: TradeLockerRateLimitAccountTelemetry[];
+}
+
 export interface HealthSnapshot {
   updatedAtMs: number;
   startupCheckedAtMs?: number | null;
@@ -1628,6 +1826,7 @@ export interface HealthSnapshot {
   tradelockerRequestInFlight?: number | null;
   tradelockerRequestConcurrency?: number | null;
   tradelockerMinRequestIntervalMs?: number | null;
+  tradelockerRateLimitTelemetry?: TradeLockerRateLimitTelemetry | null;
   nativeChartSymbol?: string | null;
   nativeChartUpdatedAtMs?: number | null;
   nativeChartFrames?: number | null;

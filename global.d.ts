@@ -238,6 +238,31 @@ declare global {
           upstreamBackoffUntilMs?: number;
           upstreamLastError?: string | null;
           upstreamLastStatus?: number | null;
+          requestQueueDepth?: number;
+          requestQueueMaxDepth?: number;
+          requestQueueMaxWaitMs?: number;
+          requestInFlight?: number;
+          requestConcurrency?: number;
+          minRequestIntervalMs?: number;
+          rateLimitPolicy?: 'safe' | 'balanced' | 'aggressive';
+          rateLimitPolicies?: Array<'safe' | 'balanced' | 'aggressive'>;
+          rateLimitTelemetry?: any;
+        }>;
+        getRateLimitPolicy: () => Promise<{
+          ok: boolean;
+          policy?: 'safe' | 'balanced' | 'aggressive';
+          profile?: Record<string, number>;
+          availablePolicies?: Array<'safe' | 'balanced' | 'aggressive'>;
+          error?: string;
+        }>;
+        setRateLimitPolicy: (args: {
+          policy?: 'safe' | 'balanced' | 'aggressive';
+        }) => Promise<{
+          ok: boolean;
+          policy?: 'safe' | 'balanced' | 'aggressive';
+          profile?: Record<string, number>;
+          availablePolicies?: Array<'safe' | 'balanced' | 'aggressive'>;
+          error?: string;
         }>;
         getAccounts: () => Promise<{ ok: boolean; accounts: any[]; error?: string }>;
         setActiveAccount: (account: { accountId: number; accNum: number }) => Promise<{ ok: boolean; accountId?: number | null; accNum?: number | null }>;

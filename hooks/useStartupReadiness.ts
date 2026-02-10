@@ -307,44 +307,40 @@ export function useStartupReadiness(params: UseStartupReadinessParams) {
     }
 
     if (!startupPermissionAuditLoggedRef.current) {
+      const shouldWarnPermissions =
+        !!result.permissionError ||
+        result.bridgeState === 'failed' ||
+        (Array.isArray(result.blockedScopes) && result.blockedScopes.length > 0) ||
+        result.probeSkippedDueToBridge === true;
+      const startupPermissionsPayload = {
+        source,
+        requestedScopes: result.requestedScopes,
+        skippedScopes: result.skippedScopes,
+        activeScopes: result.activeScopes,
+        blockedScopes: result.blockedScopes,
+        unknownScopes: result.unknownScopes,
+        probeErrors: result?.probeErrors || null,
+        bridgeState: result.bridgeState || null,
+        bridgeError: result.bridgeError || null,
+        bridgeMissingPaths: result.bridgeMissingPaths || null,
+        probeSkippedDueToBridge: result.probeSkippedDueToBridge === true,
+        openaiProbeSource: result.openaiProbeSource || result.openaiFallbackSource || null,
+        tradeLockerProbeSource: result.tradeLockerProbeSource || result.tradeLockerFallbackSource || null
+      };
       if (result.diagnosticWarning) {
         appendLiveError({
           source: 'startup.permissions',
           level: 'warn',
           message: result.diagnosticWarning,
-          detail: {
-            source,
-            requestedScopes: result.requestedScopes,
-            skippedScopes: result.skippedScopes,
-            activeScopes: result.activeScopes,
-            blockedScopes: result.blockedScopes,
-            unknownScopes: result.unknownScopes,
-          probeErrors: result?.probeErrors || null,
-          bridgeState: result.bridgeState || null,
-          bridgeError: result.bridgeError || null,
-          bridgeMissingPaths: result.bridgeMissingPaths || null,
-          probeSkippedDueToBridge: result.probeSkippedDueToBridge === true,
-          openaiProbeSource: result.openaiProbeSource || result.openaiFallbackSource || null,
-          tradeLockerProbeSource: result.tradeLockerProbeSource || result.tradeLockerFallbackSource || null
-        }
+          detail: startupPermissionsPayload
         });
       }
       try {
-        console.warn('[startup_permissions]', {
-          source,
-          requestedScopes: result.requestedScopes,
-          skippedScopes: result.skippedScopes,
-          activeScopes: result.activeScopes,
-          blockedScopes: result.blockedScopes,
-          unknownScopes: result.unknownScopes,
-          probeErrors: result?.probeErrors || null,
-          bridgeState: result.bridgeState || null,
-          bridgeError: result.bridgeError || null,
-          bridgeMissingPaths: result.bridgeMissingPaths || null,
-          probeSkippedDueToBridge: result.probeSkippedDueToBridge === true,
-          openaiProbeSource: result.openaiProbeSource || result.openaiFallbackSource || null,
-          tradeLockerProbeSource: result.tradeLockerProbeSource || result.tradeLockerFallbackSource || null
-        });
+        if (shouldWarnPermissions) {
+          console.warn('[startup_permissions]', startupPermissionsPayload);
+        } else {
+          console.info('[startup_permissions]', startupPermissionsPayload);
+        }
       } catch {
         // ignore console failures
       }

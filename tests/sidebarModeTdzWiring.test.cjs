@@ -17,7 +17,7 @@ test('mode-dependent panel consistency wiring is declared after useSidebar', () 
     "if (mode !== 'audit') return;",
     "if (mode !== 'changes') return;",
     'originPanel: mode || null',
-    "outcomeConsistencyEngine.markPanelRead('leaderboard', cursor);",
+    "outcomeConsistencyEngine.markPanelRead('leaderboard', outcomeFeedCursor);",
     "outcomeConsistencyEngine.markPanelRead('academy', outcomeFeedCursor);",
     "outcomeConsistencyEngine.markPanelRead('audit', outcomeFeedCursor);",
     "outcomeConsistencyEngine.markPanelRead('changes', outcomeFeedCursor);"

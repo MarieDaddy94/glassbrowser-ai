@@ -106,6 +106,8 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
   const [promotionDrawdown, setPromotionDrawdown] = useState(10);
   const [promotionConsistency, setPromotionConsistency] = useState(0.63);
   const [promotionDecision, setPromotionDecision] = useState<PromotionDecision | null>(null);
+  const [ratePolicyBusy, setRatePolicyBusy] = useState(false);
+  const [ratePolicyError, setRatePolicyError] = useState<string | null>(null);
   const [livePolicy, setLivePolicy] = useState(livePolicyService.getSnapshot());
   const [livePolicyHistory, setLivePolicyHistory] = useState(livePolicyService.getHistory(6));
   const inFlightRef = useRef(false);
@@ -184,6 +186,10 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
   const outcomeFeedConsistency = liveHealth?.outcomeFeed?.consistency || null;
   const schedulerHealth = liveHealth?.scheduler || null;
   const cacheBudgetRows = Array.isArray(liveHealth?.cacheBudgets) ? liveHealth.cacheBudgets : [];
+  const rateLimitTelemetry = liveHealth?.tradelockerRateLimitTelemetry || null;
+  const rateLimitTopRoutes = Array.isArray(rateLimitTelemetry?.topRoutes) ? rateLimitTelemetry.topRoutes : [];
+  const rateLimitTopAccounts = Array.isArray((rateLimitTelemetry as any)?.topAccounts) ? ((rateLimitTelemetry as any).topAccounts as any[]) : [];
+  const rateLimitPolicy = String((rateLimitTelemetry as any)?.policy || '').trim().toLowerCase();
 
   const rawJson = useMemo(() => {
     if (!snapshot) return '';
@@ -262,6 +268,29 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
     refreshLivePolicy();
     setStatus(`Champion demoted: ${activeChampion}`);
   }, [liveHealth?.agentDrift?.reports, livePolicy.activeChampionId, livePolicyService, refreshLivePolicy]);
+
+  const setRateLimitPolicy = useCallback(async (policy: 'safe' | 'balanced' | 'aggressive') => {
+    const api = window.glass?.tradelocker;
+    if (!api?.setRateLimitPolicy) {
+      setRatePolicyError('TradeLocker policy control unavailable in this build.');
+      return;
+    }
+    setRatePolicyBusy(true);
+    setRatePolicyError(null);
+    try {
+      const res = await api.setRateLimitPolicy({ policy });
+      if (!res?.ok) {
+        setRatePolicyError(res?.error ? String(res.error) : 'Failed to apply rate-limit policy.');
+        return;
+      }
+      setStatus(`TradeLocker rate-limit policy set to ${String(policy).toUpperCase()}.`);
+      await refreshSnapshot({ silent: true });
+    } catch (err: any) {
+      setRatePolicyError(err?.message ? String(err.message) : 'Failed to apply rate-limit policy.');
+    } finally {
+      setRatePolicyBusy(false);
+    }
+  }, [refreshSnapshot]);
 
   const copySnapshot = useCallback(() => {
     if (!rawJson) return;
@@ -503,6 +532,70 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
                 <MetricRow label="Suppress Until" value={liveHealth.brokerRateLimitSuppressUntilMs ? formatTime(liveHealth.brokerRateLimitSuppressUntilMs) : '--'} />
                 <MetricRow label="Min Interval" value={formatMs(liveHealth.tradelockerMinRequestIntervalMs)} />
                 <MetricRow label="Max Queue" value={liveHealth.tradelockerRequestQueueMaxDepth ?? liveHealth.perf?.brokerQueueMaxDepth ?? 0} />
+                <MetricRow
+                  label="Governor"
+                  value={rateLimitTelemetry?.mode ? String(rateLimitTelemetry.mode).toUpperCase() : '--'}
+                  tone={
+                    rateLimitTelemetry?.mode === 'cooldown'
+                      ? 'text-red-300'
+                      : rateLimitTelemetry?.mode === 'guarded'
+                        ? 'text-amber-300'
+                      : 'text-emerald-300'
+                  }
+                />
+                <MetricRow label="Policy" value={rateLimitPolicy ? rateLimitPolicy.toUpperCase() : '--'} />
+                <MetricRow label="Pressure" value={formatNumber((rateLimitTelemetry as any)?.pressure ?? null, 2)} />
+                <MetricRow label="Window 429" value={rateLimitTelemetry?.window429 ?? '--'} />
+                <MetricRow label="Window Blocked" value={rateLimitTelemetry?.windowBlocked ?? '--'} />
+                <MetricRow label="Adaptive Interval" value={formatMs(rateLimitTelemetry?.adaptiveMinIntervalMs ?? null)} />
+                <MetricRow label="Adaptive Concurrency" value={rateLimitTelemetry?.adaptiveRequestConcurrency ?? '--'} />
+                <MetricRow label="Last 429" value={formatAge(rateLimitTelemetry?.last429AtMs ?? null)} />
+                <div className="mt-2 grid grid-cols-3 gap-1">
+                  {(['safe', 'balanced', 'aggressive'] as const).map((policy) => (
+                    <button
+                      key={policy}
+                      type="button"
+                      disabled={ratePolicyBusy}
+                      onClick={() => { void setRateLimitPolicy(policy); }}
+                      className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wide ${
+                        rateLimitPolicy === policy
+                          ? 'border-cyan-300/60 text-cyan-200 bg-cyan-500/10'
+                          : 'border-white/10 text-gray-300 hover:bg-white/5'
+                      } ${ratePolicyBusy ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    >
+                      {policy}
+                    </button>
+                  ))}
+                </div>
+                {ratePolicyError ? (
+                  <div className="text-[10px] text-amber-300">{ratePolicyError}</div>
+                ) : null}
+                {rateLimitTopRoutes.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-white/10 space-y-1 text-[10px] text-gray-400">
+                    <div className="uppercase tracking-widest text-gray-500">Route hot spots</div>
+                    {rateLimitTopRoutes.slice(0, 4).map((row) => (
+                      <div key={row.routeKey} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{row.routeKey}</span>
+                        <span className="text-gray-500 whitespace-nowrap">
+                          429:{row.window429 ?? 0} blk:{row.windowBlocked ?? 0}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {rateLimitTopAccounts.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-white/10 space-y-1 text-[10px] text-gray-400">
+                    <div className="uppercase tracking-widest text-gray-500">Account hot spots</div>
+                    {rateLimitTopAccounts.slice(0, 3).map((row) => (
+                      <div key={String(row.accountKey || row.label || 'acct')} className="flex items-center justify-between gap-2">
+                        <span className="truncate">{String(row.label || row.accountKey || '--')}</span>
+                        <span className="text-gray-500 whitespace-nowrap">
+                          429:{Number(row.window429 || 0)} blk:{Number(row.windowBlocked || 0)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </MetricCard>
             </div>
 
