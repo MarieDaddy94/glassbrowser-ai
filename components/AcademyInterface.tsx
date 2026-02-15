@@ -1,8 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { BookOpen, Download, RefreshCw } from 'lucide-react';
-import { AcademyCase, AcademyLesson, AcademySymbolLearning, CrossPanelContext, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState } from '../types';
+import {
+  AcademyCase,
+  AcademyLesson,
+  AcademySymbolLearning,
+  CrossPanelContext,
+  LearningGraphSnapshot,
+  OutcomeFeedConsistencyState,
+  OutcomeFeedCursor,
+  PanelFreshnessState
+} from '../types';
 import TagPills from './TagPills';
 import { usePersistenceHealth } from '../hooks/usePersistenceHealth';
+import { buildAcademyLearningGraph, normalizeLearningGraphAgentKey } from '../services/academyLearningGraph';
 
 interface AcademyInterfaceProps {
   cases: AcademyCase[];
@@ -36,6 +46,8 @@ interface AcademyInterfaceProps {
   outcomeFeedCursor?: OutcomeFeedCursor | null;
   outcomeFeedConsistency?: OutcomeFeedConsistencyState | null;
   panelFreshness?: PanelFreshnessState | null;
+  focusRequest?: { requestId: string; signalId?: string | null; caseId?: string | null; forceVisible?: boolean } | null;
+  onFocusRequestConsumed?: (requestId: string, result: 'matched' | 'materialized' | 'missing') => void;
 }
 
 const PANEL_STORAGE_KEY = 'glass_academy_panel_ui_v1';
@@ -43,9 +55,12 @@ const CASE_PRESET_KEY = 'glass_academy_case_filter_presets_v1';
 const LESSON_PRESET_KEY = 'glass_academy_lesson_filter_presets_v1';
 
 type AcademyPanelState = {
+  activeTab?: 'cases' | 'learning_graph';
   query?: string;
   outcomeFilter?: string;
   selectedSymbol?: string | null;
+  learningGraphAgentId?: string;
+  learningGraphExpandedIds?: string[];
   filterSymbol?: string;
   filterTimeframe?: string;
   filterAgent?: string;
@@ -94,9 +109,14 @@ const loadPanelState = (): AcademyPanelState => {
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return {
+      activeTab: parsed?.activeTab === 'learning_graph' ? 'learning_graph' : 'cases',
       query: typeof parsed?.query === 'string' ? parsed.query : '',
       outcomeFilter: typeof parsed?.outcomeFilter === 'string' ? parsed.outcomeFilter : 'all',
       selectedSymbol: typeof parsed?.selectedSymbol === 'string' ? parsed.selectedSymbol : null,
+      learningGraphAgentId: typeof parsed?.learningGraphAgentId === 'string' ? parsed.learningGraphAgentId : '',
+      learningGraphExpandedIds: Array.isArray(parsed?.learningGraphExpandedIds)
+        ? parsed.learningGraphExpandedIds.map((item: any) => String(item || '')).filter(Boolean)
+        : [],
       filterSymbol: typeof parsed?.filterSymbol === 'string' ? parsed.filterSymbol : 'all',
       filterTimeframe: typeof parsed?.filterTimeframe === 'string' ? parsed.filterTimeframe : 'all',
       filterAgent: typeof parsed?.filterAgent === 'string' ? parsed.filterAgent : 'all',
@@ -198,6 +218,13 @@ const formatDuration = (ms?: number | null) => {
   return `${days}d`;
 };
 
+const formatPrice = (value: number | null | undefined) => {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return '--';
+  const rounded = Math.round(num * 100_000) / 100_000;
+  return String(rounded);
+};
+
 const formatBps = (value?: number | null) => {
   const num = Number(value);
   if (!Number.isFinite(num)) return '--';
@@ -226,13 +253,35 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   crossPanelContext,
   outcomeFeedCursor,
   outcomeFeedConsistency,
-  panelFreshness
+  panelFreshness,
+  focusRequest,
+  onFocusRequestConsumed
 }) => {
   const { degraded } = usePersistenceHealth('academy');
+  const hasResolvedOutcomeFeed = Number(outcomeFeedCursor?.total || 0) > 0;
+  const hasResolvedCaseRows = useMemo(
+    () =>
+      (Array.isArray(cases) ? cases : []).some((entry) => {
+        const outcome = String(
+          entry?.outcome ||
+          entry?.status ||
+          entry?.decisionOutcome ||
+          entry?.resolvedOutcomeEnvelope?.decisionOutcome ||
+          ''
+        ).trim().toUpperCase();
+        return outcome === 'WIN' || outcome === 'LOSS' || outcome === 'EXPIRED' || outcome === 'REJECTED' || outcome === 'FAILED';
+      }),
+    [cases]
+  );
   const initialPanelState = useMemo(loadPanelState, []);
+  const [activeTab, setActiveTab] = useState<'cases' | 'learning_graph'>(initialPanelState.activeTab || 'cases');
   const [query, setQuery] = useState(initialPanelState.query || '');
   const [outcomeFilter, setOutcomeFilter] = useState(initialPanelState.outcomeFilter || 'all');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(initialPanelState.selectedSymbol ?? null);
+  const [learningGraphAgentId, setLearningGraphAgentId] = useState<string>(initialPanelState.learningGraphAgentId || '');
+  const [learningGraphExpandedIds, setLearningGraphExpandedIds] = useState<string[]>(
+    Array.isArray(initialPanelState.learningGraphExpandedIds) ? initialPanelState.learningGraphExpandedIds : []
+  );
   const [filterSymbol, setFilterSymbol] = useState(initialPanelState.filterSymbol || 'all');
   const [filterTimeframe, setFilterTimeframe] = useState(initialPanelState.filterTimeframe || 'all');
   const [filterAgent, setFilterAgent] = useState(initialPanelState.filterAgent || 'all');
@@ -245,6 +294,7 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   const [lessonStrategy, setLessonStrategy] = useState(initialPanelState.lessonStrategy || 'all');
   const [lessonAgent, setLessonAgent] = useState(initialPanelState.lessonAgent || 'all');
   const [lessonOutcome, setLessonOutcome] = useState(initialPanelState.lessonOutcome || 'all');
+  const [lessonVisibleCount, setLessonVisibleCount] = useState<number>(12);
   const [casePresets, setCasePresets] = useState<CaseFilterPreset[]>(() => loadCaseFilterPresets());
   const [activeCasePresetId, setActiveCasePresetId] = useState<string>('');
   const [casePresetName, setCasePresetName] = useState<string>('');
@@ -252,12 +302,19 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   const [activeLessonPresetId, setActiveLessonPresetId] = useState<string>('');
   const [lessonPresetName, setLessonPresetName] = useState<string>('');
   const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
+  const [forcedFocusCaseId, setForcedFocusCaseId] = useState<string | null>(null);
+  const [focusRequestMiss, setFocusRequestMiss] = useState<{ signalId: string; requestId: string } | null>(null);
+  const [lastConsumedFocusRequestId, setLastConsumedFocusRequestId] = useState<string>('');
+  const learningGraphLastStableAgentKeyRef = React.useRef<string>(String(initialPanelState.learningGraphAgentId || '').trim());
 
   useEffect(() => {
     persistPanelState({
+      activeTab,
       query,
       outcomeFilter,
       selectedSymbol,
+      learningGraphAgentId,
+      learningGraphExpandedIds,
       filterSymbol,
       filterTimeframe,
       filterAgent,
@@ -272,6 +329,7 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
       lessonOutcome
     });
   }, [
+    activeTab,
     filterAgent,
     filterBroker,
     filterExecutionMode,
@@ -284,6 +342,8 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
     lessonStrategy,
     lessonAgent,
     lessonOutcome,
+    learningGraphAgentId,
+    learningGraphExpandedIds,
     outcomeFilter,
     query,
     selectedSymbol
@@ -571,25 +631,41 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
     query
   ]);
 
+  const displayedCases = useMemo(() => {
+    const next = Array.isArray(filteredCases) ? [...filteredCases] : [];
+    const includePinned = (pinId: string | null | undefined) => {
+      const key = String(pinId || '').trim();
+      if (!key) return;
+      const alreadyVisible = next.some((entry) => entry.id === key || entry.signalId === key);
+      if (alreadyVisible) return;
+      const focused = (cases || []).find((entry) => entry.id === key || entry.signalId === key);
+      if (!focused) return;
+      next.unshift(focused);
+    };
+    includePinned(forcedFocusCaseId);
+    includePinned(selectedCaseId);
+    return next;
+  }, [cases, filteredCases, forcedFocusCaseId, selectedCaseId]);
+
   const selectedCases = useMemo(() => {
     if (selectedCaseIds.length === 0) return [];
-    const byId = new Map(filteredCases.map((entry) => [entry.id, entry]));
+    const byId = new Map(displayedCases.map((entry) => [entry.id, entry]));
     return selectedCaseIds.map((id) => byId.get(id)).filter(Boolean) as AcademyCase[];
-  }, [filteredCases, selectedCaseIds]);
+  }, [displayedCases, selectedCaseIds]);
 
   useEffect(() => {
     if (selectedCaseIds.length === 0) return;
-    const filteredIds = new Set(filteredCases.map((entry) => entry.id));
+    const filteredIds = new Set(displayedCases.map((entry) => entry.id));
     setSelectedCaseIds((prev) => prev.filter((id) => filteredIds.has(id)));
-  }, [filteredCases, selectedCaseIds.length]);
+  }, [displayedCases, selectedCaseIds.length]);
 
   const toggleSelected = useCallback((id: string) => {
     setSelectedCaseIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   }, []);
 
   const handleSelectAll = useCallback(() => {
-    setSelectedCaseIds(filteredCases.map((entry) => entry.id));
-  }, [filteredCases]);
+    setSelectedCaseIds(displayedCases.map((entry) => entry.id));
+  }, [displayedCases]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedCaseIds([]);
@@ -781,9 +857,9 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   }, [onOpenTradeLocker, selectedCases]);
 
   const selected = useMemo(() => {
-    if (!selectedCaseId) return filteredCases[0] || null;
-    return filteredCases.find((entry) => entry.id === selectedCaseId) || null;
-  }, [filteredCases, selectedCaseId]);
+    if (!selectedCaseId) return displayedCases[0] || null;
+    return displayedCases.find((entry) => entry.id === selectedCaseId) || null;
+  }, [displayedCases, selectedCaseId]);
 
   const selectedAttribution = useMemo(() => {
     if (!selected) {
@@ -792,8 +868,7 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
         executionOutcome: 'UNKNOWN',
         alphaBps: null as number | null,
         executionDragBps: null as number | null,
-        unresolved: true,
-        dragWarning: false
+        unresolved: true
       };
     }
     const decisionOutcome = String(
@@ -815,24 +890,56 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
       ? Number(selected.attribution?.executionDragBps)
       : null;
     const unresolved = decisionOutcome === 'UNKNOWN' || executionOutcome === 'UNKNOWN';
-    const decisionGood = decisionOutcome === 'WIN';
-    const executionWeak = executionOutcome === 'SLIPPAGE_EXIT' || executionOutcome === 'MISSED';
-    const dragWarning = (decisionGood && executionWeak) || (executionDragBps != null && executionDragBps > 0);
     return {
       decisionOutcome,
       executionOutcome,
       alphaBps,
       executionDragBps,
-      unresolved,
-      dragWarning
+      unresolved
     };
   }, [selected]);
 
   useEffect(() => {
-    if (!selectedCaseId && filteredCases.length > 0) {
-      onSelectCase(filteredCases[0].id);
+    const requestId = String(focusRequest?.requestId || '').trim();
+    if (!requestId || requestId === lastConsumedFocusRequestId) return;
+    const requestedSignalId = String(focusRequest?.signalId || '').trim();
+    const requestedCaseId = String(focusRequest?.caseId || '').trim();
+    const targetId = requestedCaseId || requestedSignalId;
+    const matched = (cases || []).find((entry) => {
+      if (!entry) return false;
+      const entryId = String(entry.id || '').trim();
+      const signalId = String(entry.signalId || '').trim();
+      return !!targetId && (entryId === targetId || signalId === targetId);
+    });
+    setLastConsumedFocusRequestId(requestId);
+    if (matched) {
+      if (focusRequest?.forceVisible) {
+        setForcedFocusCaseId(String(matched.id || matched.signalId || targetId || '').trim() || null);
+      }
+      setFocusRequestMiss(null);
+      setActiveTab('cases');
+      onSelectCase(matched.id);
+      onFocusRequestConsumed?.(requestId, 'matched');
+      return;
     }
-  }, [filteredCases, onSelectCase, selectedCaseId]);
+    if (focusRequest?.forceVisible && targetId) {
+      setForcedFocusCaseId(targetId);
+    }
+    if (requestedSignalId) {
+      setFocusRequestMiss({ signalId: requestedSignalId, requestId });
+    } else if (targetId) {
+      setFocusRequestMiss({ signalId: targetId, requestId });
+    } else {
+      setFocusRequestMiss(null);
+    }
+    onFocusRequestConsumed?.(requestId, 'missing');
+  }, [cases, focusRequest, lastConsumedFocusRequestId, onFocusRequestConsumed, onSelectCase]);
+
+  useEffect(() => {
+    if (!selectedCaseId && displayedCases.length > 0) {
+      onSelectCase(displayedCases[0].id);
+    }
+  }, [displayedCases, onSelectCase, selectedCaseId]);
 
   useEffect(() => {
     if (sortedSymbolLearnings.length === 0) {
@@ -843,6 +950,207 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
       setSelectedSymbol(sortedSymbolLearnings[0].symbol);
     }
   }, [selectedSymbol, sortedSymbolLearnings]);
+
+  const learningGraphAgentGraph = useMemo<LearningGraphSnapshot>(() => (
+    buildAcademyLearningGraph({
+      cases,
+      lessons,
+      symbolLearnings,
+      filters: {
+        agentId: null,
+        includeOutcomes: ['WIN', 'LOSS', 'EXPIRED', 'REJECTED', 'FAILED']
+      }
+    })
+  ), [cases, lessons, symbolLearnings]);
+
+  const learningGraphAgentOptions = useMemo(() => {
+    const labelsByKey = new Map<string, string>();
+    const register = (rawId: any, rawName: any) => {
+      const agentKey = normalizeLearningGraphAgentKey(rawId || rawName || 'unknown_agent');
+      const label = String(rawName || rawId || 'Unknown Agent').trim() || 'Unknown Agent';
+      if (!labelsByKey.has(agentKey)) {
+        labelsByKey.set(agentKey, label);
+      }
+    };
+    for (const entry of cases || []) {
+      register(entry?.agentId, entry?.agentName);
+    }
+    for (const lesson of lessons || []) {
+      register(lesson?.agentId, lesson?.agentName);
+    }
+    return Array.from(labelsByKey.entries())
+      .map(([agentKey, label]) => ({ agentKey, label }))
+      .sort((a, b) => {
+        const byKey = a.agentKey.localeCompare(b.agentKey);
+        if (byKey !== 0) return byKey;
+        return a.label.localeCompare(b.label);
+      });
+  }, [cases, lessons]);
+
+  const learningGraph = useMemo<LearningGraphSnapshot>(() => {
+    const selectedAgent = String(learningGraphAgentId || '').trim();
+    const selectedAgentKey = selectedAgent ? normalizeLearningGraphAgentKey(selectedAgent) : '';
+    return buildAcademyLearningGraph({
+      cases,
+      lessons,
+      symbolLearnings,
+      filters: {
+        agentId: selectedAgentKey || null,
+        includeOutcomes: ['WIN', 'LOSS', 'EXPIRED', 'REJECTED', 'FAILED']
+      }
+    });
+  }, [cases, learningGraphAgentId, lessons, symbolLearnings]);
+
+  useEffect(() => {
+    if (learningGraphAgentOptions.length === 0) {
+      return;
+    }
+    const selectedKey = String(learningGraphAgentId || '').trim();
+    const selectedExists = learningGraphAgentOptions.some((option) => option.agentKey === selectedKey);
+    if (selectedKey && selectedExists) {
+      learningGraphLastStableAgentKeyRef.current = selectedKey;
+      return;
+    }
+    const fallback =
+      learningGraphAgentOptions.some((option) => option.agentKey === learningGraphLastStableAgentKeyRef.current)
+        ? learningGraphLastStableAgentKeyRef.current
+        : learningGraphAgentOptions[0].agentKey;
+    if (fallback && fallback !== selectedKey) {
+      learningGraphLastStableAgentKeyRef.current = fallback;
+      setLearningGraphAgentId(fallback);
+    }
+  }, [learningGraphAgentId, learningGraphAgentOptions]);
+
+  const learningGraphSelectedAgentNodeId = useMemo(() => {
+    const selectedAgentKey = String(learningGraphAgentId || '').trim();
+    if (!selectedAgentKey && learningGraph.rootNodeIds.length > 0) {
+      return String(learningGraph.rootNodeIds[0] || '').trim();
+    }
+    const match = learningGraph.nodes.find((node) => {
+      if (node.type !== 'agent') return false;
+      const meta = node.meta && typeof node.meta === 'object' ? node.meta as Record<string, any> : {};
+      return normalizeLearningGraphAgentKey(meta.agentKey || node.label || node.id) === selectedAgentKey;
+    });
+    return String(match?.id || learningGraph.rootNodeIds[0] || '').trim();
+  }, [learningGraph.nodes, learningGraph.rootNodeIds, learningGraphAgentId]);
+
+  const learningGraphChildrenByParent = useMemo(() => {
+    const map = new Map<string, typeof learningGraph.nodes>();
+    for (const node of learningGraph.nodes) {
+      const parentId = String(node.parentId || '').trim();
+      if (!parentId) continue;
+      if (!map.has(parentId)) map.set(parentId, []);
+      map.get(parentId)?.push(node);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
+    }
+    return map;
+  }, [learningGraph.nodes]);
+
+  const toggleLearningGraphNode = useCallback((nodeId: string) => {
+    const id = String(nodeId || '').trim();
+    if (!id) return;
+    setLearningGraphExpandedIds((prev) => (prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]));
+  }, []);
+
+  const learningGraphNodeById = useMemo(() => {
+    const map = new Map<string, (typeof learningGraph.nodes)[number]>();
+    for (const node of learningGraph.nodes) {
+      map.set(node.id, node);
+    }
+    return map;
+  }, [learningGraph.nodes]);
+
+  const applyLearningGraphDrilldown = useCallback((nodeId: string) => {
+    const id = String(nodeId || '').trim();
+    if (!id) return;
+    let cursor = learningGraphNodeById.get(id) || null;
+    let agentLabel = '';
+    let symbolLabel = '';
+    let patternLabel = '';
+    let lessonLabel = '';
+    while (cursor) {
+      if (!agentLabel && cursor.type === 'agent') {
+        agentLabel = String(cursor.label || '').trim();
+      }
+      if (!symbolLabel && cursor.type === 'symbol') {
+        symbolLabel = String(cursor.label || '').trim();
+      }
+      if (!patternLabel && cursor.type === 'pattern') {
+        patternLabel = String(cursor.label || '').trim();
+      }
+      if (!lessonLabel && cursor.type === 'lesson') {
+        lessonLabel = String(cursor.label || '').trim();
+      }
+      const parentId = String(cursor.parentId || '').trim();
+      cursor = parentId ? (learningGraphNodeById.get(parentId) || null) : null;
+    }
+    if (agentLabel) {
+      setFilterAgent(agentLabel);
+      setLessonAgent(agentLabel);
+    }
+    if (symbolLabel) {
+      setFilterSymbol(symbolLabel);
+      setLessonSymbol(symbolLabel);
+      setSelectedSymbol(symbolLabel);
+    }
+    if (patternLabel) {
+      setQuery(patternLabel);
+    }
+    if (lessonLabel) {
+      setLessonQuery(lessonLabel);
+    }
+    setActiveTab('cases');
+  }, [learningGraphNodeById]);
+
+  const renderLearningGraphNode = useCallback((nodeId: string, depth: number = 0): React.ReactNode => {
+    const node = learningGraphNodeById.get(nodeId);
+    if (!node) return null;
+    const children = learningGraphChildrenByParent.get(node.id) || [];
+    const expanded = learningGraphExpandedIds.includes(node.id);
+    const count = Number(node.meta?.tradeCount || node.meta?.lessonCount || 0);
+    return (
+      <div key={node.id} className="space-y-1">
+        <div
+          className="w-full px-2 py-1 rounded border border-white/10 bg-black/40 hover:border-white/20"
+          style={{ marginLeft: `${depth * 14}px` }}
+        >
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex min-w-0 items-center gap-2">
+              {children.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => toggleLearningGraphNode(node.id)}
+                  className="text-gray-400 hover:text-white"
+                  title={expanded ? 'Collapse node' : 'Expand node'}
+                >
+                  {expanded ? '▾' : '▸'}
+                </button>
+              ) : (
+                <span className="text-gray-500">•</span>
+              )}
+              <button
+                type="button"
+                onClick={() => applyLearningGraphDrilldown(node.id)}
+                className="min-w-0 truncate text-left text-white hover:text-cyan-200"
+                title="Drill into related cases and lessons"
+              >
+                {node.label}
+              </button>
+            </div>
+            <span className="text-gray-500">
+              {node.type.toUpperCase()}
+              {count > 0 ? ` · ${count}` : ''}
+            </span>
+          </div>
+        </div>
+        {expanded
+          ? children.map((child) => renderLearningGraphNode(child.id, depth + 1))
+          : null}
+      </div>
+    );
+  }, [applyLearningGraphDrilldown, learningGraphChildrenByParent, learningGraphExpandedIds, learningGraphNodeById, toggleLearningGraphNode]);
 
   return (
     <div className="flex flex-col h-full w-full text-gray-200 bg-[#0a0a0a]">
@@ -882,6 +1190,23 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
             Export
           </button>
         </div>
+      </div>
+
+      <div className="px-4 py-2 border-b border-white/10 text-xs flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('cases')}
+          className={`px-2 py-1 rounded border ${activeTab === 'cases' ? 'border-emerald-400/60 text-emerald-100 bg-emerald-500/10' : 'border-white/10 text-gray-400 hover:text-white'}`}
+        >
+          Cases
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('learning_graph')}
+          className={`px-2 py-1 rounded border ${activeTab === 'learning_graph' ? 'border-cyan-400/60 text-cyan-100 bg-cyan-500/10' : 'border-white/10 text-gray-400 hover:text-white'}`}
+        >
+          Learning Graph
+        </button>
       </div>
 
       <div className="px-4 py-3 border-b border-white/10 text-xs grid grid-cols-2 gap-3">
@@ -1136,12 +1461,12 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
               </button>
             )}
           </div>
-          {filteredCases.length === 0 ? (
+          {displayedCases.length === 0 ? (
             <div className="text-xs text-gray-500 p-3 border border-dashed border-white/10 rounded">
               No cases yet.
             </div>
           ) : (
-            filteredCases.map((entry) => {
+            displayedCases.map((entry) => {
               const isActive = selected && entry.id === selected.id;
               const isSelected = selectedCaseIds.includes(entry.id);
               const status = entry.outcome || entry.status || 'PROPOSED';
@@ -1191,7 +1516,7 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
               Academy memory is degraded while ledger sync recovers.
             </div>
           ) : null}
-          {outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale ? (
+          {hasResolvedOutcomeFeed && hasResolvedCaseRows && (outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale) ? (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
               Outcome feed {outcomeFeedConsistency.degraded ? 'degraded' : 'stale'}
               {outcomeFeedConsistency.reason ? ` (${outcomeFeedConsistency.reason})` : ''}.
@@ -1203,7 +1528,51 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
               {panelFreshness.reason ? ` (${panelFreshness.reason})` : ''}.
             </div>
           ) : null}
-          {!selected ? (
+          {focusRequestMiss ? (
+            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[11px] text-cyan-200">
+              Focus request pending for signal `{focusRequestMiss.signalId}`. Retry after refresh if not yet materialized.
+            </div>
+          ) : null}
+          {activeTab === 'learning_graph' ? (
+            <div className="bg-white/5 border border-white/10 rounded p-3 text-xs space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-cyan-300">Learning Graph</div>
+                  <div className="text-[11px] text-gray-500">
+                    Hierarchy: Agent &gt; Symbol &gt; Pattern &gt; Lessons
+                  </div>
+                </div>
+                <div className="text-[11px] text-gray-500">
+                  Nodes {learningGraph.nodes.length} | Edges {learningGraph.edges.length}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] uppercase tracking-wider text-gray-400">Agent</span>
+                <select
+                  value={learningGraphAgentId}
+                  onChange={(e) => setLearningGraphAgentId(e.target.value)}
+                  className="px-2 py-1 rounded border border-white/10 bg-black/40 text-gray-200 text-[11px]"
+                >
+                  {learningGraphAgentOptions.length === 0 ? (
+                    <option value="">No agents</option>
+                  ) : null}
+                  {learningGraphAgentId && !learningGraphAgentOptions.some((option) => option.agentKey === learningGraphAgentId) ? (
+                    <option value={learningGraphAgentId}>Restoring selection...</option>
+                  ) : null}
+                  {learningGraphAgentOptions.map((option) => (
+                    <option key={option.agentKey} value={option.agentKey}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              {learningGraphAgentOptions.length === 0 ? (
+                <div className="text-gray-500">No resolved cases/lessons available for graph build yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {learningGraphSelectedAgentNodeId ? renderLearningGraphNode(learningGraphSelectedAgentNodeId, 0) : null}
+                </div>
+              )}
+            </div>
+          ) : !selected ? (
             <div className="text-xs text-gray-500 border border-dashed border-white/10 rounded p-4">
               Select a case to view details.
             </div>
@@ -1230,15 +1599,15 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
               <div className="grid grid-cols-3 gap-3 text-xs">
                 <div className="bg-white/5 border border-white/10 rounded p-3">
                   <div className="text-[10px] uppercase tracking-wider text-gray-500">Entry</div>
-                  <div className="text-sm text-white">{selected.entryPrice}</div>
+                  <div className="text-sm text-white">{formatPrice(selected.entryPrice)}</div>
                 </div>
                 <div className="bg-white/5 border border-white/10 rounded p-3">
                   <div className="text-[10px] uppercase tracking-wider text-gray-500">Stop</div>
-                  <div className="text-sm text-white">{selected.stopLoss}</div>
+                  <div className="text-sm text-white">{formatPrice(selected.stopLoss)}</div>
                 </div>
                 <div className="bg-white/5 border border-white/10 rounded p-3">
                   <div className="text-[10px] uppercase tracking-wider text-gray-500">Target</div>
-                  <div className="text-sm text-white">{selected.takeProfit}</div>
+                  <div className="text-sm text-white">{formatPrice(selected.takeProfit)}</div>
                 </div>
               </div>
 
@@ -1270,11 +1639,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
                 {selectedAttribution.unresolved ? (
                   <div className="text-[11px] text-gray-500">
                     Attribution unresolved for this case.
-                  </div>
-                ) : null}
-                {selectedAttribution.dragWarning ? (
-                  <div className="text-[11px] text-amber-300">
-                    Execution drag warning: decision edge was reduced by execution quality.
                   </div>
                 ) : null}
               </div>
@@ -1483,7 +1847,9 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
                   </select>
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-gray-500">
-                  <span>{filteredLessons.length} lessons</span>
+                  <span>
+                    {Math.min(lessonVisibleCount, filteredLessons.length)} / {filteredLessons.length} visible lessons
+                  </span>
                   <button
                     type="button"
                     onClick={handleClearLessonFilters}
@@ -1495,12 +1861,23 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
                 {filteredLessons.length === 0 ? (
                   <div className="text-gray-500">No lessons yet.</div>
                 ) : (
-                  <div className="space-y-1">
-                    {filteredLessons.slice(0, 6).map((lesson) => (
+                  <div className="space-y-2">
+                    <div className="space-y-1">
+                    {filteredLessons.slice(0, lessonVisibleCount).map((lesson) => (
                       <div key={lesson.id} className="text-[11px] text-gray-400">
                         {lesson.title}
                       </div>
                     ))}
+                    </div>
+                    {filteredLessons.length > lessonVisibleCount ? (
+                      <button
+                        type="button"
+                        onClick={() => setLessonVisibleCount((prev) => Math.min(filteredLessons.length, prev + 12))}
+                        className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:text-white text-[10px]"
+                      >
+                        Show more ({filteredLessons.length - lessonVisibleCount} remaining)
+                      </button>
+                    ) : null}
                   </div>
                 )}
               </div>

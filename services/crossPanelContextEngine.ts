@@ -14,16 +14,36 @@ const sanitizeText = (value: any) => {
 
 const sanitizeContext = (input: Partial<CrossPanelContext> | null | undefined): CrossPanelContext | null => {
   if (!input || typeof input !== 'object') return null;
+  const focusEntity = sanitizeText(input.focusEntity);
+  const normalizedFocusEntity =
+    focusEntity === 'signal' || focusEntity === 'academy_case'
+      ? (focusEntity as 'signal' | 'academy_case')
+      : null;
   const next: CrossPanelContext = {
     symbol: sanitizeText(input.symbol),
     timeframe: sanitizeText(input.timeframe),
     session: sanitizeText(input.session),
     agentId: sanitizeText(input.agentId),
     strategyId: sanitizeText(input.strategyId),
+    focusEntity: normalizedFocusEntity,
+    focusSignalId: sanitizeText(input.focusSignalId),
+    focusCaseId: sanitizeText(input.focusCaseId),
+    focusRequestId: sanitizeText(input.focusRequestId),
     originPanel: sanitizeText(input.originPanel),
     updatedAtMs: Number.isFinite(Number(input.updatedAtMs)) ? Number(input.updatedAtMs) : Date.now()
   };
-  const hasData = !!(next.symbol || next.timeframe || next.session || next.agentId || next.strategyId || next.originPanel);
+  const hasData = !!(
+    next.symbol ||
+    next.timeframe ||
+    next.session ||
+    next.agentId ||
+    next.strategyId ||
+    next.focusEntity ||
+    next.focusSignalId ||
+    next.focusCaseId ||
+    next.focusRequestId ||
+    next.originPanel
+  );
   return hasData ? next : null;
 };
 

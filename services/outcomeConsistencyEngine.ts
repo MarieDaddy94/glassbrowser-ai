@@ -186,6 +186,7 @@ class OutcomeConsistencyEngine {
   getPanelFreshness(now: number = Date.now(), staleAfterMs: number = DEFAULT_STALE_AFTER_MS): PanelFreshnessState[] {
     const ts = Number.isFinite(Number(now)) ? Number(now) : Date.now();
     const staleAfter = Number.isFinite(Number(staleAfterMs)) ? Math.max(10_000, Math.floor(Number(staleAfterMs))) : DEFAULT_STALE_AFTER_MS;
+    const hasResolvedFeed = Number(this.cursor.total || 0) > 0;
     const names = new Set<string>(EXPECTED_PANELS);
     for (const panel of this.panelReads.keys()) names.add(panel);
     const rows: PanelFreshnessState[] = [];
@@ -200,13 +201,12 @@ class OutcomeConsistencyEngine {
         });
         continue;
       }
-      const age = ts - read.lastSyncAt;
-      if (age > staleAfter) {
+      if (!hasResolvedFeed) {
         rows.push({
           panel,
-          state: 'stale',
+          state: 'fresh',
           lastSyncAt: read.lastSyncAt,
-          reason: `stale_${Math.floor(age / 1000)}s`
+          reason: null
         });
         continue;
       }
@@ -216,6 +216,16 @@ class OutcomeConsistencyEngine {
           state: 'degraded',
           lastSyncAt: read.lastSyncAt,
           reason: 'checksum_mismatch'
+        });
+        continue;
+      }
+      const age = ts - read.lastSyncAt;
+      if (age > staleAfter && !read.checksum) {
+        rows.push({
+          panel,
+          state: 'stale',
+          lastSyncAt: read.lastSyncAt,
+          reason: `stale_${Math.floor(age / 1000)}s`
         });
         continue;
       }
@@ -232,6 +242,15 @@ class OutcomeConsistencyEngine {
 
   getConsistencyState(now: number = Date.now(), staleAfterMs: number = DEFAULT_STALE_AFTER_MS): OutcomeFeedConsistencyState {
     const ts = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    if (Number(this.cursor.total || 0) <= 0) {
+      return {
+        degraded: false,
+        stale: false,
+        desyncedPanels: [],
+        reason: null,
+        updatedAtMs: ts
+      };
+    }
     const staleAfter = Number.isFinite(Number(staleAfterMs)) ? Math.max(10_000, Math.floor(Number(staleAfterMs))) : DEFAULT_STALE_AFTER_MS;
     const freshness = this.getPanelFreshness(ts, staleAfter);
     const desyncedPanels = freshness
@@ -240,17 +259,13 @@ class OutcomeConsistencyEngine {
     const stalePanels = freshness
       .filter((row) => row.state === 'stale')
       .map((row) => row.panel);
-    const cursorAge = ts - Number(this.cursor.generatedAtMs || 0);
-    const cursorStale = !this.cursor.generatedAtMs || cursorAge > staleAfter;
     const degraded = desyncedPanels.length > 0;
-    const stale = cursorStale || stalePanels.length > 0;
+    const stale = stalePanels.length > 0;
     let reason: string | null = null;
     if (desyncedPanels.length > 0) {
       reason = `desync:${desyncedPanels.join(',')}`;
     } else if (stalePanels.length > 0) {
       reason = `stale_panels:${stalePanels.join(',')}`;
-    } else if (cursorStale) {
-      reason = 'cursor_stale';
     }
     return {
       degraded,

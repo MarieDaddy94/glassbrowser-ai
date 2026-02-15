@@ -1240,13 +1240,14 @@ export class ChartEngine {
       };
       const shouldRetry = (message: string) => {
         const msg = String(message || '').toLowerCase();
-        return msg.includes('timeout') || msg.includes('not connected') || msg.includes('upstream');
+        // Timeout retries can double perceived panel latency.
+        return msg.includes('not connected') || msg.includes('upstream');
       };
       let res = await runFetch();
       if (!res?.ok) {
         const errMsg = res?.error ? String(res.error) : '';
         if (shouldRetry(errMsg)) {
-          await new Promise((resolve) => setTimeout(resolve, 800));
+          await new Promise((resolve) => setTimeout(resolve, 350));
           res = await runFetch();
         }
       }

@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, CheckCircle2, ChevronDown, ChevronUp, Play, Plus, RefreshCw, Shield, X, XCircle } from 'lucide-react';
 import TagPills from './TagPills';
 import VirtualItem from './VirtualItem';
-import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalQuantTelemetry } from '../types';
+import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalQuantTelemetry, UnifiedSnapshotStatus } from '../types';
 import { requireBridge } from '../services/bridgeGuard';
+import { classifyUnifiedSnapshotStatus, formatUnifiedSnapshotStatusLabel } from '../services/unifiedSnapshotStatus';
 
 export type SignalStrategyMode = 'scalp' | 'day' | 'swing';
 export type SignalEntryStatus = 'PROPOSED' | 'SUBMITTING' | 'PENDING' | 'EXECUTED' | 'REJECTED' | 'EXPIRED' | 'WIN' | 'LOSS' | 'FAILED';
@@ -19,6 +20,9 @@ export type SignalSessionWindow = {
 
 export type SignalEntry = {
   id: string;
+  signalCanonicalId?: string | null;
+  signalIdentityVersion?: 'v2' | string | null;
+  legacySignalId?: string | null;
   symbol: string;
   timeframe?: string | null;
   action: 'BUY' | 'SELL';
@@ -51,15 +55,7 @@ export type SignalEntry = {
   quantTelemetry?: SignalQuantTelemetry | null;
 };
 
-export type SignalSnapshotStatus = {
-  symbol?: string | null;
-  ok?: boolean;
-  reasonCode?: string | null;
-  frames?: Array<{ tf: string; barsCount: number; lastUpdatedAtMs?: number | null }>;
-  missingFrames?: string[];
-  shortFrames?: Array<{ tf: string; barsCount: number; minBars: number }>;
-  capturedAtMs?: number | null;
-};
+export type SignalSnapshotStatus = UnifiedSnapshotStatus;
 
 type SymbolSuggestion = {
   symbol: string;
@@ -116,6 +112,7 @@ type SignalInterfaceProps = {
   lastParseError?: string | null;
   lastParseAtMs?: number | null;
   snapshotStatus?: SignalSnapshotStatus | null;
+  snapshotScopeMismatch?: { signalScopeKey?: string | null; panelScopeKey?: string | null } | null;
   healthSnapshot?: HealthSnapshot | null;
   signals: SignalEntry[];
   simulatedOutcomes?: Record<string, SignalSimulatedOutcome>;
@@ -374,6 +371,7 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
   lastParseError,
   lastParseAtMs,
   snapshotStatus,
+  snapshotScopeMismatch,
   healthSnapshot,
   signals,
   simulatedOutcomes,
@@ -818,12 +816,11 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
   }, [snapshotStatus, symbols]);
 
   const formatSnapshotStatusLabel = useCallback((status: SignalSnapshotStatus | null) => {
-    if (!status) return 'No snapshot yet.';
-    const ok = status.ok === true;
-    if (status.reasonCode === 'WARMUP_PENDING') return 'Warming up...';
-    return ok
-      ? 'Native chart snapshot ready'
-      : `Snapshot issue${status.reasonCode ? ` (${status.reasonCode})` : ''}`;
+    return formatUnifiedSnapshotStatusLabel(status, {
+      readyLabel: 'Native chart snapshot ready',
+      missingLabel: 'No snapshot yet.',
+      warmingLabel: 'Warming up...'
+    });
   }, []);
 
   const formatSnapshotFrames = useCallback((status: SignalSnapshotStatus | null) => {
@@ -1280,7 +1277,8 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
               {snapshotStatusList.length > 0 ? (
                 <div className="space-y-2">
                   {snapshotStatusList.map((entry) => {
-                    const ok = entry.status?.ok === true;
+                    const normalized = classifyUnifiedSnapshotStatus(entry.status);
+                    const ok = normalized?.ok === true;
                     const framesLine = formatSnapshotFrames(entry.status);
                     const incompleteLine = formatSnapshotIncomplete(entry.status);
                     return (
@@ -1299,6 +1297,11 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                             Incomplete: {incompleteLine}
                           </div>
                         )}
+                        {snapshotScopeMismatch?.signalScopeKey && snapshotScopeMismatch?.panelScopeKey ? (
+                          <div className="text-[11px] text-cyan-300">
+                            Scope mismatch: Signal snapshot scope differs from Snapshot panel scope.
+                          </div>
+                        ) : null}
                       </div>
                     );
                   })}

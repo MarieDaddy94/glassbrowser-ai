@@ -165,6 +165,7 @@ const ChangesInterface: React.FC<ChangesInterfaceProps> = ({
   panelFreshness
 }) => {
   const { degraded } = usePersistenceHealth('changes');
+  const hasResolvedOutcomeFeed = Number(outcomeFeedCursor?.total || 0) > 0;
   const initialConfig = readStoredConfig();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [limit, setLimit] = useState(initialConfig?.limit ?? DEFAULT_LIMIT);
@@ -338,7 +339,7 @@ const ChangesInterface: React.FC<ChangesInterfaceProps> = ({
               Changes data is running in degraded mode while ledger sync recovers.
             </div>
           ) : null}
-          {outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale ? (
+          {hasResolvedOutcomeFeed && (outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale) ? (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
               Outcome feed {outcomeFeedConsistency.degraded ? 'degraded' : 'stale'}
               {outcomeFeedConsistency.reason ? ` (${outcomeFeedConsistency.reason})` : ''}.

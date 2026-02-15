@@ -9,6 +9,14 @@ import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { recordLedgerQueueDepth } from "../services/persistenceHealth";
 import { GLASS_EVENT, dispatchGlassEvent } from "../services/glassEvents";
+import {
+  buildTradeLockerProfileBaseId,
+  buildTradeLockerProfileId as buildTlProfileId,
+  buildTradeLockerProfileLabel as buildTlProfileLabel,
+  normalizeTradeLockerProfileId,
+  parseTradeLockerAccountNumber,
+  parseTradeLockerProfileId
+} from "../services/tradeLockerIdentity";
 const AiKeysSection = React.lazy(() => import("./settings/AiKeysSection"));
 const SignalAndWarmupSection = React.lazy(() => import("./settings/SignalAndWarmupSection"));
 const PerformanceAndDebugSection = React.lazy(() => import("./settings/PerformanceAndDebugSection"));
@@ -147,17 +155,27 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
       return normalized > 0 ? normalized : null;
     };
     return parsed
-      .map((entry) => ({
-        id: String(entry?.id || ""),
-        label: String(entry?.label || ""),
-        env: entry?.env === "live" ? "live" : "demo",
-        server: String(entry?.server || ""),
-        email: String(entry?.email || ""),
-        accountId: parseStoredId(entry?.accountId),
-        accNum: parseStoredId(entry?.accNum),
-        rememberPassword: entry?.rememberPassword === true,
-        rememberDeveloperKey: entry?.rememberDeveloperKey === true
-      }))
+      .map((entry) => {
+        const env = entry?.env === "live" ? "live" : "demo";
+        const server = String(entry?.server || "");
+        const email = String(entry?.email || "");
+        const accountId = parseStoredId(entry?.accountId);
+        const accNum = parseStoredId(entry?.accNum);
+        const id = normalizeTradeLockerProfileId(String(entry?.id || ""), env, server, email, accountId, accNum);
+        const labelRaw = String(entry?.label || "").trim();
+        const label = labelRaw || buildTlProfileLabel(env, server, email, accountId, accNum);
+        return {
+          id,
+          label,
+          env,
+          server,
+          email,
+          accountId,
+          accNum,
+          rememberPassword: entry?.rememberPassword === true,
+          rememberDeveloperKey: entry?.rememberDeveloperKey === true
+        };
+      })
       .filter((entry) => entry.id && entry.server && entry.email);
   } catch {
     return [];
@@ -172,15 +190,7 @@ const persistTradeLockerProfiles = (profiles: TradeLockerProfile[]) => {
   }
 };
 
-const parseTradeLockerId = (value: any): number | null => {
-  if (value == null) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-  const next = Number(raw);
-  if (!Number.isFinite(next)) return null;
-  const normalized = Math.trunc(next);
-  return normalized > 0 ? normalized : null;
-};
+const parseTradeLockerId = (value: any): number | null => parseTradeLockerAccountNumber(value);
 
 const DEFAULT_SIGNAL_TELEGRAM_STATUS_OPTIONS: SignalEntryStatus[] = [
   "PROPOSED",
@@ -861,6 +871,25 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   }, [tlProfiles]);
 
   useEffect(() => {
+    if (!tlActiveProfileId) return;
+    if (tlProfiles.some((profile) => profile.id === tlActiveProfileId)) return;
+    const activeParsed = parseTradeLockerProfileId(tlActiveProfileId);
+    const activeBaseId = activeParsed?.baseId || '';
+    if (activeBaseId) {
+      const match = tlProfiles.find((profile) => {
+        const parsed = parseTradeLockerProfileId(String(profile.id || ''));
+        const baseId = parsed?.baseId || String(profile.id || '');
+        return baseId === activeBaseId;
+      });
+      if (match?.id) {
+        setTlActiveProfileId(match.id);
+        return;
+      }
+    }
+    setTlActiveProfileId('');
+  }, [tlActiveProfileId, tlProfiles]);
+
+  useEffect(() => {
     try {
       if (tlActiveProfileId) {
         localStorage.setItem(TL_ACTIVE_PROFILE_KEY, tlActiveProfileId);
@@ -1036,15 +1065,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const buildTradeLockerProfileId = useCallback((env: string, server: string, email: string) => {
-    return `${String(env || "").trim().toLowerCase()}:${String(server || "").trim().toLowerCase()}:${String(email || "").trim().toLowerCase()}`;
+  const buildTradeLockerProfileId = useCallback((env: string, server: string, email: string, accountId?: number | null, accNum?: number | null) => {
+    return buildTlProfileId(env, server, email, accountId, accNum);
   }, []);
 
-  const buildTradeLockerProfileLabel = useCallback((env: string, server: string, email: string) => {
-    const cleanEmail = String(email || "").trim() || "unknown";
-    const cleanServer = String(server || "").trim() || "server";
-    const cleanEnv = env === "live" ? "live" : "demo";
-    return `${cleanEmail} @ ${cleanServer} (${cleanEnv})`;
+  const buildTradeLockerProfileLabel = useCallback((env: string, server: string, email: string, accountId?: number | null, accNum?: number | null) => {
+    return buildTlProfileLabel(env, server, email, accountId, accNum);
   }, []);
 
   const upsertTradeLockerProfile = useCallback((opts?: { setActive?: boolean }) => {
@@ -1057,10 +1083,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       setTlLastError("Set TradeLocker server + email before saving a login.");
       return false;
     }
-    const id = buildTradeLockerProfileId(env, server, email);
-    const label = buildTradeLockerProfileLabel(env, server, email);
+    const id = buildTradeLockerProfileId(env, server, email, accountId, accNum);
+    const baseId = buildTradeLockerProfileBaseId(env, server, email);
+    const label = buildTradeLockerProfileLabel(env, server, email, accountId, accNum);
     const next: TradeLockerProfile[] = [
-      ...tlProfiles.filter((profile) => profile.id !== id),
+      ...tlProfiles.filter((profile) => {
+        if (profile.id === id) return false;
+        const parsed = parseTradeLockerProfileId(String(profile.id || ''));
+        const profileBaseId =
+          parsed?.baseId ||
+          buildTradeLockerProfileBaseId(profile.env, profile.server, profile.email);
+        if (profileBaseId !== baseId) return true;
+        const profileAccountId = parseTradeLockerId(profile.accountId);
+        const profileAccNum = parseTradeLockerId(profile.accNum);
+        return !(profileAccountId === accountId && profileAccNum === accNum);
+      }),
       {
         id,
         label,
@@ -1077,6 +1114,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     if (opts?.setActive) setTlActiveProfileId(id);
     return true;
   }, [buildTradeLockerProfileId, buildTradeLockerProfileLabel, tlEmail, tlEnv, tlProfiles, tlRememberDeveloperKey, tlRememberPassword, tlSelectedAccNum, tlSelectedAccountId, tlServer]);
+
+  const applyTradeLockerActiveAccount = useCallback(async (accountId: number | null, accNum: number | null) => {
+    if (accountId == null || accNum == null) return;
+    const tl = window.glass?.tradelocker;
+    try {
+      if (onRunActionCatalog) {
+        await onRunActionCatalog({
+          actionId: "tradelocker.set_active_account",
+          payload: { accountId, accNum }
+        });
+        return;
+      }
+      if (tl?.setActiveAccount) {
+        await tl.setActiveAccount({ accountId, accNum });
+        try {
+          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+            accountId,
+            accNum,
+            source: "settings_modal_direct",
+            atMs: Date.now()
+          });
+        } catch {
+          // ignore renderer event dispatch failures
+        }
+      }
+    } catch {
+      // keep profile switch resilient even if active account apply fails
+    }
+  }, [onRunActionCatalog]);
 
   const reconnectTradeLockerProfile = useCallback(async (
     profile: TradeLockerProfile,
@@ -1138,35 +1204,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       };
     }
   }, [applyTradeLockerActiveAccount, onRunActionCatalog]);
-
-  const applyTradeLockerActiveAccount = useCallback(async (accountId: number | null, accNum: number | null) => {
-    if (accountId == null || accNum == null) return;
-    const tl = window.glass?.tradelocker;
-    try {
-      if (onRunActionCatalog) {
-        await onRunActionCatalog({
-          actionId: "tradelocker.set_active_account",
-          payload: { accountId, accNum }
-        });
-        return;
-      }
-      if (tl?.setActiveAccount) {
-        await tl.setActiveAccount({ accountId, accNum });
-        try {
-          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-            accountId,
-            accNum,
-            source: "settings_modal_direct",
-            atMs: Date.now()
-          });
-        } catch {
-          // ignore renderer event dispatch failures
-        }
-      }
-    } catch {
-      // keep profile switch resilient even if active account apply fails
-    }
-  }, [onRunActionCatalog]);
 
   const handleTradeLockerProfileSelect = useCallback((profileId: string) => {
     if (!profileId) {
@@ -1611,23 +1648,44 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const selected = tlAccounts.find(a => String(a?.id) === String(accountIdText));
     const accNum = selected?.accNum != null ? String(selected.accNum) : "";
     setTlSelectedAccNum(accNum);
-    if (tlActiveProfileId) {
-      const accountIdNum = parseTradeLockerId(accountIdText);
-      const accNumNum = parseTradeLockerId(accNum);
-      setTlProfiles((prev) =>
-        prev.map((profile) => (
-          profile.id === tlActiveProfileId
-            ? {
-                ...profile,
-                accountId: accountIdNum,
-                accNum: accNumNum
-              }
-            : profile
-        ))
-      );
-    }
     const accountIdNum = parseTradeLockerId(accountIdText);
     const accNumNum = parseTradeLockerId(accNum);
+    if (tlActiveProfileId) {
+      let nextProfileId: string | null = null;
+      setTlProfiles((prev) => {
+        const activeProfile = prev.find((profile) => profile.id === tlActiveProfileId);
+        if (!activeProfile) return prev;
+        const nextId = buildTradeLockerProfileId(
+          activeProfile.env,
+          activeProfile.server,
+          activeProfile.email,
+          accountIdNum,
+          accNumNum
+        );
+        const nextLabel = buildTradeLockerProfileLabel(
+          activeProfile.env,
+          activeProfile.server,
+          activeProfile.email,
+          accountIdNum,
+          accNumNum
+        );
+        const nextProfile: TradeLockerProfile = {
+          ...activeProfile,
+          id: nextId,
+          label: nextLabel,
+          accountId: accountIdNum,
+          accNum: accNumNum
+        };
+        nextProfileId = nextId;
+        return [
+          ...prev.filter((profile) => profile.id !== tlActiveProfileId && profile.id !== nextId),
+          nextProfile
+        ].sort((a, b) => a.label.localeCompare(b.label));
+      });
+      if (nextProfileId) {
+        setTlActiveProfileId(nextProfileId);
+      }
+    }
     if (accountIdNum == null || accNumNum == null) return;
     const tl = window.glass?.tradelocker;
     if (!tl?.setActiveAccount && !onRunActionCatalog) return;

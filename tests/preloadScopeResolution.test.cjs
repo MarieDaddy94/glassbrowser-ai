@@ -3,15 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const preloadPath = path.join(process.cwd(), 'electron', 'preload.cjs');
+const ROOT = path.resolve(__dirname, '..');
+const read = (relPath) => fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 
-test('preload resolves scope module through deterministic absolute path attempts', () => {
-  const source = fs.readFileSync(preloadPath, 'utf8');
-  assert.equal(source.includes('const resolveScopeModuleAttempts = () => {'), true);
-  assert.equal(source.includes("'./generated/ipcScopes.cjs'"), true);
-  assert.equal(source.includes("'../generated/ipcScopes.cjs'"), true);
-  assert.equal(source.includes('/electron/generated/ipcScopes.cjs'), true);
-  assert.equal(source.includes("require('path')"), false);
-  assert.equal(source.includes('if (GENERATED_SCOPE_LOAD.source === \'fallback_inline\')'), true);
-  assert.equal(source.includes('generated scope module missing; falling back to inline allowlist'), true);
+test('preload resolves generated scope module from deterministic absolute paths before fallback', () => {
+  const source = read('electron/preload.cjs');
+  assert.equal(source.includes('const normalizePathLike ='), true);
+  assert.equal(source.includes('const joinPathLike ='), true);
+  assert.equal(source.includes("joinPathLike(dirNormalized, 'generated', 'ipcScopes.cjs')"), true);
+  assert.equal(source.includes("joinPathLike(resourcesNormalized, 'app.asar.unpacked', 'electron', 'generated', 'ipcScopes.cjs')"), true);
+  assert.equal(source.includes('const deduped = [];'), true);
 });

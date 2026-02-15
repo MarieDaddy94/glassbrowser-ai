@@ -345,14 +345,17 @@ export interface AcademyCaseEvent {
 export interface AcademyCase {
   id: string;
   signalId?: string | null;
+  signalCanonicalId?: string | null;
+  signalIdentityVersion?: 'v2' | string | null;
+  legacySignalId?: string | null;
   agentId?: string | null;
   agentName?: string | null;
   symbol: string;
   timeframe?: string | null;
   action: 'BUY' | 'SELL';
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
+  entryPrice: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
   probability?: number | null;
   strategyMode?: 'scalp' | 'day' | 'swing' | string | null;
   reason?: string | null;
@@ -381,6 +384,16 @@ export interface AcademyCase {
   executionOutcome?: ResolvedOutcomeEnvelope['executionOutcome'] | null;
   resolvedOutcomeEnvelope?: ResolvedOutcomeEnvelope | null;
   attribution?: SignalAttributionRecord | null;
+  locked?: boolean;
+  lockedAtMs?: number | null;
+  lockSource?: 'signal_button' | 'system_repair' | string | null;
+  lockReason?: string | null;
+  dataQualityScore?: number | null;
+  dataQualityFlags?: string[] | null;
+  materializedBy?: string | null;
+  lastRepairedAtMs?: number | null;
+  academyMergeVersion?: number | null;
+  academyLastSeenAtMs?: number | null;
 }
 
 export interface AcademyLesson {
@@ -424,6 +437,49 @@ export interface AcademySymbolLearning {
   evidenceCaseIds?: string[] | null;
   updatedAtMs?: number | null;
   source?: string | null;
+}
+
+export interface LearningGraphNode {
+  id: string;
+  type: 'agent' | 'symbol' | 'pattern' | 'lesson';
+  label: string;
+  parentId?: string | null;
+  meta?: Record<string, any> | null;
+}
+
+export interface LearningGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  type?: 'contains' | 'supports' | 'learns_from' | string;
+  weight?: number | null;
+}
+
+export interface LearningGraphFilters {
+  agentId?: string | null;
+  includeOutcomes?: Array<'WIN' | 'LOSS' | 'EXPIRED' | 'REJECTED' | 'FAILED'>;
+}
+
+export interface LearningGraphSnapshot {
+  builtAtMs: number;
+  filters?: LearningGraphFilters | null;
+  nodes: LearningGraphNode[];
+  edges: LearningGraphEdge[];
+  rootNodeIds: string[];
+}
+
+export interface UnifiedSnapshotStatus {
+  symbol?: string | null;
+  timeframes?: string[] | null;
+  scopeKey?: string | null;
+  ok?: boolean;
+  state?: 'warming' | 'ready' | 'coverage_delayed' | 'failed';
+  reasonCode?: string | null;
+  frames?: Array<{ tf: string; barsCount: number; lastUpdatedAtMs?: number | null }>;
+  missingFrames?: string[];
+  shortFrames?: Array<{ tf: string; barsCount: number; minBars: number }>;
+  capturedAtMs?: number | null;
+  warnings?: string[];
 }
 
 export interface TradeLockerQuote {
@@ -526,6 +582,7 @@ export interface AgentMemoryEntry {
   createdAtMs?: number;
   updatedAtMs?: number;
   lastAccessedAtMs?: number | null;
+  archivedAtMs?: number | null;
 }
 
 export interface Message {
@@ -1670,6 +1727,10 @@ export interface CrossPanelContext {
   session?: string | null;
   agentId?: string | null;
   strategyId?: string | null;
+  focusEntity?: 'signal' | 'academy_case' | null;
+  focusSignalId?: string | null;
+  focusCaseId?: string | null;
+  focusRequestId?: string | null;
   originPanel?: string | null;
   updatedAtMs?: number | null;
 }
@@ -1784,6 +1845,17 @@ export interface TradeLockerRateLimitTelemetry {
 
 export interface HealthSnapshot {
   updatedAtMs: number;
+  academyMergeAddedCount?: number | null;
+  academyMergeReplacedCount?: number | null;
+  academyMergeRetainedCount?: number | null;
+  academyRichCaseCount?: number | null;
+  academySparseCaseCount?: number | null;
+  academyLessonValidCount?: number | null;
+  academyLessonDroppedCount?: number | null;
+  academyRepairUpserts?: number | null;
+  ledgerArchiveMoves?: number | null;
+  ledgerArchiveRows?: number | null;
+  signalIdCollisionPreventedCount?: number | null;
   startupCheckedAtMs?: number | null;
   startupPhase?: 'booting' | 'restoring' | 'settled' | null;
   startupOpenaiState?: 'ready' | 'assumed_ready' | 'missing' | 'unknown' | null;

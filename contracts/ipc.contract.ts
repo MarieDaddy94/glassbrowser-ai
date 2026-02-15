@@ -382,6 +382,15 @@ export const IPC_CONTRACT = {
       "inPreload": true
     },
     {
+      "name": "tradeLedger:archiveAgentMemories",
+      "domain": "tradeLedger",
+      "scopes": [
+        "tradeLedger"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "tradeLedger:clearAgentMemory",
       "domain": "tradeLedger",
       "scopes": [

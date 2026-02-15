@@ -1,7 +1,7 @@
 {
   "name": "glassbrowser-ai",
   "private": true,
-  "version": "0.1.229",
+  "version": "0.1.242",
   "type": "module",
   "description": "GlassBrowser AI — a desktop AI trading browser with a Gemini-powered side panel.",
   "author": "GlassBrowser AI Team",
@@ -52,8 +52,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
+      "allowToChangeInstallationDirectory": false,
+      "perMachine": false,
+      "include": "electron/installer.nsh"
     },
     "mac": {
       "icon": "electron/assets/icon.png",

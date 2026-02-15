@@ -18,10 +18,12 @@ test('Academy refresh and lesson filtering are wired through persisted ledger pa
   assert.equal(app.includes('refreshAcademyLessons()'), true);
   assert.equal(app.includes('refreshAcademySymbolLearnings()'), true);
 
-  // Persisted reads for academy domains.
-  assert.equal(app.includes("ledger.listAgentMemory({ limit, kind: 'academy_case' })"), true);
-  assert.equal(app.includes("ledger.listAgentMemory({ limit, kind: 'academy_lesson' })"), true);
-  assert.equal(app.includes("ledger.listAgentMemory({ limit, kind: 'academy_symbol_learning' })"), true);
+  // Persisted reads for academy domains use incremental list options + archive-inclusive continuity.
+  assert.equal(app.includes("buildIncrementalListOptions(limit"), true);
+  assert.equal(app.includes("kind: 'academy_case'"), true);
+  assert.equal(app.includes("kind: 'academy_lesson'"), true);
+  assert.equal(app.includes("kind: 'academy_symbol_learning'"), true);
+  assert.equal(app.includes('includeArchived: true'), true);
 
   // Persisted writes for academy outcomes/lessons.
   assert.equal(app.includes("kind: 'academy_case'"), true);

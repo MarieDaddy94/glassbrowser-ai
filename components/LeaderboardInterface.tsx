@@ -72,6 +72,7 @@ const LeaderboardInterface: React.FC<LeaderboardInterfaceProps> = ({
   panelFreshness
 }) => {
   const { degraded } = usePersistenceHealth('rank');
+  const hasResolvedOutcomeFeed = Number(outcomeFeedCursor?.total || 0) > 0;
   const rankDegraded = degraded || rankFreshness?.degraded === true;
   const rankStale = rankFreshness?.stale === true;
   const driftPoor = (agentDriftReports || []).filter((row) => row?.severity === 'poor').length;
@@ -251,7 +252,7 @@ const LeaderboardInterface: React.FC<LeaderboardInterfaceProps> = ({
                     Drift alerts: poor {driftPoor}, warn {driftWarn}.
                 </div>
             ) : null}
-            {outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale ? (
+            {hasResolvedOutcomeFeed && (outcomeFeedConsistency?.degraded || outcomeFeedConsistency?.stale) ? (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
                 Outcome feed {outcomeFeedConsistency.degraded ? 'degraded' : 'stale'}
                 {outcomeFeedConsistency.reason ? ` (${outcomeFeedConsistency.reason})` : ''}.

@@ -3,15 +3,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const hookPath = path.join(process.cwd(), 'hooks', 'useStartupReadiness.ts');
+const ROOT = path.resolve(__dirname, '..');
+const read = (relPath) => fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 
-test('startup permission audit warning is gated to degraded conditions', () => {
-  const source = fs.readFileSync(hookPath, 'utf8');
-  assert.equal(source.includes('const shouldWarnPermissions ='), true);
-  assert.equal(source.includes('!!result.permissionError'), true);
-  assert.equal(source.includes("result.bridgeState === 'failed'"), true);
-  assert.equal(source.includes('result.blockedScopes'), true);
-  assert.equal(source.includes('result.probeSkippedDueToBridge === true'), true);
-  assert.match(source, /if\s*\(shouldWarnPermissions\)\s*{\s*console\.warn\('\[startup_permissions\]'/s);
-  assert.match(source, /else\s*{\s*console\.info\('\[startup_permissions\]'/s);
+test('startup diagnostics only warn when permission/bridge failures are present', () => {
+  const source = read('hooks/useStartupReadiness.ts');
+  assert.equal(
+    source.includes('if (result.diagnosticWarning) {\n        if (shouldWarnPermissions) {'),
+    true
+  );
+  assert.equal(source.includes("console.info('[startup_permissions]'"), false);
+  assert.equal(source.includes("if (shouldWarnPermissions) {\n          console.warn('[startup_permissions]'"), true);
 });

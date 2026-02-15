@@ -16,6 +16,8 @@ test('academy case type includes attribution and resolved envelope fields', () =
 
 test('app normalizes and persists academy attribution payload fields', () => {
   const app = read('App.tsx');
+  assert.equal(app.includes("if (actionRaw !== 'SELL' && actionRaw !== 'BUY') return null;"), true);
+  assert.equal(app.includes('if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !isResolvedCase) return null;'), true);
   assert.equal(app.includes("const resolvedOutcomeEnvelope = payload.resolvedOutcomeEnvelope"), true);
   assert.equal(app.includes('const resolvedOutcomeEnvelope = buildResolvedOutcomeEnvelope({'), true);
   assert.equal(app.includes('const attribution = buildSignalAttributionRecord({'), true);

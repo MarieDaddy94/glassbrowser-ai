@@ -7,6 +7,15 @@ import { getRuntimeScheduler } from '../services/runtimeScheduler';
 import { requireBridge } from '../services/bridgeGuard';
 import { createPanelActionRunner } from '../services/panelConnectivityEngine';
 import { GLASS_EVENT, dispatchGlassEvent } from '../services/glassEvents';
+import {
+  buildTradeLockerAccountKey,
+  buildTradeLockerProfileId,
+  buildTradeLockerProfileLabel,
+  normalizeTradeLockerProfileId,
+  parseTradeLockerAccountNumber,
+  parseTradeLockerProfileId,
+  resolveTradeLockerIdentityMatchState
+} from '../services/tradeLockerIdentity';
 
 interface TradeLockerInstrumentSuggestion {
   tradableInstrumentId: number | null;
@@ -139,15 +148,7 @@ const normalizeTicketType = (value: any): TicketType => {
   return 'market';
 };
 
-const parseTradeLockerAccountId = (value: any): number | null => {
-  if (value == null) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-  const next = Number(raw);
-  if (!Number.isFinite(next)) return null;
-  const normalized = Math.trunc(next);
-  return normalized > 0 ? normalized : null;
-};
+const parseTradeLockerAccountId = (value: any): number | null => parseTradeLockerAccountNumber(value);
 
 const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
   try {
@@ -156,17 +157,27 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map((entry) => ({
-        id: String(entry?.id || ''),
-        label: String(entry?.label || ''),
-        env: entry?.env === 'live' ? 'live' : 'demo',
-        server: String(entry?.server || ''),
-        email: String(entry?.email || ''),
-        accountId: parseTradeLockerAccountId(entry?.accountId),
-        accNum: parseTradeLockerAccountId(entry?.accNum),
-        rememberPassword: entry?.rememberPassword === true,
-        rememberDeveloperKey: entry?.rememberDeveloperKey === true
-      }))
+      .map((entry) => {
+        const env = entry?.env === 'live' ? 'live' : 'demo';
+        const server = String(entry?.server || '');
+        const email = String(entry?.email || '');
+        const accountId = parseTradeLockerAccountId(entry?.accountId);
+        const accNum = parseTradeLockerAccountId(entry?.accNum);
+        const id = normalizeTradeLockerProfileId(String(entry?.id || ''), env, server, email, accountId, accNum);
+        const labelRaw = String(entry?.label || '').trim();
+        const label = labelRaw || buildTradeLockerProfileLabel(env, server, email, accountId, accNum);
+        return {
+          id,
+          label,
+          env,
+          server,
+          email,
+          accountId,
+          accNum,
+          rememberPassword: entry?.rememberPassword === true,
+          rememberDeveloperKey: entry?.rememberDeveloperKey === true
+        };
+      })
       .filter((entry) => entry.id && entry.server && entry.email);
   } catch {
     return [];
@@ -179,16 +190,6 @@ const persistTradeLockerProfiles = (profiles: TradeLockerProfile[]) => {
   } catch {
     // ignore
   }
-};
-
-const buildTradeLockerProfileId = (env: string, server: string, email: string) =>
-  `${String(env || '').trim().toLowerCase()}:${String(server || '').trim().toLowerCase()}:${String(email || '').trim().toLowerCase()}`;
-
-const buildTradeLockerProfileLabel = (env: string, server: string, email: string) => {
-  const cleanEmail = String(email || '').trim() || 'unknown';
-  const cleanServer = String(server || '').trim() || 'server';
-  const cleanEnv = env === 'live' ? 'live' : 'demo';
-  return `${cleanEmail} @ ${cleanServer} (${cleanEnv})`;
 };
 
 const loadPanelState = (): TradeLockerPanelState => {
@@ -257,12 +258,12 @@ const buildAccountKey = (account?: {
   accNum?: number | null;
 } | null) => {
   if (!account) return '';
-  const env = account.env ? String(account.env).trim() : '';
-  const server = account.server ? String(account.server).trim() : '';
-  const accountId = parseTradeLockerAccountId(account.accountId);
-  const accNum = parseTradeLockerAccountId(account.accNum);
-  if (!env || !server || accountId == null) return '';
-  return [env, server, String(accountId), accNum != null ? String(accNum) : ''].filter(Boolean).join(':');
+  return buildTradeLockerAccountKey({
+    env: account.env || null,
+    server: account.server || null,
+    accountId: parseTradeLockerAccountId(account.accountId),
+    accNum: parseTradeLockerAccountId(account.accNum)
+  });
 };
 
 const buildHistoryCacheKey = (
@@ -442,6 +443,25 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     setSavedProfileId('');
   }, [addAccountOpen, activeAccount?.env, activeAccount?.server]);
 
+  useEffect(() => {
+    if (!savedProfileId) return;
+    if (savedProfiles.some((profile) => profile.id === savedProfileId)) return;
+    const selectedParsed = parseTradeLockerProfileId(savedProfileId);
+    const selectedBaseId = selectedParsed?.baseId || '';
+    if (selectedBaseId) {
+      const match = savedProfiles.find((profile) => {
+        const parsed = parseTradeLockerProfileId(String(profile.id || ''));
+        const baseId = parsed?.baseId || String(profile.id || '');
+        return baseId === selectedBaseId;
+      });
+      if (match?.id) {
+        setSavedProfileId(match.id);
+        return;
+      }
+    }
+    setSavedProfileId('');
+  }, [savedProfileId, savedProfiles]);
+
   const [symbolMapText, setSymbolMapText] = useState(() => formatSymbolMapText(symbolMap || []));
 
   useEffect(() => {
@@ -522,12 +542,9 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
 
   const runActionOr = useCallback(
     (actionId: string, payload: Record<string, any>, fallback?: () => void) => {
-      void runPanelAction(actionId, payload, {
-        fallback: async () => {
-          fallback?.();
-          return { ok: true, data: null };
-        }
-      });
+      // Keep local panel interactions responsive even when action sources are in cooldown.
+      fallback?.();
+      void runPanelAction(actionId, payload);
     },
     [runPanelAction]
   );
@@ -652,12 +669,24 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     accNum?: number | null;
   }) => {
     if (!server || !email) return;
-    const id = buildTradeLockerProfileId(env, server, email);
-    const label = buildTradeLockerProfileLabel(env, server, email);
     const accountId = parseTradeLockerAccountId(account?.accountId);
     const accNum = parseTradeLockerAccountId(account?.accNum);
+    const id = buildTradeLockerProfileId(env, server, email, accountId, accNum);
+    const label = buildTradeLockerProfileLabel(env, server, email, accountId, accNum);
     const next: TradeLockerProfile[] = [
-      ...savedProfiles.filter((profile) => profile.id !== id),
+      ...savedProfiles.filter((profile) => {
+        if (profile.id === id) return false;
+        const parsed = parseTradeLockerProfileId(String(profile.id || ''));
+        const profileAccountId = parseTradeLockerAccountId(profile.accountId);
+        const profileAccNum = parseTradeLockerAccountId(profile.accNum);
+        if (parsed?.baseId) {
+          const nextBase = parseTradeLockerProfileId(id)?.baseId || '';
+          if (parsed.baseId === nextBase && profileAccountId === accountId && profileAccNum === accNum) {
+            return false;
+          }
+        }
+        return true;
+      }),
       {
         id,
         label,
@@ -1013,8 +1042,11 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
       readBrokerHistoryNumber(order, [
         'closePrice',
         'exitPrice',
+        'close',
         'filledPrice',
         'fillPrice',
+        'avgFillPrice',
+        'averageFillPrice',
         'avgClosePrice',
         'stopPrice'
       ]);
@@ -1023,8 +1055,14 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     const realizedPnl = parseBrokerHistoryRealizedPnl(order);
     const env = activeAccount?.env != null ? String(activeAccount.env) : (raw?.env != null ? String(raw.env) : null);
     const server = activeAccount?.server != null ? String(activeAccount.server) : (raw?.server != null ? String(raw.server) : null);
-    const accountId = parseTradeLockerAccountId(activeAccount?.accountId) ?? parseTradeLockerAccountId(raw?.accountId);
-    const accNum = parseTradeLockerAccountId(activeAccount?.accNum) ?? parseTradeLockerAccountId(raw?.accNum ?? raw?.accountNum);
+    const accountId =
+      parseTradeLockerAccountId(activeAccount?.accountId) ??
+      parseTradeLockerAccountId(order?.accountId) ??
+      parseTradeLockerAccountId(raw?.accountId);
+    const accNum =
+      parseTradeLockerAccountId(activeAccount?.accNum) ??
+      parseTradeLockerAccountId(order?.accNum ?? order?.accountNum) ??
+      parseTradeLockerAccountId(raw?.accNum ?? raw?.accountNum);
     const accountIdentity = {
       env: env || null,
       server: server || null,
@@ -1164,7 +1202,37 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     }
     hydrateHistoryCache();
     const historyCacheKey = buildHistoryCacheKey(activeAccount, historyAllAccounts);
-    const cachedHistory = historyCacheRef.current.get(historyCacheKey);
+    const historyCacheAliasKey = !historyAllAccounts
+      ? buildHistoryCacheKey(
+          {
+            env: activeAccount?.env ?? null,
+            server: activeAccount?.server ?? null,
+            accountId: activeAccount?.accountId ?? null,
+            accNum: null
+          },
+          false
+        )
+      : null;
+    const historyCacheCandidateKeys = [historyCacheKey];
+    if (historyCacheAliasKey && historyCacheAliasKey !== historyCacheKey) {
+      historyCacheCandidateKeys.push(historyCacheAliasKey);
+    }
+    if (!historyAllAccounts) {
+      const env = String(activeAccount?.env || '').trim();
+      const server = String(activeAccount?.server || '').trim();
+      const accountId = parseTradeLockerAccountId(activeAccount?.accountId);
+      if (env && server && accountId != null) {
+        const prefix = `account:${[env, server, String(accountId)].join(':')}`;
+        for (const key of historyCacheRef.current.keys()) {
+          if (!key || historyCacheCandidateKeys.includes(key)) continue;
+          if (key.startsWith(prefix)) historyCacheCandidateKeys.push(key);
+        }
+      }
+    }
+    const cachedHistoryRecord = historyCacheCandidateKeys
+      .map((key) => ({ key, value: historyCacheRef.current.get(key) }))
+      .find((entry) => Array.isArray(entry.value?.entries) && entry.value!.entries.length > 0);
+    const cachedHistory = cachedHistoryRecord?.value || null;
     const ledger = (window as any)?.glass?.tradeLedger;
     const tlApi = (window as any)?.glass?.tradelocker;
     if (!ledger?.list && !tlApi?.getOrdersHistory) return;
@@ -1198,42 +1266,41 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
           : Promise.resolve(null)
       ]);
 
-      const normStr = (v: any) => String(v ?? '').trim().toUpperCase();
-
       const accountMatches = (entry: any) => {
         if (historyAllAccounts) return true;
-        if (!env && !server && !accountId && !accNum) return true;
+        const activeIdentity = {
+          env: env || null,
+          server: server || null,
+          accountId,
+          accNum,
+          accountKey: buildAccountKey({
+            env: (env as 'demo' | 'live' | null) || null,
+            server: server || null,
+            accountId,
+            accNum
+          })
+        };
+        if (!activeIdentity.accountKey && !env && !server && !accountId && !accNum) return true;
         const a =
           entry?.account ||
           entry?.acct ||
           {
             env: entry?.env ?? null,
             server: entry?.server ?? null,
-            accountId: entry?.accountId ?? null,
-            accNum: entry?.accNum ?? null
+            accountId: entry?.accountId ?? entry?.account?.id ?? null,
+            accNum: entry?.accNum ?? entry?.account?.accNum ?? null,
+            accountKey: entry?.accountKey ?? null
           };
-        const eEnv = a?.env != null ? String(a.env) : null;
-        const eServer = a?.server != null ? String(a.server) : null;
-        const eAccountId = a?.accountId != null ? Number(a.accountId) : null;
-        const eAccNum = a?.accNum != null ? Number(a.accNum) : null;
-
-        if (env != null) {
-          if (!eEnv) return false;
-          if (normStr(eEnv) !== normStr(env)) return false;
-        }
-        if (server) {
-          if (!eServer) return false;
-          if (normStr(eServer) !== normStr(server)) return false;
-        }
-        if (accountId != null) {
-          if (eAccountId == null) return false;
-          if (eAccountId !== accountId) return false;
-        }
-        if (accNum != null) {
-          if (eAccNum == null) return false;
-          if (eAccNum !== accNum) return false;
-        }
-        return true;
+        const entryIdentity = {
+          env: a?.env ?? null,
+          server: a?.server ?? null,
+          accountId: parseTradeLockerAccountId(a?.accountId),
+          accNum: parseTradeLockerAccountId(a?.accNum),
+          accountKey: a?.accountKey != null ? String(a.accountKey) : (entry?.accountKey != null ? String(entry.accountKey) : null)
+        };
+        const matchState = resolveTradeLockerIdentityMatchState(activeIdentity, entryIdentity);
+        if (matchState === 'mismatch') return false;
+        return matchState === 'match';
       };
 
       const isClosed = (entry: any) => {
@@ -1305,10 +1372,14 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
 
       setHistoryEntries(sorted);
       if (sorted.length > 0) {
-        historyCacheRef.current.set(historyCacheKey, {
+        const cachedPayload = {
           entries: sorted.slice(0, HISTORY_CACHE_ENTRY_LIMIT),
           updatedAtMs: Date.now()
-        });
+        };
+        historyCacheRef.current.set(historyCacheKey, cachedPayload);
+        if (historyCacheAliasKey && historyCacheAliasKey !== historyCacheKey) {
+          historyCacheRef.current.set(historyCacheAliasKey, cachedPayload);
+        }
         persistHistoryCache();
       }
       if (errors.length > 0 && sorted.length === 0) {
@@ -1362,11 +1433,21 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
       const accountId = activeAccount?.accountId ?? null;
       const accNum = activeAccount?.accNum ?? null;
 
-      const normStr = (v: any) => String(v ?? '').trim().toUpperCase();
-
       const accountMatches = (entry: any) => {
         if (blotterAllAccounts) return true;
-        if (!env && !server && !accountId && !accNum) return true;
+        const activeIdentity = {
+          env: env || null,
+          server: server || null,
+          accountId: parseTradeLockerAccountId(accountId),
+          accNum: parseTradeLockerAccountId(accNum),
+          accountKey: buildAccountKey({
+            env: (env as 'demo' | 'live' | null) || null,
+            server: server || null,
+            accountId: parseTradeLockerAccountId(accountId),
+            accNum: parseTradeLockerAccountId(accNum)
+          })
+        };
+        if (!activeIdentity.accountKey && !env && !server && !accountId && !accNum) return true;
         const a =
           entry?.account ||
           entry?.acct ||
@@ -1374,30 +1455,17 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
             env: entry?.env ?? null,
             server: entry?.server ?? null,
             accountId: entry?.accountId ?? null,
-            accNum: entry?.accNum ?? null
+            accNum: entry?.accNum ?? null,
+            accountKey: entry?.accountKey ?? null
           };
-        const eEnv = a?.env != null ? String(a.env) : null;
-        const eServer = a?.server != null ? String(a.server) : null;
-        const eAccountId = parseTradeLockerAccountId(a?.accountId);
-        const eAccNum = parseTradeLockerAccountId(a?.accNum);
-
-        if (env != null) {
-          if (!eEnv) return false;
-          if (normStr(eEnv) !== normStr(env)) return false;
-        }
-        if (server) {
-          if (!eServer) return false;
-          if (normStr(eServer) !== normStr(server)) return false;
-        }
-        if (accountId != null) {
-          if (eAccountId == null) return false;
-          if (eAccountId !== accountId) return false;
-        }
-        if (accNum != null) {
-          if (eAccNum == null) return false;
-          if (eAccNum !== accNum) return false;
-        }
-        return true;
+        const entryIdentity = {
+          env: a?.env ?? null,
+          server: a?.server ?? null,
+          accountId: parseTradeLockerAccountId(a?.accountId),
+          accNum: parseTradeLockerAccountId(a?.accNum),
+          accountKey: a?.accountKey != null ? String(a.accountKey) : (entry?.accountKey != null ? String(entry.accountKey) : null)
+        };
+        return resolveTradeLockerIdentityMatchState(activeIdentity, entryIdentity) === 'match';
       };
 
       const filtered = (res.entries as any[])
@@ -2543,11 +2611,15 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                           </div>
                           <div className="flex justify-between">
                             <span>SL:</span>
-                            <span className="text-red-500/70">{o.stopLoss || 0}</span>
+                            <span className="text-red-500/70">
+                              {Number.isFinite(Number(o.stopLoss)) && Number(o.stopLoss) > 0 ? formatPrice(Number(o.stopLoss)) : '--'}
+                            </span>
                           </div>
                           <div className="flex justify-between">
                             <span>TP:</span>
-                            <span className="text-green-500/70">{o.takeProfit || 0}</span>
+                            <span className="text-green-500/70">
+                              {Number.isFinite(Number(o.takeProfit)) && Number(o.takeProfit) > 0 ? formatPrice(Number(o.takeProfit)) : '--'}
+                            </span>
                           </div>
                         </div>
 

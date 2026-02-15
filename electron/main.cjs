@@ -58,6 +58,123 @@ function appendMainLog(line) {
   }
 }
 
+function isTempExtractExecutablePath(executablePath) {
+  const value = String(executablePath || '').toLowerCase();
+  return value.includes('\\appdata\\local\\temp\\') && value.includes('_extract');
+}
+
+function getAppAsarStamp() {
+  try {
+    const appPath = app.getAppPath();
+    const asarPath = appPath && appPath.toLowerCase().endsWith('.asar')
+      ? appPath
+      : path.join(appPath, 'app.asar');
+    if (!fs.existsSync(asarPath)) {
+      return { asarPath, asarSize: null, asarMtimeMs: null };
+    }
+    const stats = fs.statSync(asarPath);
+    return {
+      asarPath,
+      asarSize: Number.isFinite(Number(stats?.size)) ? Number(stats.size) : null,
+      asarMtimeMs: Number.isFinite(Number(stats?.mtimeMs)) ? Number(stats.mtimeMs) : null
+    };
+  } catch {
+    return { asarPath: null, asarSize: null, asarMtimeMs: null };
+  }
+}
+
+function logRuntimeStamp() {
+  try {
+    const stamp = getAppAsarStamp();
+    appendMainLog(
+      `[${new Date().toISOString()}] runtime_stamp version=${app.getVersion()} execPath=${process.execPath} appPath=${app.getAppPath()} asarPath=${stamp.asarPath || 'n/a'} asarSize=${stamp.asarSize ?? 'n/a'} asarMtimeMs=${stamp.asarMtimeMs ?? 'n/a'}\n`
+    );
+  } catch {
+    // ignore log stamp failures
+  }
+}
+
+function collectWindowsShortcutCandidates(rootDir, maxDepth = 3) {
+  const out = [];
+  const walk = (dir, depth) => {
+    if (!dir || depth > maxDepth) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.toLowerCase().endsWith('.lnk')) continue;
+      const name = entry.name.toLowerCase();
+      if (name.includes('glassbrowser') || name.includes('glass browser')) {
+        out.push(fullPath);
+      }
+    }
+  };
+  walk(rootDir, 0);
+  return out;
+}
+
+function healWindowsShortcutsToInstalledBinary() {
+  try {
+    if (process.platform !== 'win32') {
+      return { ok: true, checked: 0, updated: 0, skipped: 'platform' };
+    }
+    if (isTempExtractExecutablePath(process.execPath)) {
+      return { ok: true, checked: 0, updated: 0, skipped: 'temp_runtime' };
+    }
+
+    const roots = new Set();
+    try { roots.add(app.getPath('desktop')); } catch {}
+    try { roots.add(app.getPath('startMenu')); } catch {}
+    try { roots.add(path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs')); } catch {}
+
+    const candidateFiles = new Set();
+    for (const root of roots) {
+      if (!root) continue;
+      const list = collectWindowsShortcutCandidates(root, 4);
+      for (const file of list) {
+        candidateFiles.add(file);
+      }
+    }
+
+    let checked = 0;
+    let updated = 0;
+    for (const shortcutPath of candidateFiles) {
+      checked += 1;
+      let info = null;
+      try {
+        info = shell.readShortcutLink(shortcutPath);
+      } catch {
+        continue;
+      }
+      const target = String(info?.target || '');
+      if (!target || !isTempExtractExecutablePath(target)) continue;
+      try {
+        shell.writeShortcutLink(shortcutPath, 'update', {
+          target: process.execPath,
+          cwd: path.dirname(process.execPath),
+          appUserModelId: app.getName()
+        });
+        updated += 1;
+      } catch {
+        // ignore individual shortcut failures
+      }
+    }
+
+    return { ok: true, checked, updated, skipped: null };
+  } catch (err) {
+    return { ok: false, checked: 0, updated: 0, error: err?.message || String(err) };
+  }
+}
+
 function recordCrash(kind, err) {
   const message = err?.stack || String(err);
   appendMainLog(`[${new Date().toISOString()}] ${kind}: ${message}\n`);
@@ -1597,6 +1714,11 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  logRuntimeStamp();
+  const shortcutRepair = healWindowsShortcutsToInstalledBinary();
+  appendMainLog(
+    `[${new Date().toISOString()}] shortcut_repair checked=${shortcutRepair.checked ?? 0} updated=${shortcutRepair.updated ?? 0} skipped=${shortcutRepair.skipped || ''}${shortcutRepair.error ? ` error=${shortcutRepair.error}` : ''}\n`
+  );
   try {
     runOneTimeProfileMigration();
     secretsState = loadSecrets();
@@ -2043,6 +2165,11 @@ app.whenReady().then(async () => {
   ipcMain.handle('tradeLedger:upsertAgentMemory', async (_evt, args) => tradeLedger.upsertAgentMemory(args || {}));
   ipcMain.handle('tradeLedger:getAgentMemory', async (_evt, args) => tradeLedger.getAgentMemory(args || {}));
   ipcMain.handle('tradeLedger:listAgentMemory', async (_evt, args) => tradeLedger.listAgentMemory(args || {}));
+  ipcMain.handle('tradeLedger:archiveAgentMemories', async (_evt, args) =>
+    (tradeLedger?.archiveAgentMemories
+      ? tradeLedger.archiveAgentMemories(args || {})
+      : { ok: false, error: 'Archive tier unavailable.' })
+  );
   ipcMain.handle('tradeLedger:deleteAgentMemory', async (_evt, args) => tradeLedger.deleteAgentMemory(args || {}));
   ipcMain.handle('tradeLedger:clearAgentMemory', async () => tradeLedger.clearAgentMemory());
   ipcMain.handle('tradeLedger:getOptimizerEvalCache', async (_evt, args) => tradeLedger.getOptimizerEvalCache(args || {}));

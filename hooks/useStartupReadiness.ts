@@ -328,18 +328,25 @@ export function useStartupReadiness(params: UseStartupReadinessParams) {
         tradeLockerProbeSource: result.tradeLockerProbeSource || result.tradeLockerFallbackSource || null
       };
       if (result.diagnosticWarning) {
-        appendLiveError({
-          source: 'startup.permissions',
-          level: 'warn',
-          message: result.diagnosticWarning,
-          detail: startupPermissionsPayload
-        });
+        if (shouldWarnPermissions) {
+          appendLiveError({
+            source: 'startup.permissions',
+            level: 'warn',
+            message: result.diagnosticWarning,
+            detail: startupPermissionsPayload
+          });
+        } else {
+          appendLiveError({
+            source: 'startup.permissions',
+            level: 'info',
+            message: result.diagnosticWarning,
+            detail: startupPermissionsPayload
+          });
+        }
       }
       try {
         if (shouldWarnPermissions) {
           console.warn('[startup_permissions]', startupPermissionsPayload);
-        } else {
-          console.info('[startup_permissions]', startupPermissionsPayload);
         }
       } catch {
         // ignore console failures

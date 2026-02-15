@@ -11,6 +11,28 @@ type MonitorInterfaceProps = {
   onClearSnapshotFrameCache?: (input?: { dropSessionBars?: boolean }) => Promise<any> | any;
 };
 
+type SoakCheckpoint = {
+  id: string;
+  label: string;
+  capturedAtMs: number;
+  summary: {
+    brokerStatus: string | null;
+    tradelockerStatus: string | null;
+    mt5BridgeAvailable: boolean | null;
+    schedulerTaskCount: number | null;
+    signalRuns: number | null;
+    signalErrors: number | null;
+    shadowRuns: number | null;
+    shadowErrors: number | null;
+    dedupeHits: number | null;
+    cacheHits: number | null;
+    workerFallbackUsed: number;
+    workerFallbackTotal: number;
+    cacheOverBudget: string[];
+  };
+  snapshot: SystemStateSnapshot | null;
+};
+
 const formatAge = (ms?: number | null) => {
   if (!ms || !Number.isFinite(ms)) return '--';
   const delta = Math.max(0, Date.now() - ms);
@@ -67,6 +89,65 @@ const formatPercent = (value?: number | null, digits = 1) => {
   return `${pct.toFixed(digits)}%`;
 };
 
+const toBase64Utf8 = (value: string) => {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return window.btoa(binary);
+};
+
+const buildSoakCheckpointSummary = (snapshot: SystemStateSnapshot | null, liveHealth: HealthSnapshot | null) => {
+  const workerDomain = liveHealth?.workerFallback?.byDomain
+    ? Object.values(liveHealth.workerFallback.byDomain)
+    : [];
+  let workerFallbackUsed = 0;
+  let workerFallbackTotal = 0;
+  for (const row of workerDomain) {
+    workerFallbackUsed += Number(row?.fallbackUsed || 0);
+    workerFallbackTotal += Number(row?.total || 0);
+  }
+  const cacheOverBudget = (liveHealth?.cacheBudgets || [])
+    .filter((row) => Number(row?.entries || 0) > Number(row?.maxEntries || 0))
+    .map((row) => String(row?.name || '').trim())
+    .filter(Boolean);
+
+  return {
+    brokerStatus: liveHealth?.brokerStatus ?? null,
+    tradelockerStatus: snapshot?.tradelocker?.status ? String(snapshot.tradelocker.status) : null,
+    mt5BridgeAvailable:
+      snapshot?.mt5?.bridgeAvailable == null ? null : Boolean(snapshot.mt5.bridgeAvailable),
+    schedulerTaskCount:
+      liveHealth?.scheduler?.taskCount == null ? null : Number(liveHealth.scheduler.taskCount),
+    signalRuns:
+      liveHealth?.scheduler?.signalTask?.runCount == null
+        ? null
+        : Number(liveHealth.scheduler.signalTask.runCount),
+    signalErrors:
+      liveHealth?.scheduler?.signalTask?.errorCount == null
+        ? null
+        : Number(liveHealth.scheduler.signalTask.errorCount),
+    shadowRuns:
+      liveHealth?.scheduler?.shadowTask?.runCount == null
+        ? null
+        : Number(liveHealth.scheduler.shadowTask.runCount),
+    shadowErrors:
+      liveHealth?.scheduler?.shadowTask?.errorCount == null
+        ? null
+        : Number(liveHealth.scheduler.shadowTask.errorCount),
+    dedupeHits:
+      liveHealth?.perf?.brokerCoordinatorDedupeHits == null
+        ? null
+        : Number(liveHealth.perf.brokerCoordinatorDedupeHits),
+    cacheHits:
+      liveHealth?.perf?.brokerCoordinatorCacheHits == null
+        ? null
+        : Number(liveHealth.perf.brokerCoordinatorCacheHits),
+    workerFallbackUsed,
+    workerFallbackTotal,
+    cacheOverBudget
+  };
+};
+
 const toneForStatus = (value?: string | null) => {
   const key = String(value || '').toLowerCase();
   if (!key) return 'text-gray-300';
@@ -108,6 +189,12 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
   const [promotionDecision, setPromotionDecision] = useState<PromotionDecision | null>(null);
   const [ratePolicyBusy, setRatePolicyBusy] = useState(false);
   const [ratePolicyError, setRatePolicyError] = useState<string | null>(null);
+  const [soakRunId, setSoakRunId] = useState('');
+  const [soakStartedAtMs, setSoakStartedAtMs] = useState<number | null>(null);
+  const [soakLabel, setSoakLabel] = useState('');
+  const [soakCheckpoints, setSoakCheckpoints] = useState<SoakCheckpoint[]>([]);
+  const [soakBusy, setSoakBusy] = useState(false);
+  const [soakError, setSoakError] = useState<string | null>(null);
   const [livePolicy, setLivePolicy] = useState(livePolicyService.getSnapshot());
   const [livePolicyHistory, setLivePolicyHistory] = useState(livePolicyService.getHistory(6));
   const inFlightRef = useRef(false);
@@ -331,6 +418,107 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
       setError(err?.message ? String(err.message) : 'Snapshot cache clear failed.');
     }
   }, [onClearSnapshotFrameCache, refreshSnapshot]);
+
+  const startManualSoakRun = useCallback(() => {
+    const now = Date.now();
+    const runId = `manual_soak_${now}`;
+    setSoakRunId(runId);
+    setSoakStartedAtMs(now);
+    setSoakLabel('T+0m');
+    setSoakCheckpoints([]);
+    setSoakError(null);
+    setStatus('Manual soak run started. Capture checkpoints from Monitor.');
+  }, []);
+
+  const captureSoakCheckpoint = useCallback(async () => {
+    setSoakBusy(true);
+    setSoakError(null);
+    try {
+      let nextSnapshot = snapshot;
+      if (onRequestSnapshot) {
+        const res = await onRequestSnapshot({ detail, maxItems });
+        const payload = res?.payload ?? res?.data?.payload ?? res?.data ?? null;
+        if (res?.ok && payload && typeof payload === 'object' && 'capturedAtMs' in payload) {
+          nextSnapshot = payload as SystemStateSnapshot;
+          setSnapshot(nextSnapshot);
+        }
+      }
+      const currentHealth = (nextSnapshot?.health ?? health ?? null) as HealthSnapshot | null;
+      if (!nextSnapshot && !currentHealth) {
+        setSoakError('No monitor snapshot available. Refresh first, then capture.');
+        return;
+      }
+      const now = Date.now();
+      const elapsedMinutes = soakStartedAtMs ? Math.max(0, Math.floor((now - soakStartedAtMs) / 60000)) : 0;
+      const label = String(soakLabel || '').trim() || `T+${elapsedMinutes}m`;
+      const checkpoint: SoakCheckpoint = {
+        id: `${now}_${Math.random().toString(16).slice(2, 8)}`,
+        label,
+        capturedAtMs: now,
+        summary: buildSoakCheckpointSummary(nextSnapshot, currentHealth),
+        snapshot: nextSnapshot || null
+      };
+      setSoakCheckpoints((prev) => [...prev, checkpoint].slice(-32));
+      setStatus(`Soak checkpoint captured (${label}).`);
+      if (soakStartedAtMs) {
+        setSoakLabel(`T+${elapsedMinutes + 5}m`);
+      }
+    } catch (err: any) {
+      setSoakError(err?.message ? String(err.message) : 'Failed to capture soak checkpoint.');
+    } finally {
+      setSoakBusy(false);
+    }
+  }, [detail, health, maxItems, onRequestSnapshot, snapshot, soakLabel, soakStartedAtMs]);
+
+  const exportSoakEvidence = useCallback(async () => {
+    setSoakError(null);
+    if (!Array.isArray(soakCheckpoints) || soakCheckpoints.length === 0) {
+      setSoakError('No soak checkpoints captured yet.');
+      return;
+    }
+    const runId = String(soakRunId || (soakStartedAtMs ? `manual_soak_${soakStartedAtMs}` : `manual_soak_${Date.now()}`));
+    const payload = {
+      runId,
+      startedAtMs: soakStartedAtMs,
+      exportedAtMs: Date.now(),
+      checkpointCount: soakCheckpoints.length,
+      checkpoints: soakCheckpoints
+    };
+    const text = JSON.stringify(payload, null, 2);
+    let copied = false;
+    try {
+      const writeClipboard = (window as any)?.glass?.clipboard?.writeText;
+      if (writeClipboard) {
+        writeClipboard(text);
+        copied = true;
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      // ignore clipboard failure
+    }
+    try {
+      const saver = (window as any)?.glass?.saveUserFile;
+      if (typeof saver === 'function') {
+        const base64 = toBase64Utf8(text);
+        const dataUrl = `data:application/json;base64,${base64}`;
+        const res = await saver({
+          dataUrl,
+          mimeType: 'application/json',
+          subdir: 'manual-soak',
+          prefix: runId
+        });
+        if (res?.ok) {
+          setStatus(`Soak evidence exported: ${res.filename || res.path || 'manual-soak'}.${copied ? ' Copied to clipboard.' : ''}`);
+          return;
+        }
+      }
+      setStatus(copied ? 'Soak evidence copied to clipboard.' : 'Soak export unavailable in this build.');
+    } catch (err: any) {
+      setSoakError(err?.message ? String(err.message) : 'Failed to export soak evidence.');
+    }
+  }, [soakCheckpoints, soakRunId, soakStartedAtMs]);
 
   return (
     <div className="flex flex-col h-full w-full text-gray-200 bg-[#050505]">
@@ -1046,6 +1234,55 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
               ))}
             </div>
           )}
+        </MetricCard>
+
+        <MetricCard title="Manual Soak">
+          <MetricRow label="Run ID" value={soakRunId || '--'} />
+          <MetricRow label="Started" value={formatTime(soakStartedAtMs)} />
+          <MetricRow label="Checkpoints" value={soakCheckpoints.length} />
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-2 mt-2">
+            <input
+              value={soakLabel}
+              onChange={(e) => setSoakLabel(e.target.value)}
+              placeholder="Checkpoint label (e.g. T+5m)"
+              className="bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200"
+            />
+            <button
+              type="button"
+              onClick={startManualSoakRun}
+              className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]"
+            >
+              Start Run
+            </button>
+            <button
+              type="button"
+              onClick={() => { void captureSoakCheckpoint(); }}
+              disabled={soakBusy}
+              className="px-2 py-1 rounded border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/10 text-[11px] disabled:opacity-40"
+            >
+              {soakBusy ? 'Capturing...' : 'Capture Checkpoint'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { void exportSoakEvidence(); }}
+              className="px-2 py-1 rounded border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/10 text-[11px]"
+            >
+              Export Evidence
+            </button>
+          </div>
+          {soakError ? <div className="mt-2 text-[11px] text-amber-300">{soakError}</div> : null}
+          {soakCheckpoints.length > 0 ? (
+            <div className="mt-2 text-[11px] text-gray-400 space-y-1 max-h-28 overflow-y-auto custom-scrollbar">
+              {soakCheckpoints.slice(-6).reverse().map((row) => (
+                <div key={row.id} className="flex items-center justify-between gap-2">
+                  <span className="truncate">{row.label}</span>
+                  <span className="text-gray-500 whitespace-nowrap">
+                    dedupe {row.summary.dedupeHits ?? '--'} • {formatAge(row.capturedAtMs)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </MetricCard>
 
         <button

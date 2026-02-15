@@ -6,7 +6,9 @@ const path = require('path');
 const LEDGER_DB_FILE = 'trade-ledger.sqlite';
 const LEDGER_JSON_FILE = 'trade-ledger.json';
 const LEDGER_SCHEMA_VERSION_KEY = 'schema_version';
-const LEDGER_SCHEMA_VERSION_LATEST = 2;
+const LEDGER_SCHEMA_VERSION_LATEST = 3;
+const LEGACY_SIGNAL_HISTORY_BACKFILL_KEY = 'legacy_signal_history_materialized_v1';
+const LEGACY_SIGNAL_CASE_REPAIR_KEY = 'legacy_signal_case_repair_v1';
 const MAX_AGENT_MEMORIES = 5000;
 const MAX_OPTIMIZER_CACHE = 20000;
 const MAX_EXPERIMENT_NOTES = 2000;
@@ -14,6 +16,23 @@ const MAX_RESEARCH_STEPS = 20000;
 const MAX_OPTIMIZER_WINNERS = 2000;
 const MAX_PLAYBOOK_RUNS = 2000;
 const MAX_RESEARCH_SESSIONS = 2000;
+const AGENT_MEMORY_KIND_FLOORS = Object.freeze({
+  academy_case: 2000,
+  signal_history: 2000
+});
+const AGENT_MEMORY_KIND_CEILINGS = Object.freeze({
+  chart_event: 500,
+  action_trace: 250,
+  unknown: 500
+});
+const NON_PRUNABLE_AGENT_MEMORY_KINDS = Object.freeze([
+  'signal_entry',
+  'signal_history',
+  'academy_case',
+  'academy_case_lock',
+  'academy_lesson',
+  'academy_symbol_learning'
+]);
 
 let Database = null;
 try {
@@ -62,6 +81,223 @@ function normalizeTags(input) {
     tags.push(tag);
   }
   return tags;
+}
+
+function normalizeKindValue(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw || null;
+}
+
+function normalizeOutcomeValue(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (raw === 'WIN' || raw === 'LOSS' || raw === 'EXPIRED' || raw === 'REJECTED' || raw === 'FAILED') {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeAgentMemoryKindForRetention(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return raw || 'unknown';
+}
+
+function isResolvedOutcomeStatus(value) {
+  return !!normalizeOutcomeValue(value);
+}
+
+function isLegacySignalKey(rawKey) {
+  return /^signal_[a-z0-9]+$/i.test(String(rawKey || '').trim());
+}
+
+function extractSignalIdFromRawKey(rawKey) {
+  const key = String(rawKey || '').trim();
+  if (!key) return '';
+  if (isLegacySignalKey(key)) return key;
+  const prefixes = ['signal_entry:', 'academy_case:', 'signal_history:', 'signal_review:'];
+  for (const prefix of prefixes) {
+    if (key.startsWith(prefix)) {
+      const signalId = key.slice(prefix.length).trim();
+      if (signalId) return signalId;
+    }
+  }
+  return '';
+}
+
+function resolveSignalIdentity(input) {
+  const entry = input && typeof input === 'object' ? input : {};
+  const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : null;
+  const payloadSignalId = String(
+    payload?.signalId ||
+    payload?.id ||
+    payload?.caseId ||
+    entry.signalId ||
+    entry.caseId ||
+    ''
+  ).trim();
+  if (payloadSignalId) return payloadSignalId;
+  const idSignal = extractSignalIdFromRawKey(entry.id || '');
+  if (idSignal) return idSignal;
+  return extractSignalIdFromRawKey(entry.key || '');
+}
+
+function canonicalAgentMemoryKey(kind, signalId, rawKey) {
+  const kindKey = normalizeKindValue(kind);
+  const key = String(rawKey || '').trim();
+  const id = String(signalId || '').trim();
+  if (!id) return key;
+  if (kindKey === 'signal_entry') return `signal_entry:${id}`;
+  if (kindKey === 'academy_case') return `academy_case:${id}`;
+  if (kindKey === 'signal_history') return `signal_history:${id}`;
+  return key;
+}
+
+function ensureSignalCasePayload(entry, signalId) {
+  const kindKey = normalizeKindValue(entry?.kind);
+  if (kindKey !== 'signal_entry' && kindKey !== 'academy_case') {
+    return entry?.payload && typeof entry.payload === 'object' ? entry.payload : entry?.payload ?? null;
+  }
+  const payload =
+    entry?.payload && typeof entry.payload === 'object'
+      ? { ...entry.payload }
+      : {};
+  const sid = String(signalId || resolveSignalIdentity(entry) || '').trim();
+  if (!payload.id && sid) payload.id = sid;
+  if (!payload.signalId && sid) payload.signalId = sid;
+  if (!payload.caseId && sid && kindKey === 'academy_case') payload.caseId = sid;
+  if (payload.symbol == null && entry?.symbol != null) payload.symbol = entry.symbol;
+  if (payload.timeframe == null && entry?.timeframe != null) payload.timeframe = entry.timeframe;
+  if (payload.status == null && entry?.status != null) payload.status = entry.status;
+  if (payload.outcome == null && entry?.outcome != null) payload.outcome = entry.outcome;
+  if (payload.action == null && entry?.action != null) payload.action = entry.action;
+  if (payload.entryPrice == null && entry?.entryPrice != null) payload.entryPrice = entry.entryPrice;
+  if (payload.stopLoss == null && entry?.stopLoss != null) payload.stopLoss = entry.stopLoss;
+  if (payload.takeProfit == null && entry?.takeProfit != null) payload.takeProfit = entry.takeProfit;
+  if (payload.createdAtMs == null && Number.isFinite(Number(entry?.createdAtMs))) payload.createdAtMs = Number(entry.createdAtMs);
+  if (payload.updatedAtMs == null && Number.isFinite(Number(entry?.updatedAtMs))) payload.updatedAtMs = Number(entry.updatedAtMs);
+  if (payload.executedAtMs == null && Number.isFinite(Number(entry?.executedAtMs))) payload.executedAtMs = Number(entry.executedAtMs);
+  if (payload.resolvedAtMs == null && Number.isFinite(Number(entry?.resolvedAtMs))) payload.resolvedAtMs = Number(entry.resolvedAtMs);
+  if (payload.source == null && entry?.source != null) payload.source = entry.source;
+  return payload;
+}
+
+function looksLikeAcademyCasePayload(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const actionKey = normalizeKindValue(payload.action || payload.side || payload.bias);
+  const hasAction = actionKey === 'buy' || actionKey === 'sell';
+  const hasResolvedStatus = !!normalizeOutcomeValue(payload.status || payload.outcome);
+  const hasIdentityHint = !!normalizeKindValue(payload.caseId || payload.signalId || payload.id);
+  const hasPriceHints =
+    Number.isFinite(Number(payload.entryPrice ?? payload.entry ?? payload.openPrice)) ||
+    Number.isFinite(Number(payload.stopLoss ?? payload.sl ?? payload.stop)) ||
+    Number.isFinite(Number(payload.takeProfit ?? payload.tp ?? payload.target));
+  const hasEnvelope = payload.resolvedOutcomeEnvelope && typeof payload.resolvedOutcomeEnvelope === 'object';
+  const hasAttribution = payload.attribution && typeof payload.attribution === 'object';
+  if (hasEnvelope || hasAttribution) return true;
+  if (hasIdentityHint && (hasAction || hasResolvedStatus || hasPriceHints)) return true;
+  if ((hasAction || hasResolvedStatus) && hasPriceHints) return true;
+  return false;
+}
+
+function looksLikeAcademyLessonPayload(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const title = String(payload.title || payload.lessonTitle || '').trim();
+  const recommendedAction = String(payload.recommendedAction || '').trim();
+  const appliesTo = payload.appliesTo && typeof payload.appliesTo === 'object' ? payload.appliesTo : null;
+  const hasAppliesTo =
+    !!String(appliesTo?.symbol || '').trim() ||
+    !!String(appliesTo?.timeframe || '').trim() ||
+    !!String(appliesTo?.strategyMode || '').trim() ||
+    !!String(appliesTo?.executionMode || '').trim() ||
+    !!String(appliesTo?.broker || '').trim();
+  return !!title || !!recommendedAction || hasAppliesTo;
+}
+
+function inferAgentMemoryKind(input) {
+  const entry = input && typeof input === 'object' ? input : {};
+  const directKind = normalizeKindValue(entry.kind);
+  if (directKind) return directKind;
+
+  const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : null;
+  const payloadKind = normalizeKindValue(payload?.kind);
+  if (payloadKind) return payloadKind;
+
+  const sourceKey = normalizeKindValue(entry.source || payload?.source);
+  const keyRaw = String(entry.key || entry.id || '').trim();
+  const key = keyRaw.toLowerCase();
+  if (!key) return null;
+
+  const prefixKinds = [
+    'signal_entry',
+    'signal_history',
+    'signal_review',
+    'academy_case',
+    'academy_lesson',
+    'academy_symbol_learning',
+    'calendar_event',
+    'calendar_rule',
+    'agent_scorecard',
+    'symbol_scope',
+    'chart_event',
+    'chart_watch',
+    'chart_snapshot',
+    'chart_context_pack',
+    'context_pack',
+    'setup_signal_transition',
+    'setup_signal',
+    'setup_library',
+    'backtest_preset',
+    'backtest_optimization',
+    'backtest_optimization_run',
+    'watch_profile',
+    'action_flow',
+    'action_trace',
+    'task_playbook',
+    'agent_test_scenario',
+    'agent_test_run',
+    'experiment_promotion'
+  ];
+  for (const prefix of prefixKinds) {
+    if (key.startsWith(`${prefix}:`) || key.startsWith(`${prefix}_`)) {
+      if (prefix === 'academy_lesson') {
+        return looksLikeAcademyLessonPayload(payload) ? 'academy_lesson' : 'calendar_event';
+      }
+      return prefix;
+    }
+  }
+
+  if (
+    key.startsWith('signal_outcome_resolved:') ||
+    key.startsWith('lesson_created:') ||
+    key.startsWith('lesson_candidate:') ||
+    key.startsWith('lesson_auto_accept:') ||
+    key.startsWith('symbol_learning_updated:')
+  ) {
+    return 'calendar_event';
+  }
+  if (key.startsWith('academy_symbol_')) return 'academy_symbol_learning';
+  if (key.startsWith('lesson_')) {
+    return looksLikeAcademyLessonPayload(payload) ? 'academy_lesson' : 'calendar_event';
+  }
+
+  if (/^signal_[a-z0-9]+$/i.test(keyRaw)) {
+    const statusKey = normalizeKindValue(entry.status || payload?.status || entry.outcome || payload?.outcome);
+    if (statusKey === 'win' || statusKey === 'loss' || statusKey === 'expired' || statusKey === 'rejected' || statusKey === 'failed') {
+      return 'signal_history';
+    }
+    if ((sourceKey === 'academy' || sourceKey === 'academy_analyst') && looksLikeAcademyCasePayload(payload)) {
+      return 'academy_case';
+    }
+    const actionKey = normalizeKindValue(payload?.action || payload?.side || entry.action || entry.side);
+    const hasPriceHints =
+      Number.isFinite(Number(payload?.entryPrice ?? payload?.entry ?? payload?.openPrice)) ||
+      Number.isFinite(Number(payload?.stopLoss ?? payload?.sl ?? payload?.stop)) ||
+      Number.isFinite(Number(payload?.takeProfit ?? payload?.tp ?? payload?.target));
+    const hasSignalHints = !!actionKey || hasPriceHints || !!normalizeKindValue(payload?.symbol || entry.symbol);
+    if (hasSignalHints) return 'signal_entry';
+    return null;
+  }
+
+  return null;
 }
 
 function toJson(value) {
@@ -124,6 +360,9 @@ function parseAgentRow(row) {
   if (entry.createdAtMs == null) entry.createdAtMs = row.created_at_ms || null;
   if (entry.updatedAtMs == null) entry.updatedAtMs = row.updated_at_ms || null;
   if (entry.lastAccessedAtMs == null) entry.lastAccessedAtMs = row.last_accessed_at_ms || null;
+  if (entry.kind == null || String(entry.kind || '').trim() === '') {
+    entry.kind = inferAgentMemoryKind(entry);
+  }
   return entry;
 }
 
@@ -260,6 +499,9 @@ class TradeLedgerSqlite {
     this._createSchema();
     this._runSchemaMigrations();
     this._migrateFromJsonIfNeeded();
+    this._repairAgentMemoryKinds();
+    this._materializeLegacySignalHistories();
+    this._repairLegacySignalCaseRows();
     this._ensureJsonMirror();
   }
 
@@ -402,6 +644,27 @@ class TradeLedgerSqlite {
       CREATE INDEX IF NOT EXISTS idx_agent_memories_timeframe ON agent_memories(timeframe);
       CREATE INDEX IF NOT EXISTS idx_agent_memories_updated ON agent_memories(updated_at_ms DESC);
 
+      CREATE TABLE IF NOT EXISTS agent_memories_archive (
+        id TEXT PRIMARY KEY,
+        key TEXT,
+        family_key TEXT,
+        kind TEXT,
+        symbol TEXT,
+        timeframe TEXT,
+        summary TEXT,
+        tags_json TEXT,
+        payload_json TEXT,
+        source TEXT,
+        created_at_ms INTEGER,
+        updated_at_ms INTEGER,
+        last_accessed_at_ms INTEGER,
+        archived_at_ms INTEGER
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_archive_key ON agent_memories_archive(key);
+      CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_kind ON agent_memories_archive(kind);
+      CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_updated ON agent_memories_archive(updated_at_ms DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_symbol_tf ON agent_memories_archive(symbol, timeframe);
+
       CREATE TABLE IF NOT EXISTS optimizer_eval_cache (
         cache_key TEXT PRIMARY KEY,
         payload_json TEXT,
@@ -537,6 +800,34 @@ class TradeLedgerSqlite {
           INSERT OR REPLACE INTO ledger_migrations(id, applied_at_ms, note)
           VALUES (?, ?, ?)
         `).run('v2_scaffold', nowMs(), 'Schema v2 migration scaffold applied');
+      },
+      3: () => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS agent_memories_archive (
+            id TEXT PRIMARY KEY,
+            key TEXT,
+            family_key TEXT,
+            kind TEXT,
+            symbol TEXT,
+            timeframe TEXT,
+            summary TEXT,
+            tags_json TEXT,
+            payload_json TEXT,
+            source TEXT,
+            created_at_ms INTEGER,
+            updated_at_ms INTEGER,
+            last_accessed_at_ms INTEGER,
+            archived_at_ms INTEGER
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memories_archive_key ON agent_memories_archive(key);
+          CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_kind ON agent_memories_archive(kind);
+          CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_updated ON agent_memories_archive(updated_at_ms DESC);
+          CREATE INDEX IF NOT EXISTS idx_agent_memories_archive_symbol_tf ON agent_memories_archive(symbol, timeframe);
+        `);
+        this.db.prepare(`
+          INSERT OR REPLACE INTO ledger_migrations(id, applied_at_ms, note)
+          VALUES (?, ?, ?)
+        `).run('v3_archive_tier', nowMs(), 'Schema v3 archive table scaffold applied');
       }
     };
   }
@@ -682,12 +973,13 @@ class TradeLedgerSqlite {
           const createdAtMs = Number.isFinite(Number(input.createdAtMs)) ? Number(input.createdAtMs) : nowMs();
           const updatedAtMs = Number.isFinite(Number(input.updatedAtMs)) ? Number(input.updatedAtMs) : createdAtMs;
           const tags = normalizeTags(input.tags);
+          const inferredKind = inferAgentMemoryKind(input);
           const payload = {
             ...input,
             id: String(id),
             key: input.key ? String(input.key).trim() : String(id),
             familyKey: input.familyKey ? String(input.familyKey).trim() : null,
-            kind: input.kind ? String(input.kind).trim() : null,
+            kind: input.kind ? String(input.kind).trim() : inferredKind,
             symbol: input.symbol ? String(input.symbol).trim() : null,
             timeframe: input.timeframe ? String(input.timeframe).trim() : null,
             summary: input.summary != null ? String(input.summary).trim() : null,
@@ -852,6 +1144,537 @@ class TradeLedgerSqlite {
       );
     } catch (err) {
       this._lastError = redactErrorMessage(err?.message || String(err));
+    }
+  }
+
+  _repairAgentMemoryKinds() {
+    try {
+      const rows = this.db.prepare(`
+        SELECT id, key, kind, source, payload_json
+        FROM agent_memories
+        WHERE kind IS NULL OR TRIM(kind) = ''
+      `).all();
+      if (!Array.isArray(rows) || rows.length === 0) return;
+
+      const updates = [];
+      for (const row of rows) {
+        const payload = safeJsonParse(row.payload_json || '');
+        const payloadObj = payload && typeof payload === 'object' ? { ...payload } : {};
+        const inferred = inferAgentMemoryKind({
+          ...payloadObj,
+          id: payloadObj.id || row.id || null,
+          key: payloadObj.key || row.key || null,
+          source: payloadObj.source || row.source || null,
+          payload: payloadObj.payload && typeof payloadObj.payload === 'object' ? payloadObj.payload : payloadObj.payload
+        });
+        if (!inferred) continue;
+
+        if (payloadObj.kind == null || String(payloadObj.kind || '').trim() === '') {
+          payloadObj.kind = inferred;
+        }
+        const payloadJson = toJson(payloadObj) || row.payload_json || null;
+        updates.push({ id: row.id, kind: inferred, payloadJson });
+      }
+
+      if (updates.length === 0) return;
+
+      const stmt = this.db.prepare(`
+        UPDATE agent_memories
+        SET kind = ?, payload_json = ?
+        WHERE id = ?
+      `);
+      const tx = this.db.transaction((items) => {
+        for (const item of items) {
+          stmt.run(item.kind, item.payloadJson, item.id);
+        }
+      });
+      tx(updates);
+      this._markDirty();
+    } catch {
+      // best effort repair only
+    }
+  }
+
+  _materializeLegacySignalHistories() {
+    try {
+      const marker = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ? LIMIT 1').get(LEGACY_SIGNAL_HISTORY_BACKFILL_KEY);
+      if (marker?.value) return;
+
+      const legacyRows = this.db.prepare(`
+        SELECT *
+        FROM agent_memories
+        WHERE key LIKE 'signal_outcome_resolved:%'
+        ORDER BY updated_at_ms DESC
+      `).all();
+
+      const getSignalRow = this.db.prepare('SELECT * FROM agent_memories WHERE key = ? LIMIT 1');
+      const hasCanonical = this.db.prepare('SELECT 1 FROM agent_memories WHERE key = ? LIMIT 1');
+      const getLedgerRows = this.db.prepare(`
+        SELECT payload, created_at_ms, updated_at_ms
+        FROM ledger_entries
+        WHERE payload LIKE ?
+        ORDER BY updated_at_ms DESC
+        LIMIT 50
+      `);
+      const insertAgent = this.db.prepare(`
+        INSERT OR REPLACE INTO agent_memories
+        (id, key, family_key, kind, symbol, timeframe, summary, tags_json, payload_json, source, created_at_ms, updated_at_ms, last_accessed_at_ms)
+        VALUES (@id, @key, @family_key, @kind, @symbol, @timeframe, @summary, @tags_json, @payload_json, @source, @created_at_ms, @updated_at_ms, @last_accessed_at_ms)
+      `);
+
+      const inserts = [];
+      for (const row of legacyRows) {
+        const rawKey = String(row?.key || '').trim();
+        if (!rawKey.startsWith('signal_outcome_resolved:')) continue;
+        const signalId = String(rawKey.slice('signal_outcome_resolved:'.length) || '').trim();
+        if (!signalId) continue;
+
+        const canonicalKey = `signal_history:${signalId}`;
+        if (hasCanonical.get(canonicalKey)) continue;
+
+        const signalRow = getSignalRow.get(signalId);
+        const signalMemory = signalRow ? parseAgentRow(signalRow) : null;
+        const signalPayload = signalMemory?.payload && typeof signalMemory.payload === 'object' ? signalMemory.payload : {};
+
+        const legacyPayloadRaw = safeJsonParse(row.payload_json || '');
+        const legacyPayload = legacyPayloadRaw && typeof legacyPayloadRaw === 'object' ? legacyPayloadRaw : {};
+        const legacySignal = legacyPayload.payload && typeof legacyPayload.payload === 'object' ? legacyPayload.payload : {};
+
+        const ledgerRows = getLedgerRows.all(`%${signalId}%`);
+        let ledgerMatch = null;
+        for (const led of ledgerRows) {
+          const parsed = safeJsonParse(led.payload || '');
+          if (!parsed || typeof parsed !== 'object') continue;
+          const ledPayload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : null;
+          const ledSignalId = String(parsed.signalId || ledPayload?.signalId || '').trim();
+          if (ledSignalId !== signalId) continue;
+          ledgerMatch = { parsed, ledPayload, createdAtMs: led.created_at_ms, updatedAtMs: led.updated_at_ms };
+          break;
+        }
+
+        const outcome =
+          normalizeOutcomeValue(legacySignal.outcome || legacySignal.status) ||
+          normalizeOutcomeValue(legacyPayload.outcome || legacyPayload.status) ||
+          normalizeOutcomeValue(ledgerMatch?.parsed?.outcome || ledgerMatch?.parsed?.status) ||
+          normalizeOutcomeValue(ledgerMatch?.ledPayload?.outcome || ledgerMatch?.ledPayload?.status);
+
+        const symbol = String(
+          signalPayload.symbol ||
+          signalMemory?.symbol ||
+          legacySignal.symbol ||
+          legacyPayload.symbol ||
+          ledgerMatch?.parsed?.symbol ||
+          ledgerMatch?.ledPayload?.symbol ||
+          ''
+        ).trim() || null;
+        const timeframe = String(
+          signalPayload.timeframe ||
+          signalMemory?.timeframe ||
+          legacySignal.timeframe ||
+          legacyPayload.timeframe ||
+          ledgerMatch?.parsed?.timeframe ||
+          ledgerMatch?.ledPayload?.timeframe ||
+          ''
+        ).trim() || null;
+
+        const actionRaw = String(
+          signalPayload.action ||
+          legacySignal.action ||
+          legacyPayload.action ||
+          ledgerMatch?.parsed?.action ||
+          ledgerMatch?.ledPayload?.action ||
+          ''
+        ).trim().toUpperCase();
+        const action = actionRaw === 'SELL' ? 'SELL' : 'BUY';
+
+        const createdAtMs =
+          Number.isFinite(Number(signalPayload.createdAtMs)) ? Number(signalPayload.createdAtMs) :
+          Number.isFinite(Number(signalMemory?.createdAtMs)) ? Number(signalMemory.createdAtMs) :
+          Number.isFinite(Number(legacySignal.createdAtMs)) ? Number(legacySignal.createdAtMs) :
+          Number.isFinite(Number(legacyPayload.createdAtMs)) ? Number(legacyPayload.createdAtMs) :
+          Number.isFinite(Number(ledgerMatch?.parsed?.createdAtMs)) ? Number(ledgerMatch.parsed.createdAtMs) :
+          Number.isFinite(Number(ledgerMatch?.createdAtMs)) ? Number(ledgerMatch.createdAtMs) :
+          Number.isFinite(Number(row.created_at_ms)) ? Number(row.created_at_ms) :
+          nowMs();
+        const resolvedAtMs =
+          Number.isFinite(Number(legacySignal.resolvedAtMs)) ? Number(legacySignal.resolvedAtMs) :
+          Number.isFinite(Number(legacyPayload.resolvedAtMs)) ? Number(legacyPayload.resolvedAtMs) :
+          Number.isFinite(Number(ledgerMatch?.parsed?.resolvedAtMs)) ? Number(ledgerMatch.parsed.resolvedAtMs) :
+          Number.isFinite(Number(ledgerMatch?.ledPayload?.resolvedAtMs)) ? Number(ledgerMatch.ledPayload.resolvedAtMs) :
+          Number.isFinite(Number(row.updated_at_ms)) ? Number(row.updated_at_ms) :
+          Number.isFinite(Number(ledgerMatch?.updatedAtMs)) ? Number(ledgerMatch.updatedAtMs) :
+          createdAtMs;
+        const executedAtMs =
+          Number.isFinite(Number(signalPayload.executedAtMs)) ? Number(signalPayload.executedAtMs) :
+          Number.isFinite(Number(legacySignal.executedAtMs)) ? Number(legacySignal.executedAtMs) :
+          Number.isFinite(Number(legacyPayload.executedAtMs)) ? Number(legacyPayload.executedAtMs) :
+          Number.isFinite(Number(ledgerMatch?.parsed?.executedAtMs)) ? Number(ledgerMatch.parsed.executedAtMs) :
+          Number.isFinite(Number(ledgerMatch?.ledPayload?.executedAtMs)) ? Number(ledgerMatch.ledPayload.executedAtMs) :
+          null;
+
+        const entryPrice = Number(
+          signalPayload.entryPrice ??
+          legacySignal.entryPrice ??
+          legacyPayload.entryPrice ??
+          ledgerMatch?.parsed?.entryPrice ??
+          ledgerMatch?.ledPayload?.entryPrice
+        );
+        const stopLoss = Number(
+          signalPayload.stopLoss ??
+          legacySignal.stopLoss ??
+          legacyPayload.stopLoss ??
+          ledgerMatch?.parsed?.stopLoss ??
+          ledgerMatch?.ledPayload?.stopLoss
+        );
+        const takeProfit = Number(
+          signalPayload.takeProfit ??
+          legacySignal.takeProfit ??
+          legacyPayload.takeProfit ??
+          ledgerMatch?.parsed?.takeProfit ??
+          ledgerMatch?.ledPayload?.takeProfit
+        );
+        const score = Number(
+          signalPayload.score ??
+          legacySignal.score ??
+          legacyPayload.score ??
+          ledgerMatch?.parsed?.score ??
+          ledgerMatch?.ledPayload?.score
+        );
+        const exitPrice = Number(
+          legacySignal.exitPrice ??
+          legacyPayload.exitPrice ??
+          ledgerMatch?.parsed?.exitPrice ??
+          ledgerMatch?.ledPayload?.exitPrice
+        );
+        const durationMs = Number(
+          legacySignal.durationMs ??
+          legacyPayload.durationMs ??
+          ledgerMatch?.parsed?.durationMs ??
+          ledgerMatch?.ledPayload?.durationMs
+        );
+        const barsToOutcome = Number(
+          legacySignal.barsToOutcome ??
+          legacyPayload.barsToOutcome ??
+          ledgerMatch?.parsed?.barsToOutcome ??
+          ledgerMatch?.ledPayload?.barsToOutcome
+        );
+
+        const id = `agent_${resolvedAtMs}_${Math.random().toString(16).slice(2)}`;
+        const payload = {
+          id,
+          key: canonicalKey,
+          familyKey: null,
+          kind: 'signal_history',
+          symbol,
+          timeframe,
+          summary: outcome ? `${outcome} ${symbol || ''}`.trim() : null,
+          source: 'legacy_backfill',
+          tags: ['legacy_backfill', 'signal_history'],
+          createdAtMs,
+          updatedAtMs: resolvedAtMs,
+          lastAccessedAtMs: null,
+          payload: {
+            signalId,
+            symbol,
+            timeframe,
+            action,
+            entryPrice: Number.isFinite(entryPrice) ? entryPrice : null,
+            stopLoss: Number.isFinite(stopLoss) ? stopLoss : null,
+            takeProfit: Number.isFinite(takeProfit) ? takeProfit : null,
+            score: Number.isFinite(score) ? score : null,
+            status: outcome,
+            outcome,
+            createdAtMs,
+            executedAtMs: Number.isFinite(Number(executedAtMs)) ? Number(executedAtMs) : null,
+            resolvedAtMs,
+            durationMs: Number.isFinite(durationMs) ? durationMs : null,
+            barsToOutcome: Number.isFinite(barsToOutcome) ? barsToOutcome : null,
+            exitPrice: Number.isFinite(exitPrice) ? exitPrice : null,
+            outcomeSource: 'legacy_signal_outcome_resolved'
+          }
+        };
+
+        inserts.push(payload);
+      }
+
+      const tx = this.db.transaction((items) => {
+        for (const item of items) {
+          insertAgent.run({
+            id: item.id,
+            key: item.key,
+            family_key: item.familyKey,
+            kind: item.kind,
+            symbol: item.symbol,
+            timeframe: item.timeframe,
+            summary: item.summary,
+            tags_json: toJson(item.tags) || '[]',
+            payload_json: toJson(item),
+            source: item.source,
+            created_at_ms: item.createdAtMs,
+            updated_at_ms: item.updatedAtMs,
+            last_accessed_at_ms: item.lastAccessedAtMs
+          });
+        }
+        this.db.prepare('INSERT OR REPLACE INTO ledger_meta(key, value) VALUES (?, ?)').run(
+          LEGACY_SIGNAL_HISTORY_BACKFILL_KEY,
+          toJson({ appliedAtMs: nowMs(), inserted: items.length }) || String(nowMs())
+        );
+      });
+      tx(inserts);
+
+      if (inserts.length > 0) {
+        this._markDirty();
+      }
+    } catch {
+      // best effort backfill only
+    }
+  }
+
+  _repairLegacySignalCaseRows() {
+    try {
+      const marker = this.db
+        .prepare('SELECT value FROM ledger_meta WHERE key = ? LIMIT 1')
+        .get(LEGACY_SIGNAL_CASE_REPAIR_KEY);
+      if (marker?.value) return;
+
+      const rows = this.db.prepare(`
+        SELECT *
+        FROM agent_memories
+        WHERE kind IN ('signal_entry', 'academy_case')
+          AND key LIKE 'signal_%'
+        ORDER BY updated_at_ms DESC
+      `).all();
+
+      const getCanonical = this.db.prepare('SELECT * FROM agent_memories WHERE key = ? LIMIT 1');
+      const getSignalHistory = this.db.prepare(`
+        SELECT *
+        FROM agent_memories
+        WHERE kind = 'signal_history'
+        ORDER BY updated_at_ms DESC
+      `);
+      const insertAgent = this.db.prepare(`
+        INSERT OR REPLACE INTO agent_memories
+        (id, key, family_key, kind, symbol, timeframe, summary, tags_json, payload_json, source, created_at_ms, updated_at_ms, last_accessed_at_ms)
+        VALUES (@id, @key, @family_key, @kind, @symbol, @timeframe, @summary, @tags_json, @payload_json, @source, @created_at_ms, @updated_at_ms, @last_accessed_at_ms)
+      `);
+
+      const historyBySignalId = new Map();
+      for (const row of getSignalHistory.all()) {
+        const parsed = parseAgentRow(row);
+        if (!parsed) continue;
+        const signalId = resolveSignalIdentity(parsed);
+        if (!signalId || historyBySignalId.has(signalId)) continue;
+        const outcome = normalizeOutcomeValue(parsed?.payload?.outcome || parsed?.payload?.status || parsed?.outcome || parsed?.status);
+        if (!outcome) continue;
+        historyBySignalId.set(signalId, parsed);
+      }
+
+      const normalizeAction = (value, fallbackEntryPrice, fallbackStopLoss) => {
+        const raw = String(value || '').trim().toUpperCase();
+        if (raw === 'BUY' || raw === 'SELL') return raw;
+        const entry = Number(fallbackEntryPrice);
+        const stop = Number(fallbackStopLoss);
+        if (Number.isFinite(entry) && Number.isFinite(stop)) {
+          return stop < entry ? 'BUY' : 'SELL';
+        }
+        return 'BUY';
+      };
+      const firstFinite = (...values) => {
+        for (const value of values) {
+          const num = Number(value);
+          if (Number.isFinite(num)) return num;
+        }
+        return null;
+      };
+      const preferString = (...values) => {
+        for (const value of values) {
+          const text = String(value || '').trim();
+          if (text) return text;
+        }
+        return null;
+      };
+
+      const updates = [];
+      for (const row of rows) {
+        const legacy = parseAgentRow(row);
+        if (!legacy) continue;
+        const kind = normalizeKindValue(legacy.kind || inferAgentMemoryKind(legacy));
+        if (kind !== 'signal_entry' && kind !== 'academy_case') continue;
+
+        const signalId = resolveSignalIdentity(legacy);
+        if (!signalId) continue;
+
+        const canonicalKey = canonicalAgentMemoryKey(kind, signalId, legacy.key);
+        if (!canonicalKey) continue;
+
+        const history = historyBySignalId.get(signalId) || null;
+        const historyPayload = history?.payload && typeof history.payload === 'object' ? history.payload : {};
+        const legacyPayload =
+          legacy.payload && typeof legacy.payload === 'object'
+            ? { ...legacy.payload }
+            : {};
+
+        if (kind === 'academy_case') {
+          const resolvedStatus = normalizeOutcomeValue(
+            historyPayload?.outcome ||
+            historyPayload?.status ||
+            legacyPayload?.outcome ||
+            legacyPayload?.status ||
+            legacy?.outcome ||
+            legacy?.status
+          );
+          if (!resolvedStatus) continue;
+        }
+
+        const entryPrice = firstFinite(
+          legacyPayload.entryPrice, legacyPayload.entry, legacyPayload.openPrice,
+          historyPayload.entryPrice, historyPayload.entry, historyPayload.openPrice
+        );
+        const stopLoss = firstFinite(
+          legacyPayload.stopLoss, legacyPayload.sl, legacyPayload.stop,
+          historyPayload.stopLoss, historyPayload.sl, historyPayload.stop
+        );
+        const takeProfit = firstFinite(
+          legacyPayload.takeProfit, legacyPayload.tp, legacyPayload.target,
+          historyPayload.takeProfit, historyPayload.tp, historyPayload.target
+        );
+
+        const action = normalizeAction(
+          legacyPayload.action || legacyPayload.side || historyPayload.action || historyPayload.side,
+          entryPrice,
+          stopLoss
+        );
+        const outcome = normalizeOutcomeValue(
+          historyPayload?.outcome ||
+          historyPayload?.status ||
+          legacyPayload?.outcome ||
+          legacyPayload?.status ||
+          legacy?.outcome ||
+          legacy?.status
+        );
+        const createdAtMs = firstFinite(
+          legacyPayload.createdAtMs, historyPayload.createdAtMs, legacy.createdAtMs, row.created_at_ms
+        );
+        const executedAtMs = firstFinite(
+          legacyPayload.executedAtMs, historyPayload.executedAtMs, legacy.executedAtMs
+        );
+        const resolvedAtMs = firstFinite(
+          legacyPayload.resolvedAtMs, historyPayload.resolvedAtMs, legacy.resolvedAtMs, legacy.updatedAtMs, row.updated_at_ms
+        );
+
+        const payload = {
+          ...legacyPayload,
+          ...historyPayload,
+          id: signalId,
+          signalId,
+          caseId: kind === 'academy_case' ? signalId : (legacyPayload.caseId || historyPayload.caseId || null),
+          action,
+          status: outcome || (legacyPayload.status ?? historyPayload.status ?? legacy.status ?? null),
+          outcome: outcome || (legacyPayload.outcome ?? historyPayload.outcome ?? legacy.outcome ?? null),
+          symbol: preferString(legacyPayload.symbol, historyPayload.symbol, legacy.symbol, row.symbol),
+          timeframe: preferString(legacyPayload.timeframe, historyPayload.timeframe, legacy.timeframe, row.timeframe),
+          entryPrice,
+          stopLoss,
+          takeProfit,
+          createdAtMs,
+          executedAtMs,
+          resolvedAtMs,
+          source: preferString(legacyPayload.source, historyPayload.source, legacy.source, row.source) || 'legacy_repair'
+        };
+
+        const normalizedNext = {
+          ...legacy,
+          id: String(legacy.id || row.id || `agent_${nowMs()}_${Math.random().toString(16).slice(2)}`),
+          key: canonicalKey,
+          kind,
+          symbol: payload.symbol || legacy.symbol || null,
+          timeframe: payload.timeframe || legacy.timeframe || null,
+          summary: String(
+            legacy.summary ||
+            `${String(payload.outcome || payload.status || kind).toUpperCase()} ${payload.symbol || ''}`.trim()
+          ).trim() || null,
+          source: payload.source || legacy.source || null,
+          payload,
+          tags: normalizeTags([
+            ...(Array.isArray(legacy.tags) ? legacy.tags : []),
+            kind,
+            'legacy_repair'
+          ]),
+          createdAtMs: Number.isFinite(Number(createdAtMs)) ? Number(createdAtMs) : Number(legacy.createdAtMs || row.created_at_ms || nowMs()),
+          updatedAtMs: Number.isFinite(Number(resolvedAtMs)) ? Number(resolvedAtMs) : Number(legacy.updatedAtMs || row.updated_at_ms || nowMs()),
+          lastAccessedAtMs: Number.isFinite(Number(legacy.lastAccessedAtMs)) ? Number(legacy.lastAccessedAtMs) : null
+        };
+
+        const existingRow = getCanonical.get(canonicalKey);
+        if (existingRow) {
+          const existing = parseAgentRow(existingRow) || {};
+          const existingPayload = existing.payload && typeof existing.payload === 'object' ? existing.payload : {};
+          const merged = {
+            ...existing,
+            ...normalizedNext,
+            id: String(existing.id || normalizedNext.id),
+            key: canonicalKey,
+            kind,
+            payload: {
+              ...existingPayload,
+              ...normalizedNext.payload
+            },
+            tags: normalizeTags([
+              ...(Array.isArray(existing.tags) ? existing.tags : []),
+              ...(Array.isArray(normalizedNext.tags) ? normalizedNext.tags : [])
+            ]),
+            createdAtMs: Math.min(
+              Number.isFinite(Number(existing.createdAtMs)) ? Number(existing.createdAtMs) : Number.MAX_SAFE_INTEGER,
+              Number.isFinite(Number(normalizedNext.createdAtMs)) ? Number(normalizedNext.createdAtMs) : Number.MAX_SAFE_INTEGER
+            )
+          };
+          if (!Number.isFinite(Number(merged.createdAtMs)) || merged.createdAtMs >= Number.MAX_SAFE_INTEGER) {
+            merged.createdAtMs = normalizedNext.createdAtMs;
+          }
+          merged.updatedAtMs = Math.max(
+            Number.isFinite(Number(existing.updatedAtMs)) ? Number(existing.updatedAtMs) : 0,
+            Number.isFinite(Number(normalizedNext.updatedAtMs)) ? Number(normalizedNext.updatedAtMs) : 0
+          ) || normalizedNext.updatedAtMs;
+          updates.push(merged);
+        } else {
+          updates.push(normalizedNext);
+        }
+      }
+
+      const tx = this.db.transaction((items) => {
+        for (const item of items) {
+          insertAgent.run({
+            id: item.id,
+            key: item.key,
+            family_key: item.familyKey || null,
+            kind: item.kind,
+            symbol: item.symbol || null,
+            timeframe: item.timeframe || null,
+            summary: item.summary || null,
+            tags_json: toJson(Array.isArray(item.tags) ? item.tags : []) || '[]',
+            payload_json: toJson(item),
+            source: item.source || null,
+            created_at_ms: Number.isFinite(Number(item.createdAtMs)) ? Number(item.createdAtMs) : nowMs(),
+            updated_at_ms: Number.isFinite(Number(item.updatedAtMs)) ? Number(item.updatedAtMs) : nowMs(),
+            last_accessed_at_ms: Number.isFinite(Number(item.lastAccessedAtMs)) ? Number(item.lastAccessedAtMs) : null
+          });
+        }
+        this.db.prepare('INSERT OR REPLACE INTO ledger_meta(key, value) VALUES (?, ?)').run(
+          LEGACY_SIGNAL_CASE_REPAIR_KEY,
+          toJson({
+            appliedAtMs: nowMs(),
+            scanned: rows.length,
+            repaired: items.length
+          }) || String(nowMs())
+        );
+      });
+      tx(updates);
+
+      if (updates.length > 0) {
+        this._markDirty();
+      }
+    } catch {
+      // best effort repair only
     }
   }
 
@@ -1039,17 +1862,123 @@ class TradeLedgerSqlite {
   }
 
   _trimAgentMemories() {
-    const count = this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories').get().count;
-    const overBy = Number(count || 0) - MAX_AGENT_MEMORIES;
+    const kindExpr = "LOWER(TRIM(COALESCE(kind, '')))";
+    const countRows = () => {
+      const row = this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories').get();
+      return Number(row?.count || 0);
+    };
+    const deleteOldestByFilter = (whereClause, params, limit) => {
+      const boundedLimit = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : 0;
+      if (boundedLimit <= 0) return 0;
+      const sql = `
+        DELETE FROM agent_memories
+        WHERE id IN (
+          SELECT id FROM agent_memories
+          ${whereClause ? `WHERE ${whereClause}` : ''}
+          ORDER BY updated_at_ms ASC, created_at_ms ASC, id ASC
+          LIMIT ?
+        )
+      `;
+      const runArgs = [...params, boundedLimit];
+      const res = this.db.prepare(sql).run(...runArgs);
+      return Number(res?.changes || 0);
+    };
+
+    let overBy = countRows() - MAX_AGENT_MEMORIES;
     if (overBy <= 0) return;
-    this.db.prepare(`
-      DELETE FROM agent_memories
-      WHERE id IN (
-        SELECT id FROM agent_memories
-        ORDER BY updated_at_ms ASC
-        LIMIT ?
-      )
-    `).run(overBy);
+
+    // Step A: enforce noisy-kind ceilings first.
+    for (const [kindKey, ceilingRaw] of Object.entries(AGENT_MEMORY_KIND_CEILINGS)) {
+      const ceiling = Number.isFinite(Number(ceilingRaw)) ? Math.max(0, Math.floor(Number(ceilingRaw))) : 0;
+      if (ceiling < 0) continue;
+      let whereClause = `${kindExpr} = ?`;
+      let params = [kindKey];
+      if (kindKey === 'unknown') {
+        whereClause = `${kindExpr} = ''`;
+        params = [];
+      }
+      const countRow = this.db.prepare(`SELECT COUNT(*) AS count FROM agent_memories WHERE ${whereClause}`).get(...params);
+      const countForKind = Number(countRow?.count || 0);
+      const excess = countForKind - ceiling;
+      if (excess > 0) {
+        deleteOldestByFilter(whereClause, params, excess);
+      }
+    }
+
+    overBy = countRows() - MAX_AGENT_MEMORIES;
+    if (overBy <= 0) return;
+
+    // Step B: if still over cap, trim oldest rows from kinds outside protected/no-prune sets.
+    const protectedKinds = Object.keys(AGENT_MEMORY_KIND_FLOORS).map((kind) => String(kind).trim().toLowerCase()).filter(Boolean);
+    const nonPrunableKinds = NON_PRUNABLE_AGENT_MEMORY_KINDS.map((kind) => String(kind).trim().toLowerCase()).filter(Boolean);
+    const excludedKinds = Array.from(new Set([...protectedKinds, ...nonPrunableKinds]));
+    if (excludedKinds.length > 0) {
+      const placeholders = excludedKinds.map(() => '?').join(', ');
+      deleteOldestByFilter(`${kindExpr} NOT IN (${placeholders})`, excludedKinds, overBy);
+    } else {
+      deleteOldestByFilter('', [], overBy);
+    }
+
+    overBy = countRows() - MAX_AGENT_MEMORIES;
+    if (overBy <= 0) return;
+
+    // Step C: if still over, trim protected kinds above floor budgets, excluding no-prune kinds.
+    const floorEligibleKinds = protectedKinds.filter((kind) => !nonPrunableKinds.includes(kind));
+    if (floorEligibleKinds.length > 0) {
+      const placeholders = floorEligibleKinds.map(() => '?').join(', ');
+      const protectedRows = this.db.prepare(`
+        SELECT id, kind, updated_at_ms, created_at_ms
+        FROM agent_memories
+        WHERE ${kindExpr} IN (${placeholders})
+        ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+      `).all(...floorEligibleKinds);
+      const keptByKind = new Map();
+      const floorCandidates = [];
+      for (const row of protectedRows) {
+        const kindKey = normalizeAgentMemoryKindForRetention(row?.kind);
+        const floor = Number.isFinite(Number(AGENT_MEMORY_KIND_FLOORS[kindKey]))
+          ? Math.max(0, Math.floor(Number(AGENT_MEMORY_KIND_FLOORS[kindKey])))
+          : 0;
+        const seen = Number(keptByKind.get(kindKey) || 0) + 1;
+        keptByKind.set(kindKey, seen);
+        if (seen > floor) {
+          floorCandidates.push(row);
+        }
+      }
+      floorCandidates.sort((a, b) => {
+        const aTime = Number(a?.updated_at_ms || a?.created_at_ms || 0) || 0;
+        const bTime = Number(b?.updated_at_ms || b?.created_at_ms || 0) || 0;
+        if (aTime !== bTime) return aTime - bTime;
+        return String(a?.id || '').localeCompare(String(b?.id || ''));
+      });
+      const deleteIds = floorCandidates
+        .slice(0, overBy)
+        .map((row) => String(row?.id || '').trim())
+        .filter(Boolean);
+      if (deleteIds.length > 0) {
+        const deletePlaceholders = deleteIds.map(() => '?').join(', ');
+        this.db.prepare(`DELETE FROM agent_memories WHERE id IN (${deletePlaceholders})`).run(...deleteIds);
+      }
+    }
+
+    overBy = countRows() - MAX_AGENT_MEMORIES;
+    if (overBy <= 0) return;
+
+    // Step D: emergency fallback trim only from non-no-prune kinds.
+    if (nonPrunableKinds.length > 0) {
+      const placeholders = nonPrunableKinds.map(() => '?').join(', ');
+      deleteOldestByFilter(`${kindExpr} NOT IN (${placeholders})`, nonPrunableKinds, overBy);
+    } else {
+      deleteOldestByFilter('', [], overBy);
+    }
+
+    overBy = countRows() - MAX_AGENT_MEMORIES;
+    if (overBy > 0) {
+      console.warn('[agent_memory_trim_skipped_non_prunable]', {
+        overBy,
+        maxRows: MAX_AGENT_MEMORIES
+      });
+    }
   }
 
   _trimExperimentNotes() {
@@ -1528,7 +2457,7 @@ class TradeLedgerSqlite {
         const prev = row ? parseAgentRow(row) : {};
         const now = nowMs();
 
-        const next = { ...prev };
+        let next = { ...prev };
         if (key) next.key = key;
         if (id) next.id = id;
 
@@ -1557,6 +2486,56 @@ class TradeLedgerSqlite {
 
         if (!next.key) next.key = next.id;
         if (!Array.isArray(next.tags)) next.tags = [];
+        if (next.kind == null || String(next.kind || '').trim() === '') {
+          const inferredKind = inferAgentMemoryKind({
+            ...next,
+            key: next.key,
+            id: next.id,
+            source: next.source,
+            payload: next.payload
+          });
+          if (inferredKind) next.kind = inferredKind;
+        }
+        const signalId = resolveSignalIdentity(next);
+        const canonicalKey = canonicalAgentMemoryKey(next.kind, signalId, next.key);
+        if (canonicalKey) {
+          next.key = canonicalKey;
+        }
+        if (
+          next.payload == null &&
+          (normalizeKindValue(next.kind) === 'signal_entry' || normalizeKindValue(next.kind) === 'academy_case')
+        ) {
+          next.payload = ensureSignalCasePayload(next, signalId);
+        } else if (
+          next.payload &&
+          typeof next.payload === 'object' &&
+          (normalizeKindValue(next.kind) === 'signal_entry' || normalizeKindValue(next.kind) === 'academy_case')
+        ) {
+          next.payload = ensureSignalCasePayload(next, signalId);
+        }
+
+        if (!row || String(row?.key || '').trim() !== String(next.key || '').trim()) {
+          const canonicalRow = this.db.prepare('SELECT * FROM agent_memories WHERE key = ? LIMIT 1').get(next.key);
+          if (canonicalRow) {
+            const canonicalPrev = parseAgentRow(canonicalRow) || {};
+            next = {
+              ...canonicalPrev,
+              ...next,
+              key: next.key,
+              kind: next.kind || canonicalPrev.kind,
+              payload: next.payload ?? canonicalPrev.payload ?? null,
+              tags: normalizeTags([...(Array.isArray(canonicalPrev.tags) ? canonicalPrev.tags : []), ...(Array.isArray(next.tags) ? next.tags : [])]),
+              createdAtMs: Math.min(
+                Number.isFinite(Number(canonicalPrev.createdAtMs)) ? Number(canonicalPrev.createdAtMs) : Number.MAX_SAFE_INTEGER,
+                Number.isFinite(Number(next.createdAtMs)) ? Number(next.createdAtMs) : Number.MAX_SAFE_INTEGER
+              )
+            };
+            if (!Number.isFinite(Number(next.createdAtMs)) || Number(next.createdAtMs) >= Number.MAX_SAFE_INTEGER) {
+              next.createdAtMs = now;
+            }
+            next.updatedAtMs = now;
+          }
+        }
 
         this.db.prepare(`
           INSERT OR REPLACE INTO agent_memories
@@ -1577,6 +2556,10 @@ class TradeLedgerSqlite {
           updated_at_ms: next.updatedAtMs,
           last_accessed_at_ms: next.lastAccessedAtMs
         });
+        this.db.prepare(`
+          DELETE FROM agent_memories_archive
+          WHERE id = ? OR key = ?
+        `).run(next.id, next.key);
 
         this._trimAgentMemories();
         this._markDirty();
@@ -1627,13 +2610,17 @@ class TradeLedgerSqlite {
     });
   }
 
-  async listAgentMemory({ limit = 50, symbol, timeframe, kind, tags } = {}) {
+  async listAgentMemory({ limit = 50, symbol, timeframe, kind, tags, updatedAfterMs, includeArchived } = {}) {
     try {
-      const lim = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(5000, Math.floor(Number(limit)))) : 50;
+      const lim = Number.isFinite(Number(limit)) ? Math.max(1, Math.min(50000, Math.floor(Number(limit)))) : 50;
       const symbolKey = symbol != null ? String(symbol).trim().toLowerCase() : '';
       const timeframeKey = timeframe != null ? String(timeframe).trim().toLowerCase() : '';
       const kindKey = kind != null ? String(kind).trim().toLowerCase() : '';
       const tagFilters = normalizeTags(tags).map((tag) => tag.toLowerCase());
+      const updatedAfter = Number.isFinite(Number(updatedAfterMs))
+        ? Math.max(0, Math.floor(Number(updatedAfterMs)))
+        : 0;
+      const includeArchiveRows = includeArchived === true;
 
       const clauses = [];
       const params = [];
@@ -1646,20 +2633,34 @@ class TradeLedgerSqlite {
         clauses.push('LOWER(timeframe) = ?');
         params.push(timeframeKey);
       }
-      if (kindKey) {
-        clauses.push('LOWER(kind) = ?');
-        params.push(kindKey);
-      }
 
       const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-      const rows = this.db.prepare(`
+      const fetchLimit = Math.min(50000, Math.max(lim, lim * (kindKey ? 25 : 5)));
+      const activeRows = this.db.prepare(`
         SELECT * FROM agent_memories
         ${where}
         ORDER BY updated_at_ms DESC
         LIMIT ?
-      `).all(...params, lim * 5);
+      `).all(...params, fetchLimit);
+      const archiveRows = includeArchiveRows
+        ? this.db.prepare(`
+            SELECT * FROM agent_memories_archive
+            ${where}
+            ORDER BY updated_at_ms DESC
+            LIMIT ?
+          `).all(...params, fetchLimit)
+        : [];
+      const rows = [...activeRows, ...archiveRows];
 
       const filtered = rows.map(parseAgentRow).filter(Boolean).filter((entry) => {
+        if (kindKey) {
+          const entryKind = normalizeKindValue(entry.kind || inferAgentMemoryKind(entry));
+          if (entryKind !== kindKey) return false;
+        }
+        if (updatedAfter > 0) {
+          const updatedAt = Number(entry.updatedAtMs || entry.createdAtMs || 0) || 0;
+          if (!updatedAt || updatedAt <= updatedAfter) return false;
+        }
         if (tagFilters.length === 0) return true;
         const entryTags = Array.isArray(entry.tags)
           ? entry.tags.map((t) => String(t || '').trim().toLowerCase())
@@ -1670,12 +2671,142 @@ class TradeLedgerSqlite {
         return true;
       });
 
-      return { ok: true, memories: filtered.slice(0, lim), path: this.dbPath };
+      const deduped = new Map();
+      for (const entry of filtered) {
+        const identityKey = String(entry?.key || entry?.id || '').trim();
+        if (!identityKey) continue;
+        const existing = deduped.get(identityKey);
+        if (!existing) {
+          deduped.set(identityKey, entry);
+          continue;
+        }
+        const existingTime = Number(existing?.updatedAtMs || existing?.createdAtMs || 0) || 0;
+        const nextTime = Number(entry?.updatedAtMs || entry?.createdAtMs || 0) || 0;
+        if (nextTime >= existingTime) {
+          deduped.set(identityKey, entry);
+        }
+      }
+      const dedupedList = Array.from(deduped.values());
+      dedupedList.sort((a, b) => (Number(b?.updatedAtMs || b?.createdAtMs || 0) - Number(a?.updatedAtMs || a?.createdAtMs || 0)));
+      return { ok: true, memories: dedupedList.slice(0, lim), path: this.dbPath };
     } catch (err) {
       const msg = redactErrorMessage(err?.message || String(err));
       this._lastError = msg;
       return { ok: false, error: msg, path: this.dbPath };
     }
+  }
+
+  async archiveAgentMemories({ cutoffMs, kinds, keepRecentPerKind = 0, keepLocked = true } = {}) {
+    return this._withLock(async () => {
+      try {
+        const threshold = Number.isFinite(Number(cutoffMs))
+          ? Math.max(0, Math.floor(Number(cutoffMs)))
+          : 0;
+        const keepRecent = Number.isFinite(Number(keepRecentPerKind))
+          ? Math.max(0, Math.floor(Number(keepRecentPerKind)))
+          : 0;
+        const kindSet = Array.isArray(kinds) && kinds.length > 0
+          ? new Set(kinds.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean))
+          : null;
+
+        const rows = this.db.prepare(`
+          SELECT * FROM agent_memories
+          ORDER BY updated_at_ms DESC, created_at_ms DESC, id DESC
+        `).all();
+        const entries = rows.map(parseAgentRow).filter(Boolean);
+        if (entries.length === 0) {
+          const archiveCount = Number(this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories_archive').get()?.count || 0);
+          return { ok: true, moved: 0, rows: archiveCount, activeRows: 0, path: this.dbPath };
+        }
+
+        const byKind = new Map();
+        for (const entry of entries) {
+          const kindKey = String(entry?.kind || '').trim().toLowerCase() || 'unknown';
+          if (!byKind.has(kindKey)) byKind.set(kindKey, []);
+          byKind.get(kindKey).push(entry);
+        }
+        const keepIds = new Set();
+        if (keepRecent > 0) {
+          for (const list of byKind.values()) {
+            list.slice(0, keepRecent).forEach((entry) => {
+              const id = String(entry?.id || '').trim();
+              if (id) keepIds.add(id);
+            });
+          }
+        }
+
+        const shouldKeepLocked = keepLocked !== false;
+        const moveIds = [];
+        const moveEntries = [];
+        for (const entry of entries) {
+          const id = String(entry?.id || '').trim();
+          const kindKey = String(entry?.kind || '').trim().toLowerCase() || 'unknown';
+          const updatedAt = Number(entry?.updatedAtMs || entry?.createdAtMs || 0) || 0;
+          const payload = entry?.payload && typeof entry.payload === 'object' ? entry.payload : null;
+          const isLocked = entry?.locked === true || payload?.locked === true;
+          const kindAllowed = !kindSet || kindSet.has(kindKey);
+          const keepByRecency = !!(id && keepIds.has(id));
+          const oldEnough = threshold <= 0 ? true : (updatedAt > 0 && updatedAt < threshold);
+          if (!kindAllowed || keepByRecency || (shouldKeepLocked && isLocked) || !oldEnough || !id) continue;
+          moveIds.push(id);
+          moveEntries.push(entry);
+        }
+
+        if (moveEntries.length === 0) {
+          const archiveCount = Number(this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories_archive').get()?.count || 0);
+          return {
+            ok: true,
+            moved: 0,
+            rows: archiveCount,
+            activeRows: entries.length,
+            path: this.dbPath
+          };
+        }
+
+        const tx = this.db.transaction(() => {
+          const upsertArchive = this.db.prepare(`
+            INSERT OR REPLACE INTO agent_memories_archive
+            (id, key, family_key, kind, symbol, timeframe, summary, tags_json, payload_json, source, created_at_ms, updated_at_ms, last_accessed_at_ms, archived_at_ms)
+            VALUES (@id, @key, @family_key, @kind, @symbol, @timeframe, @summary, @tags_json, @payload_json, @source, @created_at_ms, @updated_at_ms, @last_accessed_at_ms, @archived_at_ms)
+          `);
+          const deleteActive = this.db.prepare('DELETE FROM agent_memories WHERE id = ?');
+          for (const entry of moveEntries) {
+            upsertArchive.run({
+              id: entry.id,
+              key: entry.key,
+              family_key: entry.familyKey || null,
+              kind: entry.kind || null,
+              symbol: entry.symbol || null,
+              timeframe: entry.timeframe || null,
+              summary: entry.summary || null,
+              tags_json: toJson(entry.tags || []) || '[]',
+              payload_json: toJson(entry) || null,
+              source: entry.source || null,
+              created_at_ms: Number(entry.createdAtMs || 0) || nowMs(),
+              updated_at_ms: Number(entry.updatedAtMs || 0) || nowMs(),
+              last_accessed_at_ms: Number(entry.lastAccessedAtMs || 0) || null,
+              archived_at_ms: nowMs()
+            });
+            deleteActive.run(entry.id);
+          }
+        });
+        tx();
+        this._markDirty();
+        const archiveCount = Number(this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories_archive').get()?.count || 0);
+        const activeCount = Number(this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories').get()?.count || 0);
+        return {
+          ok: true,
+          moved: moveEntries.length,
+          rows: archiveCount,
+          activeRows: activeCount,
+          path: this.dbPath
+        };
+      } catch (err) {
+        const msg = redactErrorMessage(err?.message || String(err));
+        this._lastError = msg;
+        return { ok: false, error: msg, path: this.dbPath };
+      }
+    });
   }
 
   async createExperimentNote(note) {
@@ -2344,6 +3475,7 @@ class TradeLedgerSqlite {
     return this._withLock(async () => {
       try {
         this.db.prepare('DELETE FROM agent_memories').run();
+        this.db.prepare('DELETE FROM agent_memories_archive').run();
         this._markDirty();
         return { ok: true, path: this.dbPath };
       } catch (err) {
@@ -2397,6 +3529,7 @@ class TradeLedgerSqlite {
       const entriesCount = this.db.prepare('SELECT COUNT(*) AS count FROM ledger_entries').get().count;
       const memoriesCount = this.db.prepare('SELECT COUNT(*) AS count FROM ledger_memories').get().count;
       const agentMemoryCount = this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories').get().count;
+      const agentMemoryArchiveCount = this.db.prepare('SELECT COUNT(*) AS count FROM agent_memories_archive').get().count;
       const experimentCount = this.db.prepare('SELECT COUNT(*) AS count FROM experiment_notes').get().count;
       const researchSessionCount = this.db.prepare('SELECT COUNT(*) AS count FROM research_sessions').get().count;
       const researchStepCount = this.db.prepare('SELECT COUNT(*) AS count FROM research_steps').get().count;
@@ -2408,6 +3541,7 @@ class TradeLedgerSqlite {
         entriesCount: Number(entriesCount || 0),
         memoriesCount: Number(memoriesCount || 0),
         agentMemoryCount: Number(agentMemoryCount || 0),
+        agentMemoryArchiveCount: Number(agentMemoryArchiveCount || 0),
         experimentCount: Number(experimentCount || 0),
         researchSessionCount: Number(researchSessionCount || 0),
         researchStepCount: Number(researchStepCount || 0),

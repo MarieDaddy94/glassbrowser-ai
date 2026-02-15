@@ -1,22 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Search, Zap } from 'lucide-react';
 import { requireBridge } from '../services/bridgeGuard';
+import type { UnifiedSnapshotStatus } from '../types';
+import { classifyUnifiedSnapshotStatus, formatUnifiedSnapshotStatusLabel } from '../services/unifiedSnapshotStatus';
 
 type SymbolSuggestion = {
   symbol: string;
   label?: string | null;
 };
 
-export type SnapshotPanelStatus = {
-  symbol?: string | null;
-  ok?: boolean;
-  reasonCode?: string | null;
-  frames?: Array<{ tf: string; barsCount: number; lastUpdatedAtMs?: number | null }>;
-  missingFrames?: string[];
-  shortFrames?: Array<{ tf: string; barsCount: number; minBars: number }>;
-  capturedAtMs?: number | null;
-  warnings?: string[];
-};
+export type SnapshotPanelStatus = UnifiedSnapshotStatus;
 
 type SnapshotInterfaceProps = {
   symbol: string;
@@ -220,12 +213,15 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
   }, [status, timeframes]);
 
   const statusLabel = useMemo(() => {
-    if (!status) return 'No snapshot yet.';
-    if (status.reasonCode === 'WARMUP_PENDING') return 'Warming up...';
-    return status.ok
-      ? 'Native chart snapshot ready'
-      : `Snapshot issue${status.reasonCode ? ` (${status.reasonCode})` : ''}`;
+    return formatUnifiedSnapshotStatusLabel(status, {
+      readyLabel: 'NATIVE SNAPSHOT READY',
+      missingLabel: 'No snapshot yet.',
+      warmingLabel: 'Warming up...',
+      failureLabel: status?.reasonCode ? `Snapshot issue (${status.reasonCode})` : 'Snapshot issue'
+    });
   }, [status]);
+
+  const normalizedStatus = useMemo(() => classifyUnifiedSnapshotStatus(status), [status]);
 
   const latestFrameUpdatedAt = useMemo(() => {
     const frames = status?.frames || [];
@@ -358,7 +354,7 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[11px] uppercase tracking-wider text-gray-400">Snapshot Status</div>
-              <div className={`text-sm ${status?.ok ? 'text-emerald-200' : 'text-amber-300'}`}>
+              <div className={`text-sm ${normalizedStatus?.ok ? 'text-emerald-200' : 'text-amber-300'}`}>
                 {symbol ? `${symbol}: ` : ''}
                 {statusLabel}
               </div>

@@ -76,6 +76,7 @@ interface NativeChartInterfaceProps {
     args?: any,
     meta?: { symbol?: string | null; source?: string | null; timeframe?: string | null }
   ) => Promise<any>;
+  isPanelVisible?: boolean;
   crossPanelContext?: CrossPanelContext | null;
   onPriceSelect?: (event: { price: number; frameId: string; resolution: string; source: 'frame' | 'fullscreen'; mode: 'entry' | 'sl' | 'tp' }) => void;
   onLevelUpdate?: (event: {
@@ -180,6 +181,7 @@ type SessionStyle = {
 
 const MAX_ACTIVE_FRAMES = 5;
 const DEFAULT_FRAME_IDS = ['5m', '15m', '1H', '4H'];
+const NATIVE_CHART_UI_STORAGE_KEY = 'glass_native_chart_ui_v1';
 const FRAME_PRESETS: FrameConfig[] = [
   { id: '1m', label: '1m', resolution: '1m', lookbackBars: 800, displayBars: 300, maxAgeMs: 12_000 },
   { id: '5m', label: '5m', resolution: '5m', lookbackBars: 600, displayBars: 260, maxAgeMs: 18_000 },
@@ -539,6 +541,34 @@ const createEmptyInstrumentStatus = (): InstrumentStatus => ({
   error: null
 });
 
+const sanitizeActiveFrameIds = (input: any): string[] => {
+  const requested = Array.isArray(input) ? input.map((value) => String(value || '').trim()).filter(Boolean) : [];
+  const valid: string[] = [];
+  for (const id of requested) {
+    if (!FRAME_PRESET_MAP[id]) continue;
+    if (valid.includes(id)) continue;
+    valid.push(id);
+    if (valid.length >= MAX_ACTIVE_FRAMES) break;
+  }
+  return valid.length > 0 ? valid : [...DEFAULT_FRAME_IDS];
+};
+
+const loadNativeChartUiState = () => {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { activeFrameIds: [...DEFAULT_FRAME_IDS] };
+    }
+    const raw = window.localStorage.getItem(NATIVE_CHART_UI_STORAGE_KEY);
+    if (!raw) return { activeFrameIds: [...DEFAULT_FRAME_IDS] };
+    const parsed = JSON.parse(raw);
+    return {
+      activeFrameIds: sanitizeActiveFrameIds(parsed?.activeFrameIds)
+    };
+  } catch {
+    return { activeFrameIds: [...DEFAULT_FRAME_IDS] };
+  }
+};
+
 const formatConstraintError = (message: string, brokerLabel: string) => {
   const raw = String(message || '').trim();
   if (!raw) return 'Constraints unavailable.';
@@ -585,6 +615,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
       onUpdateWatcher,
       onRunActionCatalog,
       requestBroker,
+      isPanelVisible,
       crossPanelContext,
       onPriceSelect,
       onLevelUpdate
@@ -599,7 +630,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
     const [resolveNote, setResolveNote] = useState<string | null>(null);
     const [isResolving, setIsResolving] = useState(false);
     const [frameState, setFrameState] = useState<Record<string, FrameState>>(createInitialFrameState);
-    const [activeFrameIds, setActiveFrameIds] = useState<string[]>(DEFAULT_FRAME_IDS);
+    const [activeFrameIds, setActiveFrameIds] = useState<string[]>(() => loadNativeChartUiState().activeFrameIds);
     const [showIndicators, setShowIndicators] = useState(true);
     const [showLiveQuote, setShowLiveQuote] = useState(true);
     const [showPositions, setShowPositions] = useState(true);
@@ -654,12 +685,9 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
 
     const runActionOr = useCallback(
       (actionId: string, payload: Record<string, any>, fallback?: () => void) => {
-        void runPanelAction(actionId, payload, {
-          fallback: async () => {
-            fallback?.();
-            return { ok: true, data: null };
-          }
-        });
+        // Keep UI toggles local-first so chart controls remain usable under source backoff.
+        fallback?.();
+        void runPanelAction(actionId, payload);
       },
       [runPanelAction]
     );
@@ -760,6 +788,18 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
       });
       return true;
     }, [resolveFrameId]);
+
+    useEffect(() => {
+      try {
+        if (typeof window === 'undefined' || !window.localStorage) return;
+        const payload = {
+          activeFrameIds: sanitizeActiveFrameIds(activeFrameIds)
+        };
+        window.localStorage.setItem(NATIVE_CHART_UI_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        // Best effort only; failure should not impact chart runtime.
+      }
+    }, [activeFrameIds]);
 
     useEffect(() => {
       const next = String(activeSymbol || '').trim();
@@ -1459,6 +1499,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
     }, [applyQuoteToFrames, quotePrice, quoteTs, resolvedSymbol]);
 
     useEffect(() => {
+      if (!isPanelVisible) return;
       if (!resolvedSymbol) return;
       const bridge = requireBridge('native_chart.refresh');
       if (!bridge.ok) return;
@@ -1477,7 +1518,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
         }
       });
       return () => dispose();
-    }, [refreshFrames, resolvedSymbol, runtimeScheduler]);
+    }, [isPanelVisible, refreshFrames, resolvedSymbol, runtimeScheduler]);
 
     useEffect(() => {
       setFrameState(createInitialFrameState());
@@ -2408,7 +2449,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
           : 'Constraints unavailable for this symbol.';
 
     return (
-      <div className="flex flex-col h-full w-full text-gray-200 bg-[#050505]">
+      <div className="flex flex-col h-full w-full min-h-0 overflow-hidden text-gray-200 bg-[#050505]">
         <div className="px-4 py-4 border-b border-white/5 bg-gradient-to-r from-cyan-900/20 to-black">
           <div className="flex items-center gap-2 text-cyan-300 text-xs uppercase tracking-wider font-bold">
             <BarChart2 size={14} />
@@ -2648,7 +2689,7 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="rounded-lg border border-white/10 bg-black/30 p-3">
               <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">Broker Quote</div>

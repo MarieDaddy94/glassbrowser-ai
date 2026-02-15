@@ -28,20 +28,58 @@ const FALLBACK_ALLOWED_SCOPES = [
   'calendar'
 ];
 
+const normalizePathLike = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+const joinPathLike = (...parts) => {
+  const cleaned = parts
+    .map((part) => normalizePathLike(part))
+    .filter(Boolean);
+  if (cleaned.length === 0) return '';
+  return cleaned.join('/').replace(/\/{2,}/g, '/');
+};
+
 const resolveScopeModuleAttempts = () => {
+  const dir =
+    typeof __dirname === 'string' && __dirname
+      ? __dirname
+      : '';
   const cwd =
     typeof process !== 'undefined' && process && typeof process.cwd === 'function'
       ? process.cwd()
       : '';
-  const cwdNormalized = String(cwd || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+  const cwdNormalized = normalizePathLike(cwd);
   const cwdAttempts = cwdNormalized
     ? [`${cwdNormalized}/electron/generated/ipcScopes.cjs`, `${cwdNormalized}/generated/ipcScopes.cjs`]
     : [];
-  return [
+  const resourcesPath =
+    typeof process !== 'undefined' && process && typeof process.resourcesPath === 'string'
+      ? process.resourcesPath
+      : '';
+  const absoluteAttempts = [];
+  if (dir) {
+    const dirNormalized = normalizePathLike(dir);
+    absoluteAttempts.push(joinPathLike(dirNormalized, 'generated', 'ipcScopes.cjs'));
+    absoluteAttempts.push(joinPathLike(dirNormalized, '..', 'generated', 'ipcScopes.cjs'));
+  }
+  if (resourcesPath) {
+    const resourcesNormalized = normalizePathLike(resourcesPath);
+    absoluteAttempts.push(joinPathLike(resourcesNormalized, 'app.asar.unpacked', 'electron', 'generated', 'ipcScopes.cjs'));
+    absoluteAttempts.push(joinPathLike(resourcesNormalized, 'app.asar', 'electron', 'generated', 'ipcScopes.cjs'));
+  }
+  const allAttempts = [
+    ...absoluteAttempts,
     './generated/ipcScopes.cjs',
     '../generated/ipcScopes.cjs',
     ...cwdAttempts
   ];
+  const deduped = [];
+  const seen = new Set();
+  for (const attempt of allAttempts) {
+    const key = String(attempt || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(key);
+  }
+  return deduped;
 };
 
 const loadGeneratedAllowedScopes = () => {
@@ -552,6 +590,7 @@ contextBridge.exposeInMainWorld('glass', {
     upsertAgentMemory: (memory) => guardedInvoke('tradeLedger', 'tradeLedger:upsertAgentMemory', memory),
     getAgentMemory: (args) => guardedInvoke('tradeLedger', 'tradeLedger:getAgentMemory', args),
     listAgentMemory: (args) => guardedInvoke('tradeLedger', 'tradeLedger:listAgentMemory', args),
+    archiveAgentMemories: (args) => guardedInvoke('tradeLedger', 'tradeLedger:archiveAgentMemories', args),
     deleteAgentMemory: (args) => guardedInvoke('tradeLedger', 'tradeLedger:deleteAgentMemory', args),
     clearAgentMemory: () => guardedInvoke('tradeLedger', 'tradeLedger:clearAgentMemory'),
     getOptimizerEvalCache: (args) => guardedInvoke('tradeLedger', 'tradeLedger:getOptimizerEvalCache', args),

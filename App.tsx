@@ -506,6 +506,12 @@ import { GLASS_EVENT, dispatchGlassEvent } from './services/glassEvents';
 import { submitTradeLockerOrderBatch } from './services/executionSubmissionService';
 import { cancelTimer, deferMs, sleepMs, type TimerHandle } from './services/timerPrimitives';
 import { buildCalendarPnlSnapshot } from './services/calendarPnlEngine';
+import {
+  buildTradeLockerAccountKey as buildTradeLockerAccountKeySafe,
+  parseTradeLockerAccountKey as parseTradeLockerAccountKeySafe,
+  parseTradeLockerAccountNumber as parseTradeLockerAccountNumberSafe,
+  resolveTradeLockerIdentityMatchState
+} from './services/tradeLockerIdentity';
 import { buildMirrorExecutions } from './orchestrators/executionOrchestrator';
 import { normalizePanelConnectivitySnapshot } from './orchestrators/panelOrchestrator';
 import { buildSystemInitializedMessage } from './orchestrators/startupOrchestrator';
@@ -515,6 +521,23 @@ import { evaluateAutoPilotState, mergeAutoPilotState } from './services/autopilo
 import { normalizeAgentCapabilities } from './services/agentCapabilities';
 import { getTechAgentLogs } from './services/techAgentLog';
 import { getCacheBudgetManager } from './services/cacheBudgetManager';
+import { lockCase as lockAcademyCase, listLocks as listAcademyCaseLocks, type AcademyCaseLockRecord } from './services/academyCaseLockService';
+import { buildSnapshotScopeKey, classifyUnifiedSnapshotStatus } from './services/unifiedSnapshotStatus';
+import { buildSignalCanonicalIdV2, buildSignalFingerprint, resolveSignalIdentityCandidates } from './services/signalIdentity';
+import { mergeSignalEntries, resolveSignalMergeKey } from './services/signalMergeService';
+import {
+  buildAcademyCaseDataQuality,
+  mergeAcademyCasesMergeOnly,
+  pickPreferredAcademyCase,
+  resolveAcademyCaseMergeKey,
+  scoreAcademyCaseRichness
+} from './services/academyMergeService';
+import {
+  buildIncrementalListOptions,
+  nextCursorFromItems,
+  readAcademySyncCursor,
+  writeAcademySyncCursor
+} from './services/academySyncService';
 import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
@@ -553,8 +576,6 @@ const SETUP_SIGNAL_RETENTION_DAYS_KEY = 'glass_setup_signal_retention_days';
 const SETUP_SIGNAL_RETENTION_LIMIT_KEY = 'glass_setup_signal_retention_limit';
 const DEFAULT_SETUP_SIGNAL_RETENTION_DAYS = 14;
 const DEFAULT_SETUP_SIGNAL_RETENTION_LIMIT = 100;
-const DEFAULT_SIGNAL_ENTRY_RETENTION_DAYS = 30;
-const SIGNAL_ENTRY_RETENTION_MS = DEFAULT_SIGNAL_ENTRY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const PERF_WINDOW_MS = 60_000;
 const AUDIT_THROTTLE_WINDOW_MS = 1500;
 const AUDIT_THROTTLE_TYPES = new Set([
@@ -585,7 +606,7 @@ const CHART_CHAT_CAPTURE_TIMEOUT_MS = 3500;
 const CHART_CHAT_MAX_CANDLES = CHART_CHAT_DEFAULT_MAX_CANDLES;
 const CHART_CHAT_MAX_PAYLOAD_CHARS = CHART_CHAT_DEFAULT_MAX_PAYLOAD_CHARS;
 const CHART_HISTORY_FETCH_CONCURRENCY = 2;
-const CHART_HISTORY_FETCH_TIMEOUT_MS = 25_000;
+const CHART_HISTORY_FETCH_TIMEOUT_MS = 12_000;
 const CHART_REFRESH_MIN_GAP_MS = 3_000;
 const SIGNAL_SNAPSHOT_PARALLELISM = 2;
 const BROKER_REQUEST_CONCURRENCY = 6;
@@ -1290,32 +1311,15 @@ const buildTradeLockerAccountKey = (input?: {
   accountId?: number | null;
   accNum?: number | null;
 } | null) => {
-  if (!input) return '';
-  const env = input.env ? String(input.env).trim() : '';
-  const server = input.server ? String(input.server).trim() : '';
-  const accountId = Number(input.accountId);
-  const accNum = Number(input.accNum);
-  if (!env || !server || !Number.isFinite(accountId) || accountId <= 0 || !Number.isFinite(accNum) || accNum <= 0) {
-    return '';
-  }
-  return [env, server, String(Math.trunc(accountId)), String(Math.trunc(accNum))].join(':');
+  return buildTradeLockerAccountKeySafe(input || null);
 };
 
 const parseTradeLockerAccountKey = (key: string) => {
-  const parts = String(key || '').split(':').map((p) => p.trim());
-  if (parts.length < 4) return null;
-  const [env, server, accountIdRaw, accNumRaw] = parts;
-  const accountId = Number(accountIdRaw);
-  const accNum = Number(accNumRaw);
-  if (!env || !server || !Number.isFinite(accountId) || accountId <= 0 || !Number.isFinite(accNum) || accNum <= 0) return null;
-  return { env, server, accountId: Math.trunc(accountId), accNum: Math.trunc(accNum) };
+  return parseTradeLockerAccountKeySafe(key);
 };
 
 const parseTradeLockerAccountNumber = (value: any): number | null => {
-  if (value == null) return null;
-  const raw = Number(value);
-  if (!Number.isFinite(raw) || raw <= 0) return null;
-  return Math.trunc(raw);
+  return parseTradeLockerAccountNumberSafe(value);
 };
 
 const computeMedian = (values: number[]) => {
@@ -2829,6 +2833,21 @@ const SIGNAL_TELEGRAM_STATUS_OPTIONS: SignalEntryStatus[] = [
   'LOSS',
   'FAILED'
 ];
+const isFinalSignalStatus = (status?: string | null) => {
+  const raw = String(status || '').trim().toUpperCase();
+  return raw === 'WIN' || raw === 'LOSS' || raw === 'REJECTED' || raw === 'EXPIRED' || raw === 'FAILED';
+};
+const hasSignalTradeDefinition = (entry: any) => {
+  if (!entry || typeof entry !== 'object') return false;
+  const entryPrice = Number(entry.entryPrice);
+  const stopLoss = Number(entry.stopLoss);
+  const takeProfit = Number(entry.takeProfit);
+  return (
+    Number.isFinite(entryPrice) && entryPrice > 0 &&
+    Number.isFinite(stopLoss) && stopLoss > 0 &&
+    Number.isFinite(takeProfit) && takeProfit > 0
+  );
+};
 const PATTERN_SETTINGS_STORAGE_KEY = 'glass_patterns_panel_v1';
 const DEFAULT_PATTERN_TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
 const DEFAULT_PATTERN_DETECTORS = [
@@ -3512,6 +3531,12 @@ const App: React.FC = () => {
   const [academySymbolLearnings, setAcademySymbolLearnings] = useState<AcademySymbolLearning[]>([]);
   const [academySymbolLearningsUpdatedAtMs, setAcademySymbolLearningsUpdatedAtMs] = useState<number | null>(null);
   const [academySelectedCaseId, setAcademySelectedCaseId] = useState<string | null>(null);
+  const [academyFocusRequest, setAcademyFocusRequest] = useState<{
+    requestId: string;
+    signalId?: string | null;
+    caseId?: string | null;
+    forceVisible?: boolean;
+  } | null>(null);
   const [calendarRules, setCalendarRules] = useState<CalendarRule[]>([]);
   const [calendarRulesUpdatedAtMs, setCalendarRulesUpdatedAtMs] = useState<number | null>(null);
   const [signalRunning, setSignalRunning] = useState(false);
@@ -3532,7 +3557,7 @@ const App: React.FC = () => {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [buildResolvedOutcomeEnvelope, buildSignalAttributionRecord]);
 
   useEffect(() => {
     const snapshot = outcomeConsistencyEngine.ingestSignalHistory(signalHistory);
@@ -5445,6 +5470,9 @@ const App: React.FC = () => {
   const academyCasesRef = React.useRef<AcademyCase[]>([]);
   const academyLessonsRef = React.useRef<AcademyLesson[]>([]);
   const academySymbolLearningsRef = React.useRef<AcademySymbolLearning[]>([]);
+  const academySyncCursorRef = React.useRef(readAcademySyncCursor());
+  const academyCaseLocksRef = React.useRef<Map<string, AcademyCaseLockRecord>>(new Map());
+  const academyCaseRepairPersistedRef = React.useRef<Map<string, string>>(new Map());
   const academyLessonContextRef = React.useRef<string>('');
   const academyExportNotBeforeRef = React.useRef<number>(0);
   const academyAnalystInFlightRef = React.useRef<Set<string>>(new Set());
@@ -5459,6 +5487,27 @@ const App: React.FC = () => {
   const shadowFollowStateRef = React.useRef<boolean | null>(null);
   const calendarRulesRef = React.useRef<CalendarRule[]>([]);
   const signalEntriesPersistedRef = React.useRef<Map<string, string>>(new Map());
+  const academyMergeStatsRef = React.useRef<{ added: number; replaced: number; retained: number }>({
+    added: 0,
+    replaced: 0,
+    retained: 0
+  });
+  const academyDataQualityStatsRef = React.useRef<{
+    richCaseCount: number;
+    sparseCaseCount: number;
+    lessonValidCount: number;
+    lessonDroppedCount: number;
+    repairUpserts: number;
+  }>({
+    richCaseCount: 0,
+    sparseCaseCount: 0,
+    lessonValidCount: 0,
+    lessonDroppedCount: 0,
+    repairUpserts: 0
+  });
+  const academyArchiveNotBeforeRef = React.useRef(0);
+  const ledgerArchiveStatsRef = React.useRef<{ moves: number; rows: number }>({ moves: 0, rows: 0 });
+  const signalIdCollisionPreventedCountRef = React.useRef(0);
   const pendingChartFocusRef = React.useRef<{ symbol: string; timeframe?: string } | null>(null);
   const chartEngineQuoteRef = React.useRef<Map<string, number>>(new Map());
   const patternWatchWarningRef = React.useRef(0);
@@ -11195,10 +11244,17 @@ const App: React.FC = () => {
     };
 
     if (reasonCode || warnings.length > 0) {
+      const coverageCodes = new Set(['SNAPSHOT_TIMEOUT', 'WARMUP_TIMEOUT']);
+      const hasCoverageDelay =
+        (reasonCode != null && coverageCodes.has(String(reasonCode))) ||
+        warnings.some((code) => coverageCodes.has(String(code)));
+      const hasUsableFrames = framesSummary.some((frame) => Number(frame?.barsCount || 0) > 0);
+      const severity: 'warn' | 'error' = hasCoverageDelay || hasUsableFrames ? 'warn' : 'error';
+      const issueLabel = hasCoverageDelay ? 'coverage delayed' : 'capture failure';
       appendLiveError({
         source: 'snapshot',
-        level: 'warn',
-        message: `Snapshot ${symbol || payload.symbol || ''} ${reasonCode ? `(${reasonCode})` : 'warning'}`.trim(),
+        level: severity,
+        message: `Snapshot ${symbol || payload.symbol || ''} ${issueLabel}${reasonCode ? ` (${reasonCode})` : ''}`.trim(),
         detail: {
           symbol: symbol || payload.symbol || null,
           timeframes,
@@ -11612,59 +11668,76 @@ const App: React.FC = () => {
   }, []);
 
   const buildSignalEntryFingerprint = useCallback((entry: SignalEntry) => {
-    const payload = {
-      id: entry.id,
-      symbol: entry.symbol,
-      timeframe: entry.timeframe ?? null,
-      action: entry.action,
-      entryPrice: entry.entryPrice,
-      stopLoss: entry.stopLoss,
-      takeProfit: entry.takeProfit,
-      targets: entry.targets ?? null,
-      probability: entry.probability,
-      strategyMode: entry.strategyMode ?? null,
-      reason: entry.reason ?? null,
-      status: entry.status,
-      createdAtMs: entry.createdAtMs,
-      executedAtMs: entry.executedAtMs ?? null,
-      resolvedAtMs: entry.resolvedAtMs ?? null,
-      expiresAtMs: entry.expiresAtMs ?? null,
-      agentId: entry.agentId ?? null,
-      agentName: entry.agentName ?? null,
-      executionError: entry.executionError ?? null,
-      executionSource: entry.executionSource ?? null,
-      executionBroker: entry.executionBroker ?? null,
-      executionMode: entry.executionMode ?? null,
-      executionLedgerId: entry.executionLedgerId ?? null,
-      executionOrderId: entry.executionOrderId ?? null,
-      executionPositionId: entry.executionPositionId ?? null,
-      executionOrderStatus: entry.executionOrderStatus ?? null,
-      shadowLedgerId: entry.shadowLedgerId ?? null,
-      runId: entry.runId ?? null,
-      newsSnapshot: entry.newsSnapshot ?? null,
-      quantTelemetry: entry.quantTelemetry ?? null
-    };
-    try {
-      return JSON.stringify(payload);
-    } catch {
-      return String(entry.id || '');
-    }
+    return buildSignalFingerprint({
+      ...entry,
+      signalCanonicalId: entry.signalCanonicalId || entry.id || null,
+      signalIdentityVersion: entry.signalIdentityVersion || 'v2',
+      legacySignalId: entry.legacySignalId || entry.id || null
+    });
+  }, []);
+
+  const inferLegacyTradeAction = useCallback((input: {
+    action?: any;
+    side?: any;
+    bias?: any;
+    entryPrice?: any;
+    stopLoss?: any;
+    takeProfit?: any;
+  }): 'BUY' | 'SELL' => {
+    const actionRaw = String(input.action ?? input.side ?? input.bias ?? '').trim().toUpperCase();
+    if (actionRaw === 'SELL' || actionRaw === 'BUY') return actionRaw as 'BUY' | 'SELL';
+    const entryPrice = Number(input.entryPrice);
+    const stopLoss = Number(input.stopLoss);
+    const takeProfit = Number(input.takeProfit);
+    if (Number.isFinite(entryPrice) && Number.isFinite(takeProfit) && takeProfit < entryPrice) return 'SELL';
+    if (Number.isFinite(entryPrice) && Number.isFinite(stopLoss) && stopLoss > entryPrice) return 'SELL';
+    return 'BUY';
   }, []);
 
   const normalizeSignalEntryMemory = useCallback((memory: any): SignalEntry | null => {
     if (!memory || typeof memory !== 'object') return null;
     const payload = memory.payload && typeof memory.payload === 'object' ? memory.payload as Record<string, any> : {};
     const rawKey = String(memory.key || memory.id || '').trim();
-    const signalId = String(payload.id || payload.signalId || rawKey.replace(/^signal_entry:/, '') || '').trim();
-    if (!signalId) return null;
-    const actionRaw = String(payload.action || '').trim().toUpperCase();
-    const action = actionRaw === 'SELL' ? 'SELL' : 'BUY';
-    const entryPrice = Number(payload.entryPrice);
-    const stopLoss = Number(payload.stopLoss);
-    const takeProfit = Number(payload.takeProfit);
-    const probability = Number(payload.probability);
+    const rawSignalId = String(payload.id || payload.signalId || rawKey.replace(/^signal_entry:/, '') || '').trim();
+    if (!rawSignalId) return null;
+    const action = inferLegacyTradeAction({
+      action: payload.action,
+      side: payload.side ?? memory.action,
+      entryPrice: payload.entryPrice ?? payload.entry ?? payload.openPrice,
+      stopLoss: payload.stopLoss ?? payload.sl ?? payload.stop,
+      takeProfit: payload.takeProfit ?? payload.tp ?? payload.target
+    }) as SignalEntry['action'];
+    const entryPrice = Number(payload.entryPrice ?? payload.entry ?? payload.openPrice);
+    const stopLoss = Number(payload.stopLoss ?? payload.sl ?? payload.stop);
+    const takeProfit = Number(payload.takeProfit ?? payload.tp ?? payload.target);
     const createdAtRaw = Number(payload.createdAtMs ?? memory.createdAtMs ?? memory.updatedAtMs);
     const createdAtMs = Number.isFinite(createdAtRaw) ? createdAtRaw : Date.now();
+    const runId = payload.runId != null ? String(payload.runId) : null;
+    const canonicalFromPayload = String(
+      payload.signalCanonicalId ||
+      (String(payload.signalIdentityVersion || '').trim().toLowerCase() === 'v2' ? payload.signalId : '') ||
+      ''
+    ).trim();
+    const legacySignalId = String(payload.legacySignalId || rawSignalId || '').trim();
+    const canonicalComputed = buildSignalCanonicalIdV2({
+      symbol: payload.symbol || memory.symbol || '',
+      timeframe: payload.timeframe ?? memory.timeframe ?? null,
+      action,
+      entryPrice,
+      stopLoss,
+      takeProfit,
+      strategyMode: payload.strategyMode ?? null,
+      agentKey: payload.agentId ?? payload.agentName ?? null,
+      runId,
+      createdAtMs
+    });
+    const signalCanonicalId = canonicalFromPayload || canonicalComputed;
+    const signalIdentityVersion = String(payload.signalIdentityVersion || (signalCanonicalId ? 'v2' : '') || '').trim() || null;
+    const signalId = signalCanonicalId || rawSignalId;
+    const hasValidEntry = Number.isFinite(entryPrice) && entryPrice > 0;
+    const hasValidStop = Number.isFinite(stopLoss) && stopLoss > 0;
+    const hasValidTarget = Number.isFinite(takeProfit) && takeProfit > 0;
+    const probability = Number(payload.probability);
     const statusRaw = String(payload.status || '').trim().toUpperCase();
     const status: SignalEntry['status'] = (
       statusRaw === 'SUBMITTING' ||
@@ -11676,6 +11749,13 @@ const App: React.FC = () => {
       statusRaw === 'LOSS' ||
       statusRaw === 'FAILED'
     ) ? statusRaw as SignalEntry['status'] : 'PROPOSED';
+    const isResolvedStatus =
+      status === 'WIN' ||
+      status === 'LOSS' ||
+      status === 'EXPIRED' ||
+      status === 'REJECTED' ||
+      status === 'FAILED';
+    if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !isResolvedStatus) return null;
     const quantRaw = payload.quantTelemetry && typeof payload.quantTelemetry === 'object'
       ? payload.quantTelemetry as Record<string, any>
       : null;
@@ -11715,12 +11795,15 @@ const App: React.FC = () => {
 
     return {
       id: signalId,
+      signalCanonicalId,
+      signalIdentityVersion: signalIdentityVersion as SignalEntry['signalIdentityVersion'],
+      legacySignalId: legacySignalId || rawSignalId || null,
       symbol: String(payload.symbol || memory.symbol || '').trim(),
       timeframe: payload.timeframe != null ? String(payload.timeframe) : (memory.timeframe != null ? String(memory.timeframe) : null),
       action,
-      entryPrice: Number.isFinite(entryPrice) ? entryPrice : 0,
-      stopLoss: Number.isFinite(stopLoss) ? stopLoss : 0,
-      takeProfit: Number.isFinite(takeProfit) ? takeProfit : 0,
+      entryPrice: hasValidEntry ? entryPrice : null,
+      stopLoss: hasValidStop ? stopLoss : null,
+      takeProfit: hasValidTarget ? takeProfit : null,
       targets: Array.isArray(payload.targets) ? payload.targets.map((v: any) => Number(v)).filter((v: any) => Number.isFinite(v)) : null,
       probability: Number.isFinite(probability) ? probability : 0,
       strategyMode: payload.strategyMode != null ? String(payload.strategyMode) : null,
@@ -11741,11 +11824,11 @@ const App: React.FC = () => {
       executionPositionId: payload.executionPositionId != null ? String(payload.executionPositionId) : null,
       executionOrderStatus: payload.executionOrderStatus != null ? String(payload.executionOrderStatus) : null,
       shadowLedgerId: payload.shadowLedgerId != null ? String(payload.shadowLedgerId) : null,
-      runId: payload.runId != null ? String(payload.runId) : null,
+      runId,
       newsSnapshot: payload.newsSnapshot ?? null,
       quantTelemetry
     };
-  }, []);
+  }, [inferLegacyTradeAction]);
 
   const normalizeSignalHistoryMemory = useCallback((memory: any): SignalHistoryEntry | null => {
     if (!memory || typeof memory !== 'object') return null;
@@ -11753,11 +11836,19 @@ const App: React.FC = () => {
     const rawKey = String(memory.key || memory.id || '').trim();
     const signalId = String(payload.signalId || payload.id || rawKey.replace(/^signal_history:/, '') || '').trim();
     if (!signalId) return null;
-    const actionRaw = String(payload.action || '').trim().toUpperCase();
-    const action = actionRaw === 'SELL' ? 'SELL' : 'BUY';
-    const entryPrice = Number(payload.entryPrice);
-    const stopLoss = Number(payload.stopLoss);
-    const takeProfit = Number(payload.takeProfit);
+    const action = inferLegacyTradeAction({
+      action: payload.action,
+      side: payload.side ?? memory.action,
+      entryPrice: payload.entryPrice ?? payload.entry ?? payload.openPrice,
+      stopLoss: payload.stopLoss ?? payload.sl ?? payload.stop,
+      takeProfit: payload.takeProfit ?? payload.tp ?? payload.target
+    }) as SignalHistoryEntry['action'];
+    const entryPrice = Number(payload.entryPrice ?? payload.entry ?? payload.openPrice);
+    const stopLoss = Number(payload.stopLoss ?? payload.sl ?? payload.stop);
+    const takeProfit = Number(payload.takeProfit ?? payload.tp ?? payload.target);
+    const hasValidEntry = Number.isFinite(entryPrice) && entryPrice > 0;
+    const hasValidStop = Number.isFinite(stopLoss) && stopLoss > 0;
+    const hasValidTarget = Number.isFinite(takeProfit) && takeProfit > 0;
     const scoreRaw = payload.score ?? payload.scoreR ?? payload.pnl ?? null;
     let score = Number.isFinite(Number(scoreRaw)) ? Number(scoreRaw) : null;
     const outcomeRaw = String(payload.outcome || payload.status || '').trim().toUpperCase();
@@ -11781,6 +11872,7 @@ const App: React.FC = () => {
       }
     }
 
+    if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !outcome) return null;
     const executedAtMs = Number.isFinite(Number(payload.executedAtMs)) ? Number(payload.executedAtMs) : null;
     const resolvedAtMs = Number.isFinite(Number(payload.resolvedAtMs)) ? Number(payload.resolvedAtMs) : null;
     const createdAtMs = Number.isFinite(Number(payload.createdAtMs)) ? Number(payload.createdAtMs) : null;
@@ -11828,9 +11920,9 @@ const App: React.FC = () => {
       symbol: String(payload.symbol || memory.symbol || '').trim(),
       timeframe: payload.timeframe != null ? String(payload.timeframe) : (memory.timeframe != null ? String(memory.timeframe) : null),
       action,
-      entryPrice: Number.isFinite(entryPrice) ? entryPrice : 0,
-      stopLoss: Number.isFinite(stopLoss) ? stopLoss : 0,
-      takeProfit: Number.isFinite(takeProfit) ? takeProfit : 0,
+      entryPrice: hasValidEntry ? entryPrice : 0,
+      stopLoss: hasValidStop ? stopLoss : 0,
+      takeProfit: hasValidTarget ? takeProfit : 0,
       probability: Number.isFinite(Number(payload.probability)) ? Number(payload.probability) : null,
       strategyMode: payload.strategyMode != null ? String(payload.strategyMode) : null,
       reason: payload.reason != null ? String(payload.reason) : null,
@@ -11862,7 +11954,7 @@ const App: React.FC = () => {
       resolvedOutcomeEnvelope: normalizedEnvelope ?? null,
       attribution: attributionRaw ?? null
     };
-  }, []);
+  }, [inferLegacyTradeAction]);
 
   const normalizeAgentScorecardMemory = useCallback((memory: any): AgentScorecardSnapshot | null => {
     if (!memory || typeof memory !== 'object') return null;
@@ -12137,23 +12229,29 @@ const App: React.FC = () => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.upsertAgentMemory) return;
     const now = Date.now();
-    const cutoff = now - SIGNAL_ENTRY_RETENTION_MS;
     for (const entry of entries) {
       if (!entry || !entry.id) continue;
-      const createdAtMs = Number(entry.createdAtMs || 0);
-      if (Number.isFinite(createdAtMs) && createdAtMs > 0 && createdAtMs < cutoff) {
-        signalEntriesPersistedRef.current.delete(entry.id);
-        continue;
-      }
-      const fingerprint = buildSignalEntryFingerprint(entry);
-      const lastFingerprint = signalEntriesPersistedRef.current.get(entry.id);
+      const canonicalSignalId = String(entry.signalCanonicalId || entry.id || '').trim();
+      if (!canonicalSignalId) continue;
+      const legacySignalId = String(entry.legacySignalId || entry.id || '').trim();
+      const signalIdentityVersion = 'v2';
+      const fingerprint = buildSignalEntryFingerprint({
+        ...entry,
+        signalCanonicalId: canonicalSignalId,
+        signalIdentityVersion,
+        legacySignalId: legacySignalId || null
+      } as SignalEntry);
+      const lastFingerprint = signalEntriesPersistedRef.current.get(canonicalSignalId);
       if (lastFingerprint === fingerprint) continue;
 
-      signalEntriesPersistedRef.current.set(entry.id, fingerprint);
+      signalEntriesPersistedRef.current.set(canonicalSignalId, fingerprint);
 
       const payload = {
-        id: entry.id,
-        signalId: entry.id,
+        id: canonicalSignalId,
+        signalId: canonicalSignalId,
+        signalCanonicalId: canonicalSignalId,
+        signalIdentityVersion,
+        legacySignalId: legacySignalId || null,
         symbol: entry.symbol,
         timeframe: entry.timeframe ?? null,
         action: entry.action,
@@ -12212,7 +12310,7 @@ const App: React.FC = () => {
       const tfKey = entry.timeframe ? normalizeTimeframeKey(entry.timeframe) : '';
 
       await ledger.upsertAgentMemory({
-        key: `signal_entry:${entry.id}`,
+        key: `signal_entry:${canonicalSignalId}`,
         familyKey: symbolKey ? `signal_entry:${symbolKey}:${tfKey}` : undefined,
         agentId: entry.agentId ?? null,
         scope: 'shared',
@@ -12232,55 +12330,22 @@ const App: React.FC = () => {
   const refreshSignalEntries = useCallback(async (opts?: { limit?: number }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Signal entries unavailable.' };
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(2000, Math.floor(Number(opts?.limit)))) : 500;
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(50000, Math.floor(Number(opts?.limit)))) : 5000;
     try {
-      const res = await ledger.listAgentMemory({ limit, kind: 'signal_entry' });
+      const res = await ledger.listAgentMemory({ limit, kind: 'signal_entry', includeArchived: true });
       if (!res?.ok || !Array.isArray(res.memories)) {
         return { ok: false as const, error: res?.error ? String(res.error) : 'Failed to load signal entries.' };
       }
-      const now = Date.now();
-      const cutoff = now - SIGNAL_ENTRY_RETENTION_MS;
-      const staleKeys: Array<{ key?: string; id?: string }> = [];
-      for (const memory of res.memories) {
-        if (!memory) continue;
-        const payload = memory.payload && typeof memory.payload === 'object' ? memory.payload : {};
-        const createdAtRaw = Number(payload?.createdAtMs ?? memory.createdAtMs ?? memory.updatedAtMs);
-        const createdAtMs = Number.isFinite(createdAtRaw) ? createdAtRaw : 0;
-        if (createdAtMs > 0 && createdAtMs < cutoff) {
-          const key = memory.key != null ? String(memory.key) : '';
-          const id = memory.id != null ? String(memory.id) : '';
-          if (key || id) staleKeys.push({ key: key || undefined, id: id || undefined });
-        }
-      }
-      if (staleKeys.length > 0 && ledger?.deleteAgentMemory) {
-        for (const stale of staleKeys) {
-          try {
-            await ledger.deleteAgentMemory({ key: stale.key, id: stale.id });
-          } catch {
-            // ignore delete failures
-          }
-        }
-      }
       const entries = res.memories.map(normalizeSignalEntryMemory).filter(Boolean) as SignalEntry[];
-      const freshEntries = entries.filter((entry) => {
-        const createdAtMs = Number(entry.createdAtMs || 0);
-        return !(createdAtMs > 0 && createdAtMs < cutoff);
-      });
-      freshEntries.sort((a, b) => (Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)));
-      setSignalEntries((prev) => {
-        if (!Array.isArray(prev) || prev.length === 0) return freshEntries;
-        const map = new Map(prev.filter((entry) => {
-          const createdAtMs = Number(entry?.createdAtMs || 0);
-          return !(createdAtMs > 0 && createdAtMs < cutoff);
-        }).map((entry) => [entry.id, entry]));
-        for (const entry of freshEntries) {
-          if (!map.has(entry.id)) map.set(entry.id, entry);
-        }
-        return Array.from(map.values()).sort((a, b) => (Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)));
-      });
+      entries.sort((a, b) => (Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)));
+      const mergeResult = mergeSignalEntries(signalEntriesRef.current || [], entries);
+      signalIdCollisionPreventedCountRef.current += Number(mergeResult.idCollisionPreventedCount || 0);
+      setSignalEntries(mergeResult.merged as SignalEntry[]);
       signalEntriesPersistedRef.current = new Map();
-      for (const entry of freshEntries) {
-        signalEntriesPersistedRef.current.set(entry.id, buildSignalEntryFingerprint(entry));
+      for (const entry of mergeResult.merged as SignalEntry[]) {
+        const key = String(entry.signalCanonicalId || entry.id || '').trim();
+        if (!key) continue;
+        signalEntriesPersistedRef.current.set(key, buildSignalEntryFingerprint(entry));
       }
       return { ok: true as const };
     } catch (err: any) {
@@ -12879,8 +12944,16 @@ const App: React.FC = () => {
   }, [refreshAgentScorecards, signalHistory.length]);
 
   useEffect(() => {
-    void refreshSignalEntries({ limit: 500 });
+    void refreshSignalEntries({ limit: 50000 });
   }, [refreshSignalEntries]);
+
+  useEffect(() => {
+    appendLiveError({
+      source: 'academy_merge_no_prune_applied',
+      level: 'info',
+      message: 'No-prune policy active for signal and all academy memory kinds.'
+    });
+  }, [appendLiveError]);
 
 
   useEffect(() => {
@@ -13100,7 +13173,22 @@ const App: React.FC = () => {
       requestedAccountId != null ||
       requestedAccNum != null ||
       !!requestedEnv ||
-      !!requestedServer;
+      !!requestedServer ||
+      !!requestedFromKey;
+    const requestedIdentity = {
+      env: requestedEnv || null,
+      server: requestedServer || null,
+      accountId: requestedAccountId ?? null,
+      accNum: requestedAccNum ?? null,
+      accountKey: requestedFromKey ? requestedAccountKeyRaw : null
+    };
+    const activeIdentity = {
+      env: activeEnv || null,
+      server: activeServer || null,
+      accountId: activeAccountId ?? null,
+      accNum: activeAccNum ?? null,
+      accountKey: activeAccountKey || null
+    };
     const accountMetrics = meta?.accountMetrics && typeof meta.accountMetrics === 'object'
       ? meta.accountMetrics
       : null;
@@ -13161,50 +13249,23 @@ const App: React.FC = () => {
       if (requestedKey) {
         if (requestedKey === 'unassigned') return !synthesizedKey && entryAccountId == null;
         if (normalizeKey(synthesizedKey) === requestedKey) return true;
-        if (!requestedHasIdentity) return false;
+        if (!requestedFromKey && !requestedHasIdentity) return false;
       }
-      if (requestedAccountId != null) {
-        if (entryAccountId == null || entryAccountId !== requestedAccountId) return false;
-      }
-      if (requestedAccNum != null) {
-        if (entryAccNum == null || entryAccNum !== requestedAccNum) return false;
-      }
-      if (requestedEnv) {
-        if (!entryEnv || normalizeKey(entryEnv) !== normalizeKey(requestedEnv)) return false;
-      }
-      if (requestedServer) {
-        if (!entryServer || normalizeKey(entryServer) !== normalizeKey(requestedServer)) return false;
-      }
-      return true;
+      const matchState = resolveTradeLockerIdentityMatchState(requestedIdentity, {
+        env: entryEnv || null,
+        server: entryServer || null,
+        accountId: entryAccountId,
+        accNum: entryAccNum,
+        accountKey: synthesizedKey || null
+      });
+      if (matchState === 'mismatch') return false;
+      if (!requestedHasIdentity) return true;
+      return matchState === 'match';
     };
-    const activeAccountMatchState = (() => {
-      const requestedKey = normalizeKey(requestedAccountKeyRaw);
-      const activeKey = normalizeKey(activeAccountKey);
-      if (!requestedKey && !requestedHasIdentity) return 'match';
-      if (requestedKey && activeKey && requestedKey === activeKey) return 'match';
-      if (!requestedHasIdentity) return 'unknown';
-      if (requestedAccountId != null && activeAccountId != null && activeAccountId !== requestedAccountId) {
-        return 'mismatch';
-      }
-      if (requestedAccNum != null && activeAccNum != null && activeAccNum !== requestedAccNum) {
-        return 'mismatch';
-      }
-      if (requestedEnv && activeEnv && normalizeKey(activeEnv) !== normalizeKey(requestedEnv)) {
-        return 'mismatch';
-      }
-      if (requestedServer && activeServer && normalizeKey(activeServer) !== normalizeKey(requestedServer)) {
-        return 'mismatch';
-      }
-      if (
-        (requestedAccountId != null && activeAccountId == null) ||
-        (requestedAccNum != null && activeAccNum == null) ||
-        (requestedEnv && !activeEnv) ||
-        (requestedServer && !activeServer)
-      ) {
-        return 'unknown';
-      }
-      return 'match';
-    })();
+    const activeAccountMatchState = resolveTradeLockerIdentityMatchState(requestedIdentity, activeIdentity);
+    const shouldForceMetricNull =
+      activeAccountMatchState === 'mismatch' &&
+      requestedFromKey != null;
     let accountBalance = Number.isFinite(Number(accountMetrics?.balance))
       ? Number(accountMetrics.balance)
       : (Number.isFinite(Number(meta?.balance)) ? Number(meta.balance) : null);
@@ -13213,12 +13274,12 @@ const App: React.FC = () => {
       : (Number.isFinite(Number(meta?.equity)) ? Number(meta.equity) : null);
     const tradeLockerApi = window.glass?.tradelocker;
 
-    if (activeAccountMatchState === 'mismatch') {
+    if (shouldForceMetricNull) {
       accountBalance = null;
       accountEquity = null;
     }
 
-    if (activeAccountMatchState !== 'mismatch' && (accountBalance == null || accountEquity == null) && tradeLockerApi?.getAccountMetrics) {
+    if (!shouldForceMetricNull && (accountBalance == null || accountEquity == null) && tradeLockerApi?.getAccountMetrics) {
       try {
         const metricsRes = await tradeLockerApi.getAccountMetrics({ maxAgeMs: 12_000 });
         if (metricsRes?.ok) {
@@ -13258,17 +13319,27 @@ const App: React.FC = () => {
               const orderId = String(order?.id || '').trim();
               if (!orderId) return null;
               if (seenKeys.has(orderId.toUpperCase())) return null;
-              const side = String(order?.side || '').trim().toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+              const sideRaw = String(order?.side || order?.action || '').trim().toUpperCase();
+              if (sideRaw !== 'BUY' && sideRaw !== 'SELL') return null;
+              const side = sideRaw as 'BUY' | 'SELL';
               const createdAtMs =
                 toEpochMs(order?.createdAt) ||
                 toEpochMs(order?.filledAt) ||
                 toEpochMs(order?.closedAt) ||
-                Date.now();
+                null;
               const closedAtMs =
                 toEpochMs(order?.closedAt) ||
                 toEpochMs(order?.filledAt) ||
                 createdAtMs;
+              if (!Number.isFinite(Number(createdAtMs)) || !Number.isFinite(Number(closedAtMs))) return null;
               const realizedPnl = readHistoryPnl(order);
+              const closePrice = toLooseNumber(
+                order?.closePrice ??
+                order?.filledPrice ??
+                order?.avgPrice ??
+                order?.averagePrice ??
+                order?.stopPrice
+              );
               return {
                 id: `tradelocker_history_${orderId}`,
                 brokerOrderId: orderId,
@@ -13284,7 +13355,7 @@ const App: React.FC = () => {
                 qtyNormalized: toLooseNumber(order?.qty),
                 entryPrice: toLooseNumber(order?.price),
                 brokerEntryPrice: toLooseNumber(order?.price),
-                brokerClosePrice: toLooseNumber(order?.stopPrice),
+                brokerClosePrice: closePrice,
                 stopLoss: toLooseNumber(order?.stopLoss),
                 takeProfit: toLooseNumber(order?.takeProfit),
                 status: 'CLOSED',
@@ -13295,8 +13366,8 @@ const App: React.FC = () => {
                 positionOpenedAtMs: createdAtMs,
                 positionClosedAtMs: closedAtMs,
                 closedAtMs,
-                realizedPnl: realizedPnl ?? 0,
-                positionClosedPnl: realizedPnl ?? 0,
+                realizedPnl: realizedPnl,
+                positionClosedPnl: realizedPnl,
                 realizedPnlSource: realizedPnl != null ? 'tradelocker_orders_history' : 'tradelocker_orders_history_unavailable',
                 env: activeEnv || null,
                 server: activeServer || null,
@@ -13663,17 +13734,31 @@ const App: React.FC = () => {
     });
   }, [computeSignalOutcomeScore, formatTimeframeLabel, upsertCalendarEvent]);
 
-  const normalizeAcademyCaseMemory = useCallback((memory: any): AcademyCase | null => {
+  const normalizeAcademyCaseMemoryStrict = useCallback((memory: any): AcademyCase | null => {
     if (!memory || typeof memory !== 'object') return null;
-    const payload = memory.payload && typeof memory.payload === 'object' ? memory.payload as Record<string, any> : {};
+    const payload = memory.payload && typeof memory.payload === 'object'
+      ? memory.payload as Record<string, any>
+      : memory as Record<string, any>;
     const rawKey = String(memory.key || memory.id || '').trim();
     const caseId = String(payload.id || payload.caseId || payload.signalId || rawKey.replace(/^academy_case:/, '') || '').trim();
     if (!caseId) return null;
     const actionRaw = String(payload.action || '').trim().toUpperCase();
-    const action = actionRaw === 'SELL' ? 'SELL' : 'BUY';
-    const entryPrice = Number(payload.entryPrice);
-    const stopLoss = Number(payload.stopLoss);
-    const takeProfit = Number(payload.takeProfit);
+    if (actionRaw !== 'SELL' && actionRaw !== 'BUY') return null;
+    const action = actionRaw as AcademyCase['action'];
+    const entryPrice = Number(payload.entryPrice ?? payload.entry ?? payload.openPrice);
+    const stopLoss = Number(payload.stopLoss ?? payload.sl ?? payload.stop);
+    const takeProfit = Number(payload.takeProfit ?? payload.tp ?? payload.target);
+    const outcomeRaw = String(payload.outcome || payload.status || '').trim().toUpperCase();
+    const isResolvedCase =
+      outcomeRaw === 'WIN' ||
+      outcomeRaw === 'LOSS' ||
+      outcomeRaw === 'EXPIRED' ||
+      outcomeRaw === 'REJECTED' ||
+      outcomeRaw === 'FAILED';
+    const hasValidEntry = Number.isFinite(entryPrice) && entryPrice > 0;
+    const hasValidStop = Number.isFinite(stopLoss) && stopLoss > 0;
+    const hasValidTarget = Number.isFinite(takeProfit) && takeProfit > 0;
+    if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !isResolvedCase) return null;
     const createdAtMs = Number.isFinite(Number(payload.createdAtMs)) ? Number(payload.createdAtMs) : null;
     const executedAtMs = Number.isFinite(Number(payload.executedAtMs)) ? Number(payload.executedAtMs) : null;
     const resolvedAtMs = Number.isFinite(Number(payload.resolvedAtMs)) ? Number(payload.resolvedAtMs) : null;
@@ -13754,19 +13839,322 @@ const App: React.FC = () => {
         : (resolvedOutcomeEnvelope?.executionOutcome ?? null),
       resolvedOutcomeEnvelope: resolvedOutcomeEnvelope ?? null,
       attribution: attribution ?? null,
+      locked: payload.locked === true,
+      lockedAtMs: Number.isFinite(Number(payload.lockedAtMs)) ? Number(payload.lockedAtMs) : null,
+      lockSource: payload.lockSource != null ? String(payload.lockSource) : null,
+      lockReason: payload.lockReason != null ? String(payload.lockReason) : null,
+      dataQualityScore: Number.isFinite(Number(payload.dataQualityScore)) ? Number(payload.dataQualityScore) : null,
+      dataQualityFlags: Array.isArray(payload.dataQualityFlags)
+        ? payload.dataQualityFlags.map((flag: any) => String(flag || '').trim()).filter(Boolean)
+        : null,
+      materializedBy: payload.materializedBy != null ? String(payload.materializedBy) : null,
+      lastRepairedAtMs: Number.isFinite(Number(payload.lastRepairedAtMs)) ? Number(payload.lastRepairedAtMs) : null,
       source: payload.source != null
         ? String(payload.source)
         : (memory.source != null ? String(memory.source) : null)
     };
   }, []);
 
+  const normalizeAcademyCaseMemoryLegacyCompat = useCallback((memory: any): AcademyCase | null => {
+    if (!memory || typeof memory !== 'object') return null;
+    const payload = memory.payload && typeof memory.payload === 'object'
+      ? memory.payload as Record<string, any>
+      : memory as Record<string, any>;
+    const rawKey = String(memory.key || memory.id || '').trim();
+    const caseId = String(payload.id || payload.caseId || payload.signalId || rawKey.replace(/^academy_case:/, '') || '').trim();
+    if (!caseId) return null;
+    const entryPrice = Number(payload.entryPrice ?? payload.entry ?? payload.openPrice);
+    const stopLoss = Number(payload.stopLoss ?? payload.sl ?? payload.stop);
+    const takeProfit = Number(payload.takeProfit ?? payload.tp ?? payload.target);
+    const action = inferLegacyTradeAction({
+      action: payload.action,
+      side: payload.side,
+      bias: payload.bias,
+      entryPrice,
+      stopLoss,
+      takeProfit
+    }) as AcademyCase['action'];
+    const outcomeRaw = String(payload.outcome || payload.status || '').trim().toUpperCase();
+    const isResolvedCase =
+      outcomeRaw === 'WIN' ||
+      outcomeRaw === 'LOSS' ||
+      outcomeRaw === 'EXPIRED' ||
+      outcomeRaw === 'REJECTED' ||
+      outcomeRaw === 'FAILED';
+    const hasValidEntry = Number.isFinite(entryPrice) && entryPrice > 0;
+    const hasValidStop = Number.isFinite(stopLoss) && stopLoss > 0;
+    const hasValidTarget = Number.isFinite(takeProfit) && takeProfit > 0;
+    if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !isResolvedCase) return null;
+    const createdAtMs = Number.isFinite(Number(payload.createdAtMs)) ? Number(payload.createdAtMs) : null;
+    const executedAtMs = Number.isFinite(Number(payload.executedAtMs)) ? Number(payload.executedAtMs) : null;
+    const resolvedAtMs = Number.isFinite(Number(payload.resolvedAtMs)) ? Number(payload.resolvedAtMs) : null;
+    const durationMs = Number.isFinite(Number(payload.durationMs))
+      ? Number(payload.durationMs)
+      : (Number.isFinite(Number(resolvedAtMs)) && Number.isFinite(Number(executedAtMs ?? createdAtMs))
+          ? Math.max(0, Number(resolvedAtMs) - Number(executedAtMs ?? createdAtMs))
+          : null);
+    const resolvedOutcomeEnvelope = payload.resolvedOutcomeEnvelope && typeof payload.resolvedOutcomeEnvelope === 'object'
+      ? payload.resolvedOutcomeEnvelope
+      : buildResolvedOutcomeEnvelope({
+          signalId: caseId,
+          status: payload.status != null ? String(payload.status) : null,
+          outcome: payload.outcome != null ? String(payload.outcome) : null,
+          createdAtMs,
+          executedAtMs,
+          resolvedAtMs,
+          executionBroker: payload.executionBroker != null ? String(payload.executionBroker) : null,
+          executionMode: payload.executionMode != null ? String(payload.executionMode) : null
+        });
+    const attribution = payload.attribution && typeof payload.attribution === 'object'
+      ? payload.attribution
+      : buildSignalAttributionRecord({
+          signalId: caseId,
+          status: payload.status != null ? String(payload.status) : null,
+          outcome: payload.outcome != null ? String(payload.outcome) : null,
+          createdAtMs,
+          executedAtMs,
+          resolvedAtMs,
+          executionBroker: payload.executionBroker != null ? String(payload.executionBroker) : null,
+          executionMode: payload.executionMode != null ? String(payload.executionMode) : null,
+          entryPrice,
+          stopLoss,
+          takeProfit,
+          exitPrice: Number.isFinite(Number(payload.exitPrice)) ? Number(payload.exitPrice) : null,
+          score: Number.isFinite(Number(payload.score)) ? Number(payload.score) : null
+        });
+    return {
+      id: caseId,
+      signalId: payload.signalId != null ? String(payload.signalId) : caseId,
+      agentId: payload.agentId != null ? String(payload.agentId) : null,
+      agentName: payload.agentName != null ? String(payload.agentName) : null,
+      symbol: String(payload.symbol || memory.symbol || '').trim(),
+      timeframe: payload.timeframe != null ? String(payload.timeframe) : (memory.timeframe != null ? String(memory.timeframe) : null),
+      action,
+      entryPrice: Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : null,
+      stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
+      takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
+      probability: Number.isFinite(Number(payload.probability)) ? Number(payload.probability) : null,
+      strategyMode: payload.strategyMode != null ? String(payload.strategyMode) : null,
+      reason: payload.reason != null ? String(payload.reason) : null,
+      executionSource: payload.executionSource != null ? String(payload.executionSource) : null,
+      executionBroker: payload.executionBroker != null ? String(payload.executionBroker) : null,
+      executionMode: payload.executionMode != null ? String(payload.executionMode) : null,
+      status: payload.status != null ? String(payload.status) as AcademyCase['status'] : null,
+      outcome: payload.outcome != null ? String(payload.outcome) as AcademyCase['outcome'] : null,
+      score: Number.isFinite(Number(payload.score)) ? Number(payload.score) : null,
+      createdAtMs,
+      executedAtMs,
+      resolvedAtMs,
+      durationMs,
+      barsToOutcome: Number.isFinite(Number(payload.barsToOutcome)) ? Number(payload.barsToOutcome) : null,
+      exitPrice: Number.isFinite(Number(payload.exitPrice)) ? Number(payload.exitPrice) : null,
+      runId: payload.runId != null ? String(payload.runId) : null,
+      ledgerId: payload.ledgerId != null ? String(payload.ledgerId) : null,
+      orderId: payload.orderId != null ? String(payload.orderId) : null,
+      positionId: payload.positionId != null ? String(payload.positionId) : null,
+      brokerSnapshot: payload.brokerSnapshot && typeof payload.brokerSnapshot === 'object' ? payload.brokerSnapshot as Record<string, any> : null,
+      snapshot: payload.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot as AcademyCaseSnapshot : null,
+      telemetry: Array.isArray(payload.telemetry) ? payload.telemetry as AcademyCaseEvent[] : [],
+      analysis: payload.analysis && typeof payload.analysis === 'object' ? payload.analysis as Record<string, any> : null,
+      decisionOutcome: payload.decisionOutcome != null
+        ? String(payload.decisionOutcome) as AcademyCase['decisionOutcome']
+        : (resolvedOutcomeEnvelope?.decisionOutcome ?? null),
+      executionOutcome: payload.executionOutcome != null
+        ? String(payload.executionOutcome) as AcademyCase['executionOutcome']
+        : (resolvedOutcomeEnvelope?.executionOutcome ?? null),
+      resolvedOutcomeEnvelope: resolvedOutcomeEnvelope ?? null,
+      attribution: attribution ?? null,
+      locked: payload.locked === true,
+      lockedAtMs: Number.isFinite(Number(payload.lockedAtMs)) ? Number(payload.lockedAtMs) : null,
+      lockSource: payload.lockSource != null ? String(payload.lockSource) : null,
+      lockReason: payload.lockReason != null ? String(payload.lockReason) : null,
+      dataQualityScore: Number.isFinite(Number(payload.dataQualityScore)) ? Number(payload.dataQualityScore) : null,
+      dataQualityFlags: Array.isArray(payload.dataQualityFlags)
+        ? payload.dataQualityFlags.map((flag: any) => String(flag || '').trim()).filter(Boolean)
+        : null,
+      materializedBy: payload.materializedBy != null ? String(payload.materializedBy) : null,
+      lastRepairedAtMs: Number.isFinite(Number(payload.lastRepairedAtMs)) ? Number(payload.lastRepairedAtMs) : null,
+      source: payload.source != null
+        ? String(payload.source)
+        : (memory.source != null ? String(memory.source) : null)
+    };
+  }, [inferLegacyTradeAction]);
+
+  const normalizeAcademyCaseMemory = useCallback((memory: any): AcademyCase | null => {
+    return normalizeAcademyCaseMemoryStrict(memory) ?? normalizeAcademyCaseMemoryLegacyCompat(memory);
+  }, [normalizeAcademyCaseMemoryLegacyCompat, normalizeAcademyCaseMemoryStrict]);
+
+  const buildAcademyCaseFromSignalHistory = useCallback((
+    entry: SignalHistoryEntry | null | undefined,
+    opts?: { source?: string | null; fallbackCaseId?: string | null; legacyKey?: string | null }
+  ): AcademyCase | null => {
+    if (!entry || typeof entry !== 'object') return null;
+    const caseId = String(entry.signalId || entry.id || opts?.fallbackCaseId || '').trim();
+    if (!caseId) return null;
+
+    const entryPrice = Number(entry.entryPrice);
+    const stopLoss = Number(entry.stopLoss);
+    const takeProfit = Number(entry.takeProfit);
+    const action = inferLegacyTradeAction({
+      action: entry.action,
+      entryPrice,
+      stopLoss,
+      takeProfit
+    }) as AcademyCase['action'];
+    const hasValidEntry = Number.isFinite(entryPrice) && entryPrice > 0;
+    const hasValidStop = Number.isFinite(stopLoss) && stopLoss > 0;
+    const hasValidTarget = Number.isFinite(takeProfit) && takeProfit > 0;
+
+    const outcomeRaw = String(entry.outcome || entry.status || '').trim().toUpperCase();
+    const outcome =
+      outcomeRaw === 'WIN' ||
+      outcomeRaw === 'LOSS' ||
+      outcomeRaw === 'EXPIRED' ||
+      outcomeRaw === 'REJECTED' ||
+      outcomeRaw === 'FAILED'
+        ? (outcomeRaw as AcademyCase['outcome'])
+        : null;
+
+    if ((!hasValidEntry || !hasValidStop || !hasValidTarget) && !outcome) return null;
+
+    const createdAtMs = Number.isFinite(Number(entry.executedAtMs ?? null))
+      ? Number(entry.executedAtMs)
+      : null;
+    const resolvedAtMs = Number.isFinite(Number(entry.resolvedAtMs ?? null))
+      ? Number(entry.resolvedAtMs)
+      : null;
+    const durationMs = Number.isFinite(Number(entry.durationMs ?? null))
+      ? Number(entry.durationMs)
+      : (
+          Number.isFinite(Number(createdAtMs)) && Number.isFinite(Number(resolvedAtMs))
+            ? Math.max(0, Number(resolvedAtMs) - Number(createdAtMs))
+            : null
+        );
+
+    const resolvedOutcomeEnvelope =
+      entry.resolvedOutcomeEnvelope && typeof entry.resolvedOutcomeEnvelope === 'object'
+        ? entry.resolvedOutcomeEnvelope
+        : buildResolvedOutcomeEnvelope({
+            signalId: caseId,
+            status: entry.status != null ? String(entry.status) : null,
+            outcome: outcome ?? null,
+            createdAtMs,
+            executedAtMs: createdAtMs,
+            resolvedAtMs,
+            executionBroker: entry.executionBroker != null ? String(entry.executionBroker) : null,
+            executionMode: entry.executionMode != null ? String(entry.executionMode) : null
+          });
+
+    const attribution =
+      entry.attribution && typeof entry.attribution === 'object'
+        ? entry.attribution
+        : buildSignalAttributionRecord({
+            signalId: caseId,
+            status: entry.status != null ? String(entry.status) : null,
+            outcome: outcome ?? null,
+            createdAtMs,
+            executedAtMs: createdAtMs,
+            resolvedAtMs,
+            executionBroker: entry.executionBroker != null ? String(entry.executionBroker) : null,
+            executionMode: entry.executionMode != null ? String(entry.executionMode) : null,
+            entryPrice,
+            stopLoss,
+            takeProfit,
+            exitPrice: Number.isFinite(Number(entry.exitPrice ?? null)) ? Number(entry.exitPrice) : null,
+            score: Number.isFinite(Number(entry.score ?? null)) ? Number(entry.score) : null
+          });
+    const qualityDraft = buildAcademyCaseDataQuality({
+      signalId: caseId,
+      symbol: String(entry.symbol || '').trim(),
+      timeframe: entry.timeframe ?? null,
+      action,
+      entryPrice: hasValidEntry ? entryPrice : null,
+      stopLoss: hasValidStop ? stopLoss : null,
+      takeProfit: hasValidTarget ? takeProfit : null,
+      outcome,
+      status: entry.status ?? null,
+      resolvedOutcomeEnvelope: resolvedOutcomeEnvelope ?? null,
+      attribution: attribution ?? null,
+      source: opts?.source ? String(opts.source) : (entry.outcomeSource || 'academy_repair')
+    });
+
+    return {
+      id: caseId,
+      signalId: caseId,
+      agentId: entry.agentId ?? null,
+      agentName: entry.agentName ?? null,
+      symbol: String(entry.symbol || '').trim(),
+      timeframe: entry.timeframe ?? null,
+      action,
+      entryPrice: hasValidEntry ? entryPrice : null,
+      stopLoss: hasValidStop ? stopLoss : null,
+      takeProfit: hasValidTarget ? takeProfit : null,
+      probability: Number.isFinite(Number(entry.probability ?? null)) ? Number(entry.probability) : null,
+      strategyMode: entry.strategyMode ?? null,
+      reason: entry.reason ?? null,
+      executionSource: entry.executionSource ?? null,
+      executionBroker: entry.executionBroker ?? null,
+      executionMode: entry.executionMode ?? null,
+      status: entry.status != null ? String(entry.status) as AcademyCase['status'] : (outcome as AcademyCase['status'] | null),
+      outcome,
+      score: Number.isFinite(Number(entry.score ?? null)) ? Number(entry.score) : null,
+      createdAtMs,
+      executedAtMs: createdAtMs,
+      resolvedAtMs,
+      durationMs,
+      barsToOutcome: Number.isFinite(Number(entry.barsToOutcome ?? null)) ? Number(entry.barsToOutcome) : null,
+      exitPrice: Number.isFinite(Number(entry.exitPrice ?? null)) ? Number(entry.exitPrice) : null,
+      runId: entry.runId ?? null,
+      ledgerId: entry.ledgerId ?? null,
+      orderId: entry.orderId ?? null,
+      positionId: entry.positionId ?? null,
+      snapshot: null,
+      brokerSnapshot: null,
+      telemetry: [],
+      analysis: null,
+      decisionOutcome: resolvedOutcomeEnvelope?.decisionOutcome ?? null,
+      executionOutcome: resolvedOutcomeEnvelope?.executionOutcome ?? null,
+      resolvedOutcomeEnvelope: resolvedOutcomeEnvelope ?? null,
+      attribution: attribution ?? null,
+      locked: false,
+      lockedAtMs: null,
+      lockSource: null,
+      lockReason: null,
+      dataQualityScore: qualityDraft.score,
+      dataQualityFlags: qualityDraft.flags,
+      materializedBy: opts?.source ? String(opts.source) : 'academy_repair',
+      lastRepairedAtMs: Date.now(),
+      source: opts?.source ? String(opts.source) : (entry.outcomeSource || 'academy_repair')
+    };
+  }, [inferLegacyTradeAction]);
+
   const normalizeAcademyLessonMemory = useCallback((memory: any): AcademyLesson | null => {
     if (!memory || typeof memory !== 'object') return null;
     const payload = memory.payload && typeof memory.payload === 'object' ? memory.payload as Record<string, any> : {};
     const rawKey = String(memory.key || memory.id || '').trim();
     const lessonId = String(payload.id || payload.lessonId || rawKey.replace(/^academy_lesson:/, '') || '').trim();
-    const title = String(payload.title || memory.summary || '').trim();
-    if (!lessonId || !title) return null;
+    const summaryDraft = String(
+      payload.summary ||
+      payload.recommendedAction ||
+      payload.context ||
+      payload.description ||
+      memory.summary ||
+      ''
+    ).trim();
+    const hasLessonMarkers =
+      Array.isArray(payload.triggerConditions) ||
+      Array.isArray(payload.evidenceCaseIds) ||
+      !!String(payload.recommendedAction || '').trim() ||
+      !!String(payload.appliesTo?.symbol || '').trim();
+    const explicitTitle = String(payload.title || payload.lessonTitle || '').trim();
+    const derivedTitle = explicitTitle || (
+      summaryDraft
+        ? (summaryDraft.length > 96 ? `${summaryDraft.slice(0, 93).trimEnd()}...` : summaryDraft)
+        : ''
+    );
+    const title = String(derivedTitle || '').trim();
+    if (!lessonId) return null;
+    if (!title && !hasLessonMarkers) return null;
     const appliesToRaw = payload.appliesTo && typeof payload.appliesTo === 'object' ? payload.appliesTo as Record<string, any> : null;
     const outcomeRaw = String(payload.outcome || '').trim().toUpperCase();
     const outcome =
@@ -13781,8 +14169,8 @@ const App: React.FC = () => {
     const score = Number.isFinite(Number(scoreRaw)) ? Number(scoreRaw) : null;
     return {
       id: lessonId,
-      title,
-      summary: payload.summary != null ? String(payload.summary) : null,
+      title: title || `Recovered lesson ${lessonId}`,
+      summary: summaryDraft || null,
       appliesTo: appliesToRaw
         ? {
             symbol: appliesToRaw.symbol != null ? String(appliesToRaw.symbol) : null,
@@ -13944,8 +14332,8 @@ const App: React.FC = () => {
       });
       controller.start({ scheduler: runtimeScheduler });
       stop = () => controller.stop();
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[calendar_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -14287,70 +14675,868 @@ const App: React.FC = () => {
   const isSignalPanelAcademyCase = useCallback((entry: AcademyCase | null | undefined) => {
     if (!entry) return false;
     const source = String(entry.source || '').trim().toLowerCase();
-    if (source) return source === 'signal_panel';
-    return !!entry.signalId;
+    if (source) {
+      if (
+        source === 'signal_panel' ||
+        source === 'academy_analyst' ||
+        source === 'academy_repair' ||
+        source === 'system_repair' ||
+        source === 'legacy_repair'
+      ) {
+        return true;
+      }
+    }
+    return !!(entry.signalCanonicalId || entry.signalId || entry.legacySignalId || entry.id);
   }, []);
+
+  const isAutoLockOutcome = useCallback((outcome: any) => {
+    const key = String(outcome || '').trim().toUpperCase();
+    return key === 'WIN' || key === 'LOSS';
+  }, []);
+
+  const applyAutoLockMetadata = useCallback((payload: AcademyCase, nowMs?: number) => {
+    if (!payload) return payload;
+    const outcomeRaw = payload.outcome ?? payload.status;
+    if (!isAutoLockOutcome(outcomeRaw)) return payload;
+    const lockAtResolved = Number.isFinite(Number(payload.resolvedAtMs)) ? Number(payload.resolvedAtMs) : null;
+    const lockAtExisting = Number.isFinite(Number(payload.lockedAtMs)) ? Number(payload.lockedAtMs) : null;
+    const lockAtNow = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
+    const targetLockedAtMs = lockAtExisting || lockAtResolved || lockAtNow;
+    const nextSource = payload.lockSource || 'system_repair';
+    const nextReason = payload.lockReason || 'outcome_win_loss_auto_lock';
+    const unchanged =
+      payload.locked === true &&
+      Number(payload.lockedAtMs || 0) === Number(targetLockedAtMs || 0) &&
+      String(payload.lockSource || '') === String(nextSource || '') &&
+      String(payload.lockReason || '') === String(nextReason || '');
+    if (unchanged) return payload;
+    return {
+      ...payload,
+      locked: true,
+      lockedAtMs: targetLockedAtMs,
+      lockSource: nextSource,
+      lockReason: nextReason
+    };
+  }, [isAutoLockOutcome]);
 
   const refreshAcademyCases = useCallback(async (opts?: { force?: boolean; limit?: number }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Academy memory unavailable.' };
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(2000, Math.floor(Number(opts?.limit)))) : 500;
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(50000, Math.floor(Number(opts?.limit)))) : 50000;
+    const syncCursor = academySyncCursorRef.current || {};
+    const caseListOptions = {
+      ...buildIncrementalListOptions(limit, opts?.force ? null : syncCursor.casesUpdatedAfterMs, true),
+      kind: 'academy_case'
+    };
     try {
-      const res = await ledger.listAgentMemory({ limit, kind: 'academy_case' });
+      const [res, historyRes, signalEntryRes, lockMap] = await Promise.all([
+        ledger.listAgentMemory(caseListOptions),
+        ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_history', includeArchived: true }),
+        ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_entry', includeArchived: true }),
+        listAcademyCaseLocks(Math.max(limit, 50000))
+      ]);
+      academyCaseLocksRef.current = lockMap;
       if (!res?.ok || !Array.isArray(res.memories)) {
         return { ok: false as const, error: res?.error ? String(res.error) : 'Failed to load Academy cases.' };
       }
-      const entries = res.memories.map(normalizeAcademyCaseMemory).filter(Boolean) as AcademyCase[];
-      entries.sort((a, b) => {
-        const aTime = a.resolvedAtMs ?? a.executedAtMs ?? a.createdAtMs ?? 0;
-        const bTime = b.resolvedAtMs ?? b.executedAtMs ?? b.createdAtMs ?? 0;
-        return bTime - aTime;
+      const academyCaseRowsRead = res.memories.length;
+      const signalHistoryRowsRead = historyRes?.ok && Array.isArray(historyRes.memories) ? historyRes.memories.length : 0;
+      const signalEntryRowsRead = signalEntryRes?.ok && Array.isArray(signalEntryRes.memories) ? signalEntryRes.memories.length : 0;
+
+      const parseSignalId = (memory: any) => {
+        if (!memory || typeof memory !== 'object') return '';
+        const payload = memory.payload && typeof memory.payload === 'object'
+          ? memory.payload as Record<string, any>
+          : memory as Record<string, any>;
+        const rawKey = String(memory.key || memory.id || '').trim().replace(/^academy_case:/, '');
+        return String(payload.signalId || payload.id || payload.caseId || rawKey || '').trim();
+      };
+      const isFinalDecisionValue = (value: any) => {
+        const key = String(value || '').trim().toUpperCase();
+        return key === 'WIN' ||
+          key === 'LOSS' ||
+          key === 'EXPIRED' ||
+          key === 'REJECTED' ||
+          key === 'FAILED';
+      };
+      const toFinalDecisionOutcome = (entry: any) => {
+        if (!entry || typeof entry !== 'object') return null;
+        const candidates = [
+          entry.outcome,
+          entry.status,
+          entry.decisionOutcome,
+          entry.resolvedOutcomeEnvelope?.decisionOutcome
+        ];
+        for (const candidate of candidates) {
+          const key = String(candidate || '').trim().toUpperCase();
+          if (isFinalDecisionValue(key)) {
+            return key as AcademyCase['outcome'];
+          }
+        }
+        return null;
+      };
+      const toFinalStatus = (value: any): AcademyCase['status'] | null => {
+        const key = String(value || '').trim().toUpperCase();
+        if (!isFinalDecisionValue(key)) return null;
+        return key as AcademyCase['status'];
+      };
+      const hydrateAcademyCaseFinality = (entry: AcademyCase): AcademyCase => {
+        const finalDecisionOutcome = toFinalDecisionOutcome(entry);
+        if (!finalDecisionOutcome) return entry;
+        const currentStatus = toFinalStatus(entry.status);
+        const hasFinalOutcome = isFinalDecisionValue(entry.outcome);
+        return {
+          ...entry,
+          outcome: hasFinalOutcome ? entry.outcome : finalDecisionOutcome,
+          status: currentStatus || (finalDecisionOutcome as AcademyCase['status'])
+        };
+      };
+      const caseRichness = (entry: AcademyCase | null | undefined) =>
+        scoreAcademyCaseRichness((entry || null) as any);
+      const caseTime = (entry: AcademyCase | null | undefined) =>
+        Number(entry?.resolvedAtMs ?? entry?.executedAtMs ?? entry?.createdAtMs ?? 0) || 0;
+      const upsertCase = (map: Map<string, AcademyCase>, nextEntry: AcademyCase | null | undefined) => {
+        if (!nextEntry) return;
+        const key = String(nextEntry.signalId || nextEntry.id || '').trim();
+        if (!key) return;
+        const existing = map.get(key);
+        if (!existing) {
+          map.set(key, nextEntry);
+          return;
+        }
+        const preferred = pickPreferredAcademyCase(existing as any, nextEntry as any) as AcademyCase;
+        if (preferred !== existing) map.set(key, preferred);
+      };
+      let autoLockedCount = 0;
+      let autoLockReconciledCount = 0;
+      const autoLockedSignalIds = new Set<string>();
+      const autoLockReconciledSignalIds = new Set<string>();
+      const pendingAutoLockBySignalId = new Map<string, AcademyCase>();
+      const autoLockFailures: Array<{ signalId: string; error: string }> = [];
+      const noteAutoLockMutation = (signalId: string, before: AcademyCase | null | undefined, after: AcademyCase | null | undefined) => {
+        const normalizedSignalId = String(signalId || '').trim();
+        if (!normalizedSignalId || autoLockedSignalIds.has(normalizedSignalId) || !before || !after) return;
+        const changed =
+          before.locked !== after.locked ||
+          Number(before.lockedAtMs || 0) !== Number(after.lockedAtMs || 0) ||
+          String(before.lockSource || '') !== String(after.lockSource || '') ||
+          String(before.lockReason || '') !== String(after.lockReason || '');
+        if (!changed) return;
+        autoLockedSignalIds.add(normalizedSignalId);
+        autoLockedCount += 1;
+      };
+      const reconcileAutoLockCase = (entry: AcademyCase | null | undefined): AcademyCase | null => {
+        if (!entry) return null;
+        const signalId = String(entry.signalId || entry.id || '').trim();
+        if (!signalId) return entry;
+        if (!isAutoLockOutcome(entry.outcome ?? entry.status)) return entry;
+        const next = applyAutoLockMetadata(entry, Date.now());
+        noteAutoLockMutation(signalId, entry, next);
+        if (!lockMap.has(signalId)) {
+          pendingAutoLockBySignalId.set(signalId, next);
+        }
+        return next;
+      };
+
+      const validCases: AcademyCase[] = [];
+      const invalidRows: Array<{ signalId: string; key: string; source: string }> = [];
+      for (const memory of res.memories) {
+        const normalized = normalizeAcademyCaseMemory(memory);
+        if (normalized) {
+          const hydrated = reconcileAutoLockCase(hydrateAcademyCaseFinality(normalized)) || hydrateAcademyCaseFinality(normalized);
+          validCases.push(hydrated);
+          continue;
+        }
+        const signalId = parseSignalId(memory);
+        if (!signalId) continue;
+        invalidRows.push({
+          signalId,
+          key: String(memory?.key || '').trim(),
+          source: String(memory?.source || '').trim()
+        });
+      }
+
+      const nextBySignalId = new Map<string, AcademyCase>();
+      for (const entry of validCases) upsertCase(nextBySignalId, entry);
+      for (const [signalId, lockInfo] of lockMap.entries()) {
+        const existing = nextBySignalId.get(signalId);
+        if (!existing) continue;
+        const lockedEntry = {
+          ...existing,
+          locked: true,
+          lockedAtMs: lockInfo.lockedAtMs || existing.lockedAtMs || null,
+          lockSource: lockInfo.source || existing.lockSource || 'signal_button',
+          lockReason: lockInfo.reason || existing.lockReason || null
+        };
+        nextBySignalId.set(signalId, reconcileAutoLockCase(lockedEntry) || lockedEntry);
+      }
+
+      const resolvedHistoryEntries =
+        historyRes?.ok && Array.isArray(historyRes.memories)
+          ? (historyRes.memories
+              .map(normalizeSignalHistoryMemory)
+              .filter((entry): entry is SignalHistoryEntry => !!entry))
+          : [];
+      const resolvedSignalEntryEntries =
+        signalEntryRes?.ok && Array.isArray(signalEntryRes.memories)
+          ? (signalEntryRes.memories
+              .map(normalizeSignalEntryMemory)
+              .filter((entry): entry is SignalEntry => !!entry))
+          : [];
+      const resolvedHistoryRows = resolvedHistoryEntries.length;
+      const resolvedSignalEntryRows = resolvedSignalEntryEntries.length;
+      const signalEntryFallbackHistoryEntries: SignalHistoryEntry[] = resolvedSignalEntryEntries.map((entry) => {
+        const finalOutcome = toFinalDecisionOutcome(entry);
+        const executedAtMs = Number.isFinite(Number(entry.executedAtMs))
+          ? Number(entry.executedAtMs)
+          : (Number.isFinite(Number(entry.createdAtMs)) ? Number(entry.createdAtMs) : null);
+        const resolvedAtMs = Number.isFinite(Number(entry.resolvedAtMs))
+          ? Number(entry.resolvedAtMs)
+          : executedAtMs;
+        const durationMs =
+          Number.isFinite(Number(executedAtMs)) && Number.isFinite(Number(resolvedAtMs))
+            ? Math.max(0, Number(resolvedAtMs) - Number(executedAtMs))
+            : null;
+        return {
+          id: String(entry.id || ''),
+          signalId: String(entry.id || ''),
+          agentId: entry.agentId ?? null,
+          agentName: entry.agentName ?? null,
+          symbol: entry.symbol,
+          timeframe: entry.timeframe ?? null,
+          action: entry.action,
+          entryPrice: entry.entryPrice,
+          stopLoss: entry.stopLoss,
+          takeProfit: entry.takeProfit,
+          probability: entry.probability,
+          strategyMode: entry.strategyMode ?? null,
+          reason: entry.reason ?? null,
+          executionSource: entry.executionSource ?? null,
+          executionBroker: entry.executionBroker ?? null,
+          executionMode: entry.executionMode ?? null,
+          status: (finalOutcome ?? entry.status ?? null) as SignalHistoryEntry['status'],
+          outcome: finalOutcome,
+          score: null,
+          executedAtMs,
+          resolvedAtMs,
+          durationMs,
+          barsToOutcome: null,
+          exitPrice: null,
+          runId: entry.runId ?? null,
+          ledgerId: entry.executionLedgerId ?? null,
+          orderId: entry.executionOrderId ?? null,
+          positionId: entry.executionPositionId ?? null,
+          newsSnapshot: entry.newsSnapshot ?? null,
+          outcomeSource: 'signal_entry_fallback',
+          decisionOutcome: finalOutcome,
+          executionOutcome: null,
+          resolvedOutcomeEnvelope: null,
+          attribution: null
+        };
       });
-      setAcademyCases(entries);
-      return { ok: true as const };
+      const resolvedHistoryBySignalId = new Map<string, SignalHistoryEntry>();
+      for (const entry of resolvedHistoryEntries) {
+        const signalId = String(entry.signalId || entry.id || '').trim();
+        if (!signalId) continue;
+        const prev = resolvedHistoryBySignalId.get(signalId);
+        const prevTime = Number(prev?.resolvedAtMs ?? prev?.executedAtMs ?? prev?.createdAtMs ?? 0) || 0;
+        const nextTime = Number(entry.resolvedAtMs ?? entry.executedAtMs ?? entry.createdAtMs ?? 0) || 0;
+        if (!prev || nextTime >= prevTime) {
+          resolvedHistoryBySignalId.set(signalId, entry);
+        }
+      }
+      for (const entry of signalEntryFallbackHistoryEntries) {
+        const signalId = String(entry.signalId || entry.id || '').trim();
+        if (!signalId) continue;
+        const prev = resolvedHistoryBySignalId.get(signalId);
+        const prevTime = Number(prev?.resolvedAtMs ?? prev?.executedAtMs ?? prev?.createdAtMs ?? 0) || 0;
+        const nextTime = Number(entry.resolvedAtMs ?? entry.executedAtMs ?? entry.createdAtMs ?? 0) || 0;
+        if (!prev || nextTime >= prevTime) {
+          resolvedHistoryBySignalId.set(signalId, entry);
+        }
+      }
+
+      let backfilledCount = 0;
+      const repairedSignalIds = new Set<string>();
+      for (const historyEntry of resolvedHistoryBySignalId.values()) {
+        let built = buildAcademyCaseFromSignalHistory(historyEntry, { source: 'academy_repair' });
+        if (!built) continue;
+        const key = String(built.signalId || built.id || '').trim();
+        if (!key) continue;
+        const lockInfo = lockMap.get(key);
+        if (lockInfo) {
+          built.locked = true;
+          built.lockedAtMs = lockInfo.lockedAtMs || built.lockedAtMs || null;
+          built.lockSource = lockInfo.source || built.lockSource || 'signal_button';
+          built.lockReason = lockInfo.reason || built.lockReason || null;
+        }
+        built = reconcileAutoLockCase(built) || built;
+        const before = nextBySignalId.get(key) || null;
+        upsertCase(nextBySignalId, built);
+        const after = nextBySignalId.get(key) || null;
+        if (!before && after) {
+          backfilledCount += 1;
+          repairedSignalIds.add(key);
+          continue;
+        }
+        if (before && after && after !== before && caseRichness(after) > caseRichness(before)) {
+          backfilledCount += 1;
+          repairedSignalIds.add(key);
+        }
+      }
+
+      for (const invalid of invalidRows) {
+        if (invalid.signalId) repairedSignalIds.add(invalid.signalId);
+      }
+
+      let repairedCount = 0;
+      if (ledger?.upsertAgentMemory && repairedSignalIds.size > 0) {
+        for (const signalId of repairedSignalIds) {
+          const repairedCase = nextBySignalId.get(signalId);
+          if (!repairedCase) continue;
+          const payload: AcademyCase = {
+            ...repairedCase,
+            id: String(repairedCase.id || signalId),
+            signalId: String(repairedCase.signalId || signalId),
+            source: repairedCase.source || 'academy_repair'
+          };
+          const key = `academy_case:${payload.id}`;
+          const fingerprint = (() => {
+            try {
+              return JSON.stringify(payload);
+            } catch {
+              return `${payload.id}:${payload.outcome || payload.status || ''}:${payload.resolvedAtMs || payload.executedAtMs || payload.createdAtMs || 0}`;
+            }
+          })();
+          if (academyCaseRepairPersistedRef.current.get(key) === fingerprint) continue;
+
+          const summary = [
+            payload.outcome || payload.status || 'PROPOSED',
+            payload.action,
+            payload.symbol,
+            payload.timeframe || '',
+            payload.score != null && Number.isFinite(Number(payload.score)) ? `${Number(payload.score).toFixed(2)}R` : ''
+          ].filter(Boolean).join(' ');
+          const symbolKey = normalizeSymbolKey(payload.symbol);
+          const timeframeKey = payload.timeframe ? normalizeTimeframeKey(payload.timeframe) : '';
+          const tags = [
+            payload.symbol,
+            payload.timeframe || '',
+            payload.agentId ? `agent:${payload.agentId}` : '',
+            payload.outcome ? `outcome:${String(payload.outcome).toLowerCase()}` : '',
+            payload.status ? `status:${String(payload.status).toLowerCase()}` : '',
+            'academy_case',
+            'academy_repair'
+          ].filter(Boolean);
+
+          await ledger.upsertAgentMemory({
+            key,
+            familyKey: symbolKey ? `academy_case:${symbolKey}:${timeframeKey}` : undefined,
+            agentId: payload.agentId ?? null,
+            scope: 'shared',
+            category: 'academy',
+            subcategory: 'case',
+            kind: 'academy_case',
+            symbol: payload.symbol || undefined,
+            timeframe: payload.timeframe || undefined,
+            summary,
+            payload,
+            tags,
+            source: payload.source || 'academy_repair'
+          });
+          academyCaseRepairPersistedRef.current.set(key, fingerprint);
+          repairedCount += 1;
+        }
+      }
+
+      const snapshotCount = nextBySignalId.size;
+      const previousCases = Array.isArray(academyCasesRef.current) ? academyCasesRef.current : [];
+      const previousCount = previousCases.length;
+      const mergeInput = Array.from(nextBySignalId.values()).map((entry) => ({
+        entry,
+        key: resolveAcademyCaseMergeKey(entry)
+      }));
+      const snapshotIdentityKeys = new Set(
+        mergeInput
+          .map((item) => String(item.key || '').trim())
+          .filter(Boolean)
+      );
+      const mergeResult = mergeAcademyCasesMergeOnly(previousCases, mergeInput, 2);
+      academyMergeStatsRef.current.added += Number(mergeResult.addedCount || 0);
+      academyMergeStatsRef.current.replaced += Number(mergeResult.replacedCount || 0);
+      academyMergeStatsRef.current.retained += Number(mergeResult.retainedCount || 0);
+      const mergedBySignalId = new Map<string, AcademyCase>();
+      for (const entry of mergeResult.merged as AcademyCase[]) {
+        const key = String(
+          entry?.signalCanonicalId ||
+          entry?.signalId ||
+          entry?.id ||
+          resolveAcademyCaseMergeKey(entry)
+        ).trim();
+        if (!key) continue;
+        mergedBySignalId.set(key, entry);
+      }
+      const retainedCount = Number(mergeResult.retainedCount || 0);
+      let skippedRemovalCount = 0;
+      for (const previousEntry of previousCases) {
+        const key = String(resolveAcademyCaseMergeKey(previousEntry)).trim();
+        if (!key) continue;
+        if (!snapshotIdentityKeys.has(key)) {
+          skippedRemovalCount += 1;
+        }
+      }
+      for (const [signalId, lockInfo] of lockMap.entries()) {
+        const existing = mergedBySignalId.get(signalId);
+        if (!existing) continue;
+        const lockedEntry = {
+          ...existing,
+          locked: true,
+          lockedAtMs: existing.lockedAtMs ?? lockInfo.lockedAtMs ?? null,
+          lockSource: existing.lockSource ?? lockInfo.source ?? 'signal_button',
+          lockReason: existing.lockReason ?? lockInfo.reason ?? null
+        };
+        mergedBySignalId.set(signalId, reconcileAutoLockCase(lockedEntry) || lockedEntry);
+      }
+      for (const [signalId, mergedEntry] of mergedBySignalId.entries()) {
+        const reconciled = reconcileAutoLockCase(mergedEntry);
+        if (reconciled) {
+          mergedBySignalId.set(signalId, reconciled);
+        }
+      }
+      const autoLockReconcileLimit = 250;
+      const pendingAutoLockEntries = Array.from(pendingAutoLockBySignalId.entries()).slice(0, autoLockReconcileLimit);
+      for (const [signalId, lockedCase] of pendingAutoLockEntries) {
+        if (autoLockReconciledSignalIds.has(signalId)) continue;
+        try {
+          const lockResult = await lockAcademyCase({
+            signalId,
+            caseId: String(lockedCase.id || signalId).trim(),
+            symbol: lockedCase.symbol || null,
+            timeframe: lockedCase.timeframe || null,
+            agentId: lockedCase.agentId || null,
+            source: 'system_repair',
+            reason: 'outcome_win_loss_auto_lock',
+            payload: lockedCase
+          });
+          if (lockResult?.ok) {
+            autoLockReconciledSignalIds.add(signalId);
+            autoLockReconciledCount += 1;
+            lockMap.set(signalId, {
+              signalId,
+              caseId: String(lockedCase.id || signalId).trim(),
+              lockedAtMs: Number(lockedCase.lockedAtMs || Date.now()) || Date.now(),
+              source: 'system_repair',
+              reason: 'outcome_win_loss_auto_lock'
+            });
+            continue;
+          }
+          autoLockFailures.push({
+            signalId,
+            error: lockResult?.error ? String(lockResult.error) : 'Unknown lock persistence failure.'
+          });
+        } catch (err: any) {
+          autoLockFailures.push({
+            signalId,
+            error: err?.message ? String(err.message) : 'Unknown lock persistence failure.'
+          });
+        }
+      }
+      const mergedCases = Array.from(mergedBySignalId.values())
+        .sort((a, b) => caseTime(b) - caseTime(a));
+      const mergedCount = mergedCases.length;
+      const richCaseCount = mergedCases.filter((entry) => scoreAcademyCaseRichness(entry as any) >= 15).length;
+      const sparseCaseCount = Math.max(0, mergedCases.length - richCaseCount);
+      academyDataQualityStatsRef.current.richCaseCount = richCaseCount;
+      academyDataQualityStatsRef.current.sparseCaseCount = sparseCaseCount;
+      academyDataQualityStatsRef.current.repairUpserts += repairedCount;
+      setAcademyCases(mergedCases);
+      const nextCasesCursor = nextCursorFromItems(
+        syncCursor.casesUpdatedAfterMs || null,
+        mergedCases,
+        (entry) => Number(
+          entry?.academyLastSeenAtMs ||
+          entry?.resolvedAtMs ||
+          entry?.executedAtMs ||
+          entry?.createdAtMs ||
+          0
+        ) || null
+      );
+      if (nextCasesCursor && Number(nextCasesCursor) !== Number(syncCursor.casesUpdatedAfterMs || 0)) {
+        academySyncCursorRef.current = {
+          ...syncCursor,
+          casesUpdatedAfterMs: nextCasesCursor
+        };
+        writeAcademySyncCursor(academySyncCursorRef.current);
+      }
+      if (ledger?.archiveAgentMemories && Date.now() >= Number(academyArchiveNotBeforeRef.current || 0)) {
+        academyArchiveNotBeforeRef.current = Date.now() + (5 * 60_000);
+        void ledger.archiveAgentMemories({
+          cutoffMs: Date.now() - (30 * 24 * 60 * 60 * 1000),
+          kinds: ['signal_entry', 'signal_history', 'academy_case', 'academy_lesson', 'academy_symbol_learning'],
+          keepRecentPerKind: 2000,
+          keepLocked: true
+        }).then((archiveRes: any) => {
+          if (!archiveRes?.ok) return;
+          const moved = Number(archiveRes?.moved || 0);
+          const rows = Number(archiveRes?.rows || 0);
+          ledgerArchiveStatsRef.current.moves += moved;
+          if (rows > 0) ledgerArchiveStatsRef.current.rows = rows;
+          if (moved > 0) {
+            appendLiveError({
+              source: 'ledger.archive_tier',
+              level: 'info',
+              message: `Archive tier moved ${moved} memory row(s) without deletion.`,
+              detail: {
+                moved,
+                rows,
+                activeRows: Number(archiveRes?.activeRows || 0)
+              }
+            });
+          }
+        }).catch(() => {});
+      }
+
+      if (autoLockedCount > 0) {
+        appendLiveError({
+          source: 'academy_auto_lock_applied',
+          level: 'info',
+          message: `Academy auto-lock applied to ${autoLockedCount} WIN/LOSS case(s).`,
+          detail: { autoLockedCount }
+        });
+      }
+      if (autoLockReconciledCount > 0) {
+        appendLiveError({
+          source: 'academy_auto_lock_reconciled',
+          level: 'info',
+          message: `Academy auto-lock reconciled ${autoLockReconciledCount} missing lock record(s).`,
+          detail: { autoLockReconciledCount }
+        });
+      }
+      if (autoLockFailures.length > 0) {
+        appendLiveError({
+          source: 'academy_auto_lock_failed',
+          level: 'warn',
+          message: `Academy auto-lock failed for ${autoLockFailures.length} case(s).`,
+          detail: { failures: autoLockFailures.slice(0, 20) }
+        });
+      }
+
+      appendLiveError({
+        source: 'academy_merge_no_prune_applied',
+        level: 'info',
+        message: `Academy no-prune merge applied (${mergedCount} case(s)).`,
+        detail: {
+          mergedCount,
+          snapshotCount,
+          richCaseCount,
+          sparseCaseCount,
+          retainedCount,
+          skippedRemovalCount
+        }
+      });
+      if (skippedRemovalCount > 0) {
+        appendLiveError({
+          source: 'academy_refresh_skipped_removal',
+          level: 'info',
+          message: `Academy no-prune retained ${skippedRemovalCount} case(s) missing from latest refresh batch.`,
+          detail: {
+            skippedRemovalCount,
+            previousCount,
+            snapshotCount
+          }
+        });
+      }
+      if (invalidRows.length > 0 || backfilledCount > 0 || repairedCount > 0 || retainedCount > 0 || skippedRemovalCount > 0 || autoLockedCount > 0 || autoLockReconciledCount > 0 || autoLockFailures.length > 0) {
+        appendLiveError({
+          source: 'academy.refresh',
+          level: invalidRows.length > 0 ? 'warn' : 'info',
+          message: `Academy refresh snapshot ${snapshotCount} | merged ${mergedCount} | rich ${richCaseCount} | sparse ${sparseCaseCount} | retained ${retainedCount} | skipped_removal ${skippedRemovalCount} | malformed ${invalidRows.length} | backfilled ${backfilledCount} | repaired ${repairedCount} | auto_locked ${autoLockedCount} | auto_lock_reconciled ${autoLockReconciledCount} | locks ${lockMap.size} | academy_rows ${academyCaseRowsRead} | history_rows ${signalHistoryRowsRead}/${resolvedHistoryRows} | signal_entry_rows ${signalEntryRowsRead}/${resolvedSignalEntryRows}`,
+          detail: {
+            malformed: invalidRows.slice(0, 20),
+            snapshotCount,
+            mergedCount,
+            richCaseCount,
+            sparseCaseCount,
+            retainedCount,
+            skippedRemovalCount,
+            backfilledCount,
+            repairedCount,
+            autoLockedCount,
+            autoLockReconciledCount,
+            autoLockFailures: autoLockFailures.slice(0, 20),
+            lockCount: lockMap.size,
+            academyCaseRowsRead,
+            signalHistoryRowsRead,
+            signalEntryRowsRead,
+            resolvedHistoryRows,
+            resolvedSignalEntryRows
+          }
+        });
+      }
+
+      return {
+        ok: true as const,
+        cases: mergedCount,
+        snapshotCount,
+        mergedCount,
+        richCaseCount,
+        sparseCaseCount,
+        retainedCount,
+        prunedAfterStreakCount: 0,
+        skippedRemovalCount,
+        malformed: invalidRows.length,
+        backfilled: backfilledCount,
+        repaired: repairedCount,
+        autoLockedCount,
+        autoLockReconciledCount,
+        academyCaseRowsRead,
+        signalHistoryRowsRead,
+        signalEntryRowsRead,
+        resolvedHistoryRows,
+        resolvedSignalEntryRows
+      };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load Academy cases.' };
     }
-  }, [normalizeAcademyCaseMemory]);
+  }, [
+    appendLiveError,
+    buildAcademyCaseFromSignalHistory,
+    applyAutoLockMetadata,
+    isAutoLockOutcome,
+    normalizeAcademyCaseMemory,
+    normalizeSignalEntryMemory,
+    normalizeSignalHistoryMemory,
+    normalizeSymbolKey,
+    normalizeTimeframeKey
+  ]);
 
-  const refreshAcademyLessons = useCallback(async (opts?: { limit?: number }) => {
+  const refreshAcademyLessons = useCallback(async (opts?: { limit?: number; force?: boolean; _fullRetry?: boolean }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Academy lessons unavailable.' };
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(10, Math.min(500, Math.floor(Number(opts?.limit)))) : 120;
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(10, Math.min(50_000, Math.floor(Number(opts?.limit)))) : 50_000;
+    const syncCursor = academySyncCursorRef.current || {};
+    const listOptions = {
+      ...buildIncrementalListOptions(limit, opts?.force ? null : syncCursor.lessonsUpdatedAfterMs, true),
+      kind: 'academy_lesson'
+    };
     try {
-      const res = await ledger.listAgentMemory({ limit, kind: 'academy_lesson' });
+      const res = await ledger.listAgentMemory(listOptions);
       if (!res?.ok || !Array.isArray(res.memories)) {
         return { ok: false as const, error: res?.error ? String(res.error) : 'Failed to load Academy lessons.' };
       }
-      const entries = res.memories.map(normalizeAcademyLessonMemory).filter(Boolean) as AcademyLesson[];
-      entries.sort((a, b) => (Number(b.updatedAtMs || b.createdAtMs || 0) - Number(a.updatedAtMs || a.createdAtMs || 0)));
-      setAcademyLessons(entries);
+      const entries: AcademyLesson[] = [];
+      let droppedCount = 0;
+      for (const memory of res.memories) {
+        const normalized = normalizeAcademyLessonMemory(memory);
+        if (normalized) {
+          entries.push(normalized);
+        } else {
+          droppedCount += 1;
+        }
+      }
+      if (!opts?.force && !opts?._fullRetry && entries.length === 0 && academyLessonsRef.current.length === 0 && Number(syncCursor.lessonsUpdatedAfterMs || 0) > 0) {
+        return refreshAcademyLessons({ ...opts, force: true, _fullRetry: true, limit });
+      }
+      const lessonKey = (entry: AcademyLesson | null | undefined) => String(entry?.id || '').trim();
+      const lessonTime = (entry: AcademyLesson | null | undefined) => Number(entry?.updatedAtMs || entry?.createdAtMs || 0) || 0;
+      const lessonRichness = (entry: AcademyLesson | null | undefined) => {
+        if (!entry) return 0;
+        const applies = entry.appliesTo || {};
+        let score = 0;
+        if (String(entry.title || '').trim()) score += 1;
+        if (String(entry.summary || '').trim()) score += 1;
+        if (String(entry.recommendedAction || '').trim()) score += 1;
+        if (Array.isArray(entry.triggerConditions) && entry.triggerConditions.length > 0) score += 1;
+        if (Array.isArray(entry.evidenceCaseIds) && entry.evidenceCaseIds.length > 0) score += 1;
+        if (String(entry.agentId || entry.agentName || '').trim()) score += 1;
+        if (String(entry.outcome || '').trim()) score += 1;
+        if (String(applies.symbol || applies.timeframe || applies.strategyMode || applies.broker || applies.executionMode || '').trim()) score += 1;
+        if (Number.isFinite(Number(entry.confidence))) score += 1;
+        return score;
+      };
+      const previousById = new Map<string, AcademyLesson>();
+      for (const entry of academyLessonsRef.current || []) {
+        const key = lessonKey(entry);
+        if (!key) continue;
+        previousById.set(key, entry);
+      }
+      const mergedById = new Map<string, AcademyLesson>(previousById);
+      const snapshotIds = new Set<string>();
+      let addedCount = 0;
+      let replacedCount = 0;
+      for (const entry of entries) {
+        const key = lessonKey(entry);
+        if (!key) continue;
+        snapshotIds.add(key);
+        const existing = mergedById.get(key);
+        if (!existing) {
+          mergedById.set(key, entry);
+          addedCount += 1;
+          continue;
+        }
+        const existingRichness = lessonRichness(existing);
+        const nextRichness = lessonRichness(entry);
+        const shouldReplace =
+          nextRichness > existingRichness ||
+          (nextRichness === existingRichness && lessonTime(entry) >= lessonTime(existing));
+        if (shouldReplace) {
+          mergedById.set(key, entry);
+          replacedCount += 1;
+        }
+      }
+      let retainedCount = 0;
+      for (const key of previousById.keys()) {
+        if (!snapshotIds.has(key)) retainedCount += 1;
+      }
+      const merged = Array.from(mergedById.values())
+        .sort((a, b) => (Number(b.updatedAtMs || b.createdAtMs || 0) - Number(a.updatedAtMs || a.createdAtMs || 0)));
+      setAcademyLessons(merged);
       setAcademyLessonsUpdatedAtMs(Date.now());
-      academyLessonContextRef.current = buildAcademyLessonContextString(entries, academyLessonLimit);
-      return { ok: true as const };
+      academyDataQualityStatsRef.current.lessonValidCount = merged.length;
+      academyDataQualityStatsRef.current.lessonDroppedCount += droppedCount;
+      const nextLessonsCursor = nextCursorFromItems(
+        syncCursor.lessonsUpdatedAfterMs || null,
+        merged,
+        (entry) => Number(entry?.updatedAtMs || entry?.createdAtMs || 0) || null
+      );
+      if (nextLessonsCursor && Number(nextLessonsCursor) !== Number(syncCursor.lessonsUpdatedAfterMs || 0)) {
+        academySyncCursorRef.current = {
+          ...syncCursor,
+          lessonsUpdatedAfterMs: nextLessonsCursor
+        };
+        writeAcademySyncCursor(academySyncCursorRef.current);
+      }
+      academyLessonContextRef.current = buildAcademyLessonContextString(merged, academyLessonLimit);
+      if (addedCount > 0 || replacedCount > 0 || retainedCount > 0 || droppedCount > 0) {
+        appendLiveError({
+          source: 'academy_lessons_merge_no_shrink',
+          level: 'info',
+          message: `Academy lessons merge-no-shrink applied (${merged.length} lesson(s), retained ${retainedCount}, dropped ${droppedCount}).`,
+          detail: {
+            mergedCount: merged.length,
+            incomingCount: entries.length,
+            addedCount,
+            replacedCount,
+            retainedCount,
+            droppedCount
+          }
+        });
+      }
+      return { ok: true as const, lessons: merged.length, addedCount, replacedCount, retainedCount, droppedCount };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load Academy lessons.' };
     }
-  }, [academyLessonLimit, buildAcademyLessonContextString, normalizeAcademyLessonMemory]);
+  }, [academyLessonLimit, appendLiveError, buildAcademyLessonContextString, normalizeAcademyLessonMemory]);
 
-  const refreshAcademySymbolLearnings = useCallback(async (opts?: { limit?: number }) => {
+  const refreshAcademySymbolLearnings = useCallback(async (opts?: { limit?: number; force?: boolean; _fullRetry?: boolean }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Academy symbol learning unavailable.' };
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(20, Math.min(500, Math.floor(Number(opts?.limit)))) : 120;
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(20, Math.min(50_000, Math.floor(Number(opts?.limit)))) : 50_000;
+    const syncCursor = academySyncCursorRef.current || {};
+    const listOptions = {
+      ...buildIncrementalListOptions(limit, opts?.force ? null : syncCursor.symbolLearningsUpdatedAfterMs, true),
+      kind: 'academy_symbol_learning'
+    };
     try {
-      const res = await ledger.listAgentMemory({ limit, kind: 'academy_symbol_learning' });
+      const res = await ledger.listAgentMemory(listOptions);
       if (!res?.ok || !Array.isArray(res.memories)) {
         return { ok: false as const, error: res?.error ? String(res.error) : 'Failed to load Academy symbol learning.' };
       }
       const entries = res.memories.map(normalizeAcademySymbolLearningMemory).filter(Boolean) as AcademySymbolLearning[];
-      entries.sort((a, b) => (Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0)));
-      setAcademySymbolLearnings(entries);
+      if (!opts?.force && !opts?._fullRetry && entries.length === 0 && academySymbolLearningsRef.current.length === 0 && Number(syncCursor.symbolLearningsUpdatedAfterMs || 0) > 0) {
+        return refreshAcademySymbolLearnings({ ...opts, force: true, _fullRetry: true, limit });
+      }
+      const learningKey = (entry: AcademySymbolLearning | null | undefined) =>
+        normalizeSymbolKey(entry?.symbol || entry?.id || '');
+      const learningTime = (entry: AcademySymbolLearning | null | undefined) =>
+        Number(entry?.updatedAtMs || 0) || 0;
+      const learningRichness = (entry: AcademySymbolLearning | null | undefined) => {
+        if (!entry) return 0;
+        let score = 0;
+        if (String(entry.symbol || '').trim()) score += 1;
+        if (String(entry.summary || '').trim()) score += 1;
+        if (Array.isArray(entry.bestConditions) && entry.bestConditions.length > 0) score += 1;
+        if (Array.isArray(entry.failurePatterns) && entry.failurePatterns.length > 0) score += 1;
+        if (Array.isArray(entry.recommendedAdjustments) && entry.recommendedAdjustments.length > 0) score += 1;
+        if (Array.isArray(entry.evidenceCaseIds) && entry.evidenceCaseIds.length > 0) score += 1;
+        if (Number.isFinite(Number(entry.winRate))) score += 1;
+        if (Number.isFinite(Number(entry.avgScore))) score += 1;
+        score += Math.max(0, Number(entry.wins || 0));
+        score += Math.max(0, Number(entry.losses || 0));
+        return score;
+      };
+      const previousByKey = new Map<string, AcademySymbolLearning>();
+      for (const entry of academySymbolLearningsRef.current || []) {
+        const key = learningKey(entry);
+        if (!key) continue;
+        previousByKey.set(key, entry);
+      }
+      const mergedByKey = new Map<string, AcademySymbolLearning>(previousByKey);
+      const snapshotKeys = new Set<string>();
+      let addedCount = 0;
+      let replacedCount = 0;
+      for (const entry of entries) {
+        const key = learningKey(entry);
+        if (!key) continue;
+        snapshotKeys.add(key);
+        const existing = mergedByKey.get(key);
+        if (!existing) {
+          mergedByKey.set(key, entry);
+          addedCount += 1;
+          continue;
+        }
+        const existingRichness = learningRichness(existing);
+        const nextRichness = learningRichness(entry);
+        const shouldReplace =
+          nextRichness > existingRichness ||
+          (nextRichness === existingRichness && learningTime(entry) >= learningTime(existing));
+        if (shouldReplace) {
+          mergedByKey.set(key, entry);
+          replacedCount += 1;
+        }
+      }
+      let retainedCount = 0;
+      for (const key of previousByKey.keys()) {
+        if (!snapshotKeys.has(key)) retainedCount += 1;
+      }
+      const merged = Array.from(mergedByKey.values())
+        .sort((a, b) => (Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0)));
+      setAcademySymbolLearnings(merged);
       setAcademySymbolLearningsUpdatedAtMs(Date.now());
-      return { ok: true as const };
+      const nextSymbolLearningsCursor = nextCursorFromItems(
+        syncCursor.symbolLearningsUpdatedAfterMs || null,
+        merged,
+        (entry) => Number(entry?.updatedAtMs || 0) || null
+      );
+      if (
+        nextSymbolLearningsCursor &&
+        Number(nextSymbolLearningsCursor) !== Number(syncCursor.symbolLearningsUpdatedAfterMs || 0)
+      ) {
+        academySyncCursorRef.current = {
+          ...syncCursor,
+          symbolLearningsUpdatedAfterMs: nextSymbolLearningsCursor
+        };
+        writeAcademySyncCursor(academySyncCursorRef.current);
+      }
+      if (addedCount > 0 || replacedCount > 0 || retainedCount > 0) {
+        appendLiveError({
+          source: 'academy_symbol_learning_merge_no_shrink',
+          level: 'info',
+          message: `Academy symbol learning merge-no-shrink applied (${merged.length} symbol record(s), retained ${retainedCount}).`,
+          detail: {
+            mergedCount: merged.length,
+            incomingCount: entries.length,
+            addedCount,
+            replacedCount,
+            retainedCount
+          }
+        });
+      }
+      return { ok: true as const, learnings: merged.length, addedCount, replacedCount, retainedCount };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load Academy symbol learning.' };
     }
-  }, [normalizeAcademySymbolLearningMemory]);
+  }, [appendLiveError, normalizeAcademySymbolLearningMemory, normalizeSymbolKey]);
 
   useEffect(() => {
     void runCalendarBackfill();
@@ -14362,8 +15548,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     void refreshAcademyCases({ force: true });
-    void refreshAcademyLessons();
-    void refreshAcademySymbolLearnings();
+    void refreshAcademyLessons({ force: true });
+    void refreshAcademySymbolLearnings({ force: true });
     let cancelled = false;
     let stop: (() => void) | null = null;
     void loadAcademyControllerModule().then((mod) => {
@@ -14373,15 +15559,15 @@ const App: React.FC = () => {
         tick: async () => {
           await Promise.all([
             refreshAcademyCases({ force: true }),
-            refreshAcademyLessons(),
-            refreshAcademySymbolLearnings()
+            refreshAcademyLessons({ force: false }),
+            refreshAcademySymbolLearnings({ force: false })
           ]);
         }
       });
       controller.start({ scheduler: runtimeScheduler });
       stop = () => controller.stop();
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[academy_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -14533,7 +15719,7 @@ const App: React.FC = () => {
       }
     }
 
-    const payload: AcademyCase = {
+    let payload: AcademyCase = {
       id: caseId,
       signalId: entry.id,
       agentId: entry.agentId ?? null,
@@ -14571,8 +15757,16 @@ const App: React.FC = () => {
       executionOutcome: resolvedOutcomeEnvelope?.executionOutcome ?? null,
       resolvedOutcomeEnvelope: resolvedOutcomeEnvelope ?? null,
       attribution: attribution ?? null,
+      locked: patch.locked ?? prevPayload?.locked ?? false,
+      lockedAtMs: patch.lockedAtMs ?? prevPayload?.lockedAtMs ?? null,
+      lockSource: patch.lockSource ?? prevPayload?.lockSource ?? null,
+      lockReason: patch.lockReason ?? prevPayload?.lockReason ?? null,
       source: input.source || 'academy'
     };
+    const wasLockedBeforeAuto = payload.locked === true;
+    payload = applyAutoLockMetadata(payload, now);
+    const shouldAutoLock = isAutoLockOutcome(payload.outcome ?? payload.status);
+    const autoLockTransitioned = !wasLockedBeforeAuto && payload.locked === true;
 
     const tfLabel = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
     const probLabel = Number.isFinite(Number(entry.probability)) ? `${Math.round(entry.probability)}%` : '';
@@ -14619,6 +15813,54 @@ const App: React.FC = () => {
       source: input.source || 'academy'
     });
 
+    if (shouldAutoLock) {
+      const lockSource = payload.lockSource || 'system_repair';
+      const lockReason = payload.lockReason || 'outcome_win_loss_auto_lock';
+      try {
+        const lockResult = await lockAcademyCase({
+          signalId: caseId,
+          caseId,
+          symbol: payload.symbol || null,
+          timeframe: payload.timeframe || null,
+          agentId: payload.agentId || null,
+          source: lockSource,
+          reason: lockReason,
+          payload
+        });
+        if (lockResult?.ok) {
+          academyCaseLocksRef.current.set(caseId, {
+            signalId: caseId,
+            caseId,
+            lockedAtMs: Number(payload.lockedAtMs || Date.now()) || Date.now(),
+            source: lockSource,
+            reason: lockReason
+          });
+          if (autoLockTransitioned) {
+            appendLiveError({
+              source: 'academy_auto_lock_applied',
+              level: 'info',
+              message: `Academy auto-lock applied to ${caseId}.`,
+              detail: { signalId: caseId, caseId, source: lockSource, reason: lockReason }
+            });
+          }
+        } else {
+          appendLiveError({
+            source: 'academy_auto_lock_failed',
+            level: 'warn',
+            message: `Academy auto-lock persistence failed for ${caseId}.`,
+            detail: { signalId: caseId, caseId, error: lockResult?.error || 'unknown_lock_error' }
+          });
+        }
+      } catch (err: any) {
+        appendLiveError({
+          source: 'academy_auto_lock_failed',
+          level: 'warn',
+          message: `Academy auto-lock persistence failed for ${caseId}.`,
+          detail: { signalId: caseId, caseId, error: err?.message ? String(err.message) : 'unknown_lock_error' }
+        });
+      }
+    }
+
     setAcademyCases((prev) => {
       const next = [...prev];
       const idx = next.findIndex((item) => item.id === caseId);
@@ -14629,7 +15871,18 @@ const App: React.FC = () => {
 
     scheduleAcademyExport();
     return payload;
-  }, [academyAutoExportEnabled, computeSignalOutcomeScore, formatTimeframeLabel, normalizeSymbolKey, normalizeTimeframeKey, resolveSignalOutcome, scheduleAcademyExport]);
+  }, [
+    academyAutoExportEnabled,
+    appendLiveError,
+    applyAutoLockMetadata,
+    computeSignalOutcomeScore,
+    formatTimeframeLabel,
+    isAutoLockOutcome,
+    normalizeSymbolKey,
+    normalizeTimeframeKey,
+    resolveSignalOutcome,
+    scheduleAcademyExport
+  ]);
 
   const upsertAcademyLesson = useCallback(async (lesson: AcademyLesson) => {
     const ledger = window.glass?.tradeLedger;
@@ -15166,6 +16419,47 @@ const App: React.FC = () => {
     ].join('|');
     return `signal_${hashStringSampled(seed)}`;
   }, []);
+
+  const buildSignalIdentityV2 = useCallback((input: {
+    symbol: string;
+    timeframe: string;
+    action: string;
+    entry: number;
+    stop: number;
+    target: number;
+    strategyMode?: string | null;
+    agentKey?: string | null;
+    runId?: string | null;
+    createdAtMs?: number | null;
+  }) => {
+    const legacySignalId = buildSignalEntryId({
+      symbol: input.symbol,
+      timeframe: input.timeframe,
+      action: input.action,
+      entry: input.entry,
+      stop: input.stop,
+      target: input.target,
+      strategyMode: input.strategyMode || null
+    });
+    const signalCanonicalId = buildSignalCanonicalIdV2({
+      symbol: input.symbol,
+      timeframe: input.timeframe,
+      action: input.action,
+      entryPrice: input.entry,
+      stopLoss: input.stop,
+      takeProfit: input.target,
+      strategyMode: input.strategyMode || null,
+      agentKey: input.agentKey || null,
+      runId: input.runId || null,
+      createdAtMs: input.createdAtMs ?? Date.now()
+    });
+    return {
+      id: signalCanonicalId,
+      signalCanonicalId,
+      signalIdentityVersion: 'v2' as const,
+      legacySignalId
+    };
+  }, [buildSignalEntryId]);
 
   const buildTradeProposalFromSignal = useCallback((entry: SignalEntry, agentId?: string | null) => {
     return {
@@ -16219,6 +17513,8 @@ const App: React.FC = () => {
     });
     const status: SignalSnapshotStatus = {
       symbol: payload.symbol || resolvedSymbol,
+      timeframes: resolvedTimeframes,
+      scopeKey: buildSnapshotScopeKey(payload.symbol || resolvedSymbol, resolvedTimeframes),
       ok: !reasonCode,
       reasonCode: reasonCode || null,
       frames: framesSummary,
@@ -16226,13 +17522,43 @@ const App: React.FC = () => {
       shortFrames: gaps.short,
       capturedAtMs: payload.capturedAt ?? null
     };
-    setSnapshotPanelStatus(status);
+    const normalizedStatus = classifyUnifiedSnapshotStatus(status) || status;
+    const hasUsableFrames = framesSummary.some((frame) => Number(frame?.barsCount || 0) > 0);
+    const isCoverageDelayed = String(normalizedStatus?.state || '').trim().toLowerCase() === 'coverage_delayed';
+    const shouldForceReadyFromCoverage = isCoverageDelayed && hasUsableFrames;
+    // Keep Snapshot panel READY whenever we have usable native-frame bars.
+    const effectivePanelStatus = (!reasonCode || shouldForceReadyFromCoverage)
+      ? {
+          ...normalizedStatus,
+          reasonCode: null,
+          ok: true,
+          state: 'ready'
+        }
+      : normalizedStatus;
+    if (shouldForceReadyFromCoverage) {
+      appendLiveError({
+        source: 'snapshot_ready_override_applied',
+        level: 'info',
+        message: `Snapshot ${resolvedSymbol} ready override applied from usable native-frame coverage.`,
+        detail: {
+          symbol: resolvedSymbol,
+          timeframes: resolvedTimeframes,
+          reasonCode: reasonCode || null,
+          missingFrames: gaps.missing,
+          shortFrames: gaps.short
+        }
+      });
+    }
+    setSnapshotPanelStatus(effectivePanelStatus);
     refreshSlaMonitor.noteRun(SNAPSHOT_SLA_TASK_ID, Date.now());
-    return status;
+    return effectivePanelStatus;
   }, [
+    appendLiveError,
     buildChartSnapshotPayload,
     buildSignalWarmupBarsByTimeframe,
     chartEngine,
+    classifyUnifiedSnapshotStatus,
+    buildSnapshotScopeKey,
     resolveSnapshotPanelSymbol,
     snapshotPanelTimeframes
   ]);
@@ -16379,6 +17705,7 @@ const App: React.FC = () => {
     const probabilityMin = Math.max(1, Math.min(100, signalProbabilityThreshold));
     const probabilityMax = Math.max(probabilityMin, Math.min(100, signalProbabilityMax));
     const primarySymbol = signalPrimarySymbol || symbolList[0] || null;
+    const primaryScopeKey = primarySymbol ? buildSnapshotScopeKey(primarySymbol, timeframes) : null;
     const pendingGaps = await computeFrameGapWorker({
       frames: [],
       timeframes,
@@ -16395,14 +17722,28 @@ const App: React.FC = () => {
         ? `TradeLocker upstream unavailable. Retry in ${retrySecs}s.`
         : 'TradeLocker not connected. Waiting to run scan.';
       setSignalLastError(msg);
-      setSignalSnapshotStatus(primarySymbol ? {
-        symbol: primarySymbol,
-        ok: false,
-        reasonCode: blockedByUpstream ? 'BROKER_UPSTREAM_BACKOFF' : 'BROKER_DISCONNECTED',
-        frames: [],
-        missingFrames: pendingGaps.missing,
-        shortFrames: pendingGaps.short
-      } : null);
+      const blockedStatus = primarySymbol
+        ? (classifyUnifiedSnapshotStatus({
+            symbol: primarySymbol,
+            timeframes,
+            scopeKey: primaryScopeKey,
+            ok: false,
+            reasonCode: blockedByUpstream ? 'BROKER_UPSTREAM_BACKOFF' : 'BROKER_DISCONNECTED',
+            frames: [],
+            missingFrames: pendingGaps.missing,
+            shortFrames: pendingGaps.short
+          }) || {
+            symbol: primarySymbol,
+            timeframes,
+            scopeKey: primaryScopeKey,
+            ok: false,
+            reasonCode: blockedByUpstream ? 'BROKER_UPSTREAM_BACKOFF' : 'BROKER_DISCONNECTED',
+            frames: [],
+            missingFrames: pendingGaps.missing,
+            shortFrames: pendingGaps.short
+          })
+        : null;
+      setSignalSnapshotStatus(blockedStatus);
       appendLiveError({
         source: 'signal.scan',
         level: 'warn',
@@ -16433,14 +17774,28 @@ const App: React.FC = () => {
     setSignalLastError(null);
     setSignalLastParseError(null);
     setSignalLastParseAtMs(null);
-    setSignalSnapshotStatus(primarySymbol ? {
-      symbol: primarySymbol,
-      ok: false,
-      reasonCode: 'WARMUP_PENDING',
-      frames: [],
-      missingFrames: pendingGaps.missing,
-      shortFrames: pendingGaps.short
-    } : null);
+    const warmupStatus = primarySymbol
+      ? (classifyUnifiedSnapshotStatus({
+          symbol: primarySymbol,
+          timeframes,
+          scopeKey: primaryScopeKey,
+          ok: false,
+          reasonCode: 'WARMUP_PENDING',
+          frames: [],
+          missingFrames: pendingGaps.missing,
+          shortFrames: pendingGaps.short
+        }) || {
+          symbol: primarySymbol,
+          timeframes,
+          scopeKey: primaryScopeKey,
+          ok: false,
+          reasonCode: 'WARMUP_PENDING',
+          frames: [],
+          missingFrames: pendingGaps.missing,
+          shortFrames: pendingGaps.short
+        })
+      : null;
+    setSignalSnapshotStatus(warmupStatus);
     const scanStartedAt = Date.now();
 
     const brokerApi = window.glass?.broker;
@@ -16500,11 +17855,6 @@ const App: React.FC = () => {
         const name = String(agent?.name || '').trim();
         return name ? `name:${name}` : '';
       };
-      const isFinalStatus = (status?: string | null) => {
-        const raw = String(status || '').trim().toUpperCase();
-        return raw === 'WIN' || raw === 'LOSS' || raw === 'REJECTED' || raw === 'EXPIRED' || raw === 'FAILED';
-      };
-
       let orderedAgents = [...agentList];
       if (performanceWeightingEnabled) {
         orderedAgents.sort((a, b) => {
@@ -16539,7 +17889,14 @@ const App: React.FC = () => {
         const openCounts = new Map<string, number>();
         const entriesNow = Array.isArray(signalEntriesRef.current) ? signalEntriesRef.current : [];
         for (const entry of entriesNow) {
-          if (!entry || isFinalStatus(entry.status)) continue;
+          if (!entry || isFinalSignalStatus(entry.status)) continue;
+          if (!hasSignalTradeDefinition(entry)) continue;
+          const createdAtMs = Number(entry.createdAtMs || 0);
+          const executedAtMs = Number(entry.executedAtMs || 0);
+          const staleDraftAgeMs = Math.max(30 * 60_000, Number(signalExpiryMinutes || 0) * 60_000 * 2);
+          if (!executedAtMs && createdAtMs > 0 && Date.now() - createdAtMs > staleDraftAgeMs) continue;
+          const simulated = simulatedOutcomeRef.current.get(entry.id);
+          if (simulated && Number(simulated.createdAtMs || 0) === Number(entry.createdAtMs || 0)) continue;
           const agentId = String(entry.agentId || '').trim();
           const agentName = String(entry.agentName || '').trim();
           const key = agentId || (agentName ? `name:${agentName}` : '');
@@ -16591,11 +17948,14 @@ const App: React.FC = () => {
         });
         const statusWithGaps: SignalSnapshotStatus = {
           ...status,
+          timeframes,
+          scopeKey: buildSnapshotScopeKey(symbol, timeframes),
           missingFrames: gaps.missing,
           shortFrames: gaps.short
         };
+        const normalizedStatus = classifyUnifiedSnapshotStatus(statusWithGaps) || statusWithGaps;
         if (symbol === primarySymbol) {
-          setSignalSnapshotStatus(statusWithGaps);
+          setSignalSnapshotStatus(normalizedStatus);
         }
       };
 
@@ -16716,16 +18076,24 @@ const App: React.FC = () => {
                 continue;
               }
               const reason = item?.reason ? String(item.reason) : '';
+              const createdAtMs = Date.now();
+              const identity = buildSignalIdentityV2({
+                symbol,
+                timeframe,
+                action,
+                entry: entryPrice,
+                stop: stopLoss,
+                target: takeProfit,
+                strategyMode,
+                agentKey: agent?.id || agent?.name || null,
+                runId,
+                createdAtMs
+              });
               const entry: SignalEntry = {
-                id: buildSignalEntryId({
-                  symbol,
-                  timeframe,
-                  action,
-                  entry: entryPrice,
-                  stop: stopLoss,
-                  target: takeProfit,
-                  strategyMode
-                }),
+                id: identity.id,
+                signalCanonicalId: identity.signalCanonicalId,
+                signalIdentityVersion: identity.signalIdentityVersion,
+                legacySignalId: identity.legacySignalId,
                 symbol,
                 timeframe,
                 action,
@@ -16737,8 +18105,8 @@ const App: React.FC = () => {
                 strategyMode,
                 reason,
                 status: 'PROPOSED',
-                createdAtMs: Date.now(),
-                expiresAtMs: Date.now() + signalExpiryMinutes * 60_000,
+                createdAtMs,
+                expiresAtMs: createdAtMs + signalExpiryMinutes * 60_000,
                 agentId: agent?.id || null,
                 agentName: agent?.name || null,
                 executionSource: null,
@@ -16757,15 +18125,20 @@ const App: React.FC = () => {
                 modeRaw === 'scalp' || modeRaw === 'day' || modeRaw === 'swing'
                   ? (modeRaw as SignalStrategyMode)
                   : null;
-              const entryId = buildSignalEntryId({
+              const createdAtMs = Date.now();
+              const identity = buildSignalIdentityV2({
                 symbol: proposal.symbol,
                 timeframe: timeframes[0] || '15m',
                 action: proposal.action,
                 entry: proposal.entryPrice,
                 stop: proposal.stopLoss,
                 target: proposal.takeProfit,
-                strategyMode: proposalMode
+                strategyMode: proposalMode,
+                agentKey: agent?.id || agent?.name || null,
+                runId,
+                createdAtMs
               });
+              const entryId = identity.id;
               const proposalSetup =
                 proposal?.setup && typeof proposal.setup === 'object' ? proposal.setup : null;
               const normalizedProposal = {
@@ -16783,6 +18156,9 @@ const App: React.FC = () => {
               };
               const entry: SignalEntry = {
                 id: entryId,
+                signalCanonicalId: identity.signalCanonicalId,
+                signalIdentityVersion: identity.signalIdentityVersion,
+                legacySignalId: identity.legacySignalId,
                 symbol: proposal.symbol,
                 timeframe: timeframes[0] || '15m',
                 action: proposal.action,
@@ -16793,8 +18169,8 @@ const App: React.FC = () => {
                 strategyMode: proposalMode,
                 reason: proposal.reason || 'Agent proposal',
                 status: 'PROPOSED',
-                createdAtMs: Date.now(),
-                expiresAtMs: Date.now() + signalExpiryMinutes * 60_000,
+                createdAtMs,
+                expiresAtMs: createdAtMs + signalExpiryMinutes * 60_000,
                 agentId: normalizedProposal.agentId || null,
                 agentName: agent?.name || null,
                 executionSource: null,
@@ -16832,14 +18208,21 @@ const App: React.FC = () => {
 
       let freshEntries: SignalEntry[] = [];
       if (newEntries.length > 0) {
-        const existingNow = new Set(signalEntriesRef.current.map((entry) => entry.id));
-        const filteredNew = newEntries.filter((entry) => !existingNow.has(entry.id));
-        freshEntries = filteredNew;
-        setSignalEntries((prev) => {
-          const existing = new Set(prev.map((entry) => entry.id));
-          const filtered = filteredNew.filter((entry) => !existing.has(entry.id));
-          return filtered.length > 0 ? [...filtered, ...prev] : prev;
+        const previousEntries = Array.isArray(signalEntriesRef.current) ? signalEntriesRef.current : [];
+        const dedupedIncoming = mergeSignalEntries([], newEntries).merged as SignalEntry[];
+        const previousKeys = new Set(
+          previousEntries
+            .map((entry) => resolveSignalMergeKey(entry as any))
+            .filter(Boolean)
+        );
+        const filteredNew = dedupedIncoming.filter((entry) => {
+          const key = resolveSignalMergeKey(entry as any);
+          return !!key && !previousKeys.has(key);
         });
+        const mergeResult = mergeSignalEntries(previousEntries, dedupedIncoming);
+        signalIdCollisionPreventedCountRef.current += Number(mergeResult.idCollisionPreventedCount || 0);
+        freshEntries = filteredNew;
+        setSignalEntries(mergeResult.merged as SignalEntry[]);
         for (const entry of filteredNew) {
           const snapshotBundle = snapshotBundleBySymbol.get(entry.symbol) || null;
           const snapshotMemory = snapshotMemoryBySymbol.get(entry.symbol) || null;
@@ -17068,8 +18451,8 @@ const App: React.FC = () => {
       });
       controller.start({ scheduler: runtimeScheduler });
       stop = () => controller.stop();
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[signal_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -17691,8 +19074,8 @@ const App: React.FC = () => {
         runOnStart: true,
         onTick: () => tick()
       });
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[signal_outcome_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -18272,6 +19655,40 @@ const App: React.FC = () => {
         });
       }
 
+      const outcomeUpdateIds = Object.keys(outcomeUpdates);
+      if (outcomeUpdateIds.length > 0) {
+        const outcomeIds = new Set(outcomeUpdateIds);
+        setSignalEntries((prev) => {
+          let changed = false;
+          const next = prev.map((entry) => {
+            if (!entry || !outcomeIds.has(entry.id) || isFinalSignalStatus(entry.status)) {
+              return entry;
+            }
+            const update = outcomeUpdates[entry.id];
+            if (!update) return entry;
+            const status: SignalEntry['status'] = update.outcome;
+            const resolvedAtMs = Number.isFinite(Number(update.resolvedAtMs))
+              ? Number(update.resolvedAtMs)
+              : (entry.resolvedAtMs ?? now);
+            const executionMode = entry.executionMode || 'simulated';
+            const executionBroker = entry.executionBroker || (executionMode === 'simulated' ? 'sim' : null);
+            changed = true;
+            return {
+              ...entry,
+              status,
+              resolvedAtMs,
+              executionMode,
+              executionBroker: executionBroker ?? entry.executionBroker ?? null,
+              executionError:
+                status === 'EXPIRED'
+                  ? (entry.executionError || 'Expired (simulated outcome).')
+                  : null
+            };
+          });
+          return changed ? next : prev;
+        });
+      }
+
       for (const evt of events) {
         void appendTruthEvent({
           eventType: evt.eventType,
@@ -18305,7 +19722,7 @@ const App: React.FC = () => {
         }
       }
 
-      if (removeIds.size > 0 || Object.keys(outcomeUpdates).length > 0) {
+      if (removeIds.size > 0 || outcomeUpdateIds.length > 0) {
         setSignalSimulatedOutcomes((prev) => {
           let next = prev;
           if (removeIds.size > 0) {
@@ -18314,7 +19731,7 @@ const App: React.FC = () => {
               if (next[id]) delete next[id];
             });
           }
-          if (Object.keys(outcomeUpdates).length > 0) {
+          if (outcomeUpdateIds.length > 0) {
             next = { ...next, ...outcomeUpdates };
           }
           return next;
@@ -24003,8 +25420,8 @@ const App: React.FC = () => {
       });
       controller.start({ scheduler: runtimeScheduler });
       stop = () => controller.stop();
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[shadow_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -30430,8 +31847,8 @@ const App: React.FC = () => {
           setPatternEvents(chartEngine.listRecentEvents(300));
         }
       });
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[patterns_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -30451,8 +31868,8 @@ const App: React.FC = () => {
           void refreshSnapshotPanelStatus();
         }
       });
-    }).catch(() => {
-      // ignore lazy controller load errors
+    }).catch((err: any) => {
+      console.info('[snapshot_controller_load]', err?.message ? String(err.message) : err);
     });
     return () => {
       cancelled = true;
@@ -30651,18 +32068,30 @@ const App: React.FC = () => {
     timeframe?: string | null;
     agentId?: string | null;
     strategyId?: string | null;
+    focusEntity?: 'signal' | 'academy_case' | null;
+    focusSignalId?: string | null;
+    focusCaseId?: string | null;
+    focusRequestId?: string | null;
     originPanel: string;
   }) => {
     const symbol = String(input.symbol || '').trim().toUpperCase();
     const timeframe = String(input.timeframe || '').trim();
     const agentId = String(input.agentId || '').trim();
     const strategyId = String(input.strategyId || '').trim();
+    const focusEntity = String(input.focusEntity || '').trim().toLowerCase();
+    const focusSignalId = String(input.focusSignalId || '').trim();
+    const focusCaseId = String(input.focusCaseId || '').trim();
+    const focusRequestId = String(input.focusRequestId || '').trim();
     const originPanel = String(input.originPanel || '').trim();
     crossPanelContextEngine.publish({
       symbol: symbol || null,
       timeframe: timeframe || null,
       agentId: agentId || null,
       strategyId: strategyId || null,
+      focusEntity: (focusEntity === 'signal' || focusEntity === 'academy_case') ? (focusEntity as 'signal' | 'academy_case') : null,
+      focusSignalId: focusSignalId || null,
+      focusCaseId: focusCaseId || null,
+      focusRequestId: focusRequestId || null,
       originPanel: originPanel || null
     }, { debounceMs: 0, merge: false });
   }, []);
@@ -30674,6 +32103,9 @@ const App: React.FC = () => {
       timeframe: entry.timeframe || null,
       agentId: entry.agentId || null,
       strategyId: entry.strategyMode || null,
+      focusEntity: 'signal',
+      focusSignalId: entry.id || null,
+      focusCaseId: entry.id || null,
       originPanel
     });
   }, [publishImmediatePanelContext]);
@@ -30685,6 +32117,9 @@ const App: React.FC = () => {
       timeframe: entry.timeframe || null,
       agentId: entry.agentId || null,
       strategyId: entry.strategyMode || null,
+      focusEntity: 'academy_case',
+      focusSignalId: entry.signalId || entry.id || null,
+      focusCaseId: entry.id || null,
       originPanel
     });
   }, [publishImmediatePanelContext]);
@@ -30703,23 +32138,266 @@ const App: React.FC = () => {
     }
   }, [publishAcademySelectionContext]);
 
+  const ensureLockedAcademyCase = useCallback(async (
+    signalId: string,
+    opts?: { source?: string; reason?: string }
+  ): Promise<AcademyCase | null> => {
+    const id = String(signalId || '').trim();
+    if (!id) return null;
+    const source = String(opts?.source || 'signal_button');
+    const reason = String(opts?.reason || 'force_focus');
+    const now = Date.now();
+    const ledger = window.glass?.tradeLedger;
+    const lockPatch = {
+      locked: true,
+      lockedAtMs: now,
+      lockSource: source,
+      lockReason: reason
+    };
+    let selectedCase = (academyCasesRef.current || []).find((entry) => entry.id === id || entry.signalId === id) || null;
+    const selectedSignal = (signalEntriesRef.current || []).find((entry) => entry.id === id) || null;
+    const persistAcademyCasePayload = async (payload: AcademyCase) => {
+      if (!ledger?.upsertAgentMemory) return;
+      const caseId = String(payload.id || payload.signalId || id).trim();
+      if (!caseId) return;
+      const key = `academy_case:${caseId}`;
+      const summary = [
+        payload.outcome || payload.status || 'PROPOSED',
+        payload.action,
+        payload.symbol,
+        payload.timeframe || '',
+        payload.score != null && Number.isFinite(Number(payload.score)) ? `${Number(payload.score).toFixed(2)}R` : ''
+      ].filter(Boolean).join(' ');
+      const symbolKey = normalizeSymbolKey(payload.symbol || '');
+      const timeframeKey = payload.timeframe ? normalizeTimeframeKey(payload.timeframe) : '';
+      const tags = [
+        payload.symbol,
+        payload.timeframe || '',
+        payload.agentId ? `agent:${payload.agentId}` : '',
+        payload.outcome ? `outcome:${String(payload.outcome).toLowerCase()}` : '',
+        payload.status ? `status:${String(payload.status).toLowerCase()}` : '',
+        payload.locked ? 'locked' : '',
+        'academy_case',
+        source
+      ].filter(Boolean);
+      await ledger.upsertAgentMemory({
+        key,
+        familyKey: symbolKey ? `academy_case:${symbolKey}:${timeframeKey}` : undefined,
+        agentId: payload.agentId ?? null,
+        scope: 'shared',
+        category: 'academy',
+        subcategory: 'case',
+        kind: 'academy_case',
+        symbol: payload.symbol || undefined,
+        timeframe: payload.timeframe || undefined,
+        summary,
+        payload,
+        tags,
+        source
+      });
+    };
+    const resolveSignalHistoryEntry = async (): Promise<SignalHistoryEntry | null> => {
+      const fromState = (signalHistory || []).find(
+        (entry) => String(entry?.signalId || entry?.id || '').trim() === id
+      ) || null;
+      if (fromState) return fromState;
+      if (ledger?.getAgentMemory) {
+        try {
+          const direct = await ledger.getAgentMemory({ key: `signal_history:${id}` });
+          if (direct?.ok && direct.memory) {
+            const normalized = normalizeSignalHistoryMemory(direct.memory);
+            if (normalized) return normalized;
+          }
+        } catch {
+          // ignore direct history read failures
+        }
+      }
+      if (ledger?.listAgentMemory) {
+        try {
+          const historyRes = await ledger.listAgentMemory({ kind: 'signal_history', limit: 2000 });
+          if (historyRes?.ok && Array.isArray(historyRes.memories)) {
+            for (const memory of historyRes.memories) {
+              const normalized = normalizeSignalHistoryMemory(memory);
+              if (!normalized) continue;
+              if (String(normalized.signalId || normalized.id || '').trim() === id) {
+                return normalized;
+              }
+            }
+          }
+        } catch {
+          // ignore fallback history list failures
+        }
+      }
+      return null;
+    };
+    if (!selectedCase && selectedSignal) {
+      selectedCase = await upsertAcademyCase({
+        entry: selectedSignal,
+        patch: lockPatch,
+        source
+      }) || null;
+    } else if (selectedCase && selectedSignal) {
+      const patched = await upsertAcademyCase({
+        entry: selectedSignal,
+        patch: {
+          locked: true,
+          lockedAtMs: selectedCase.lockedAtMs || now,
+          lockSource: selectedCase.lockSource || source,
+          lockReason: selectedCase.lockReason || reason
+        },
+        source
+      }) || null;
+      selectedCase = patched || selectedCase;
+    } else if (selectedCase) {
+      const patch = {
+        locked: true,
+        lockedAtMs: selectedCase.lockedAtMs || now,
+        lockSource: selectedCase.lockSource || source,
+        lockReason: selectedCase.lockReason || reason
+      };
+      selectedCase = { ...selectedCase, ...patch };
+      setAcademyCases((prev) =>
+        prev.map((entry) => (entry.id === selectedCase?.id ? { ...entry, ...patch } : entry))
+      );
+    }
+    if (!selectedCase) {
+      const historyEntry = await resolveSignalHistoryEntry();
+      const builtCase = buildAcademyCaseFromSignalHistory(historyEntry, { source }) || null;
+      if (builtCase) {
+        const materializedCase: AcademyCase = {
+          ...builtCase,
+          locked: true,
+          lockedAtMs: builtCase.lockedAtMs || now,
+          lockSource: builtCase.lockSource || source,
+          lockReason: builtCase.lockReason || reason
+        };
+        selectedCase = materializedCase;
+        setAcademyCases((prev) => {
+          const next = [...prev];
+          const idx = next.findIndex((entry) => entry.id === materializedCase.id || entry.signalId === id);
+          if (idx >= 0) next[idx] = { ...next[idx], ...materializedCase };
+          else next.unshift(materializedCase);
+          return next;
+        });
+        await persistAcademyCasePayload(materializedCase);
+      }
+    }
+    await lockAcademyCase({
+      signalId: id,
+      caseId: selectedCase?.id || id,
+      symbol: selectedCase?.symbol || selectedSignal?.symbol || null,
+      timeframe: selectedCase?.timeframe || selectedSignal?.timeframe || null,
+      agentId: selectedCase?.agentId || selectedSignal?.agentId || null,
+      source,
+      reason,
+      payload: selectedCase || null
+    }).catch(() => null);
+    academyCaseLocksRef.current.set(id, {
+      signalId: id,
+      caseId: selectedCase?.id || id,
+      lockedAtMs: now,
+      source,
+      reason
+    });
+    return selectedCase;
+  }, [
+    buildAcademyCaseFromSignalHistory,
+    normalizeSignalHistoryMemory,
+    normalizeSymbolKey,
+    normalizeTimeframeKey,
+    signalHistory,
+    upsertAcademyCase
+  ]);
+
+  const openAcademyCaseFromSignal = useCallback((signalId: string) => {
+    const id = String(signalId || '').trim();
+    if (!id) {
+      openSidebarMode('academy');
+      return;
+    }
+    const requestId = `academy_focus_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    setAcademyFocusRequest({ requestId, signalId: id, caseId: id, forceVisible: true });
+    const selectedSignal = (signalEntriesRef.current || []).find((entry) => entry.id === id) || null;
+    publishImmediatePanelContext({
+      symbol: selectedSignal?.symbol || null,
+      timeframe: selectedSignal?.timeframe || null,
+      agentId: selectedSignal?.agentId || null,
+      strategyId: selectedSignal?.strategyMode || null,
+      focusEntity: 'signal',
+      focusSignalId: id,
+      focusCaseId: id,
+      focusRequestId: requestId,
+      originPanel: 'signal'
+    });
+    appendLiveError({
+      source: 'academy_focus_request',
+      level: 'info',
+      message: `Academy focus request ${id}`,
+      detail: { requestId, signalId: id }
+    });
+    openSidebarMode('academy');
+    void (async () => {
+      let selectedCase = (academyCasesRef.current || []).find((entry) => entry.id === id || entry.signalId === id) || null;
+      let focusResult: 'matched' | 'materialized' | 'missing' = selectedCase ? 'matched' : 'missing';
+      const locked = await ensureLockedAcademyCase(id, { source: 'signal_button', reason: 'signal_panel_academy_click' });
+      if (!selectedCase && locked) {
+        selectedCase = locked;
+        focusResult = 'materialized';
+      } else if (selectedCase && locked) {
+        selectedCase = locked;
+      }
+      if (selectedCase) {
+        const caseId = String(selectedCase.id || id).trim();
+        setAcademySelectedCaseId(caseId);
+        setAcademyFocusRequest({ requestId, signalId: id, caseId, forceVisible: true });
+        publishAcademySelectionContext(selectedCase, 'academy');
+        appendLiveError({
+          source: focusResult === 'materialized' ? 'academy_focus_materialized' : 'academy_focus_matched',
+          level: 'info',
+          message: `Academy focus ${focusResult} ${id}`,
+          detail: { requestId, signalId: id, caseId }
+        });
+        return;
+      }
+      setAcademyFocusRequest({ requestId, signalId: id, caseId: id, forceVisible: true });
+      if (selectedSignal) {
+        publishSignalSelectionContext(selectedSignal, 'signal');
+      }
+      appendLiveError({
+        source: 'academy_focus_miss',
+        level: 'warn',
+        message: `Academy focus miss ${id}`,
+        detail: { requestId, signalId: id }
+      });
+    })();
+  }, [appendLiveError, ensureLockedAcademyCase, openSidebarMode, publishAcademySelectionContext, publishImmediatePanelContext, publishSignalSelectionContext]);
+
   const openAcademyCase = useCallback((caseId?: string | null) => {
     const id = caseId ? String(caseId).trim() : '';
     if (id) {
-      setAcademySelectedCaseId(id);
-      const selectedCase =
-        (academyCasesRef.current || []).find((entry) => entry.id === id || entry.signalId === id) || null;
-      if (selectedCase) {
-        publishAcademySelectionContext(selectedCase, 'academy');
-      } else {
-        const selectedSignal = (signalEntriesRef.current || []).find((entry) => entry.id === id) || null;
-        if (selectedSignal) {
-          publishSignalSelectionContext(selectedSignal, 'signal');
-        }
-      }
+      openAcademyCaseFromSignal(id);
+      return;
     }
     openSidebarMode('academy');
-  }, [openSidebarMode, publishAcademySelectionContext, publishSignalSelectionContext]);
+  }, [openAcademyCaseFromSignal, openSidebarMode]);
+
+  const handleAcademyFocusRequestConsumed = useCallback((
+    requestId: string,
+    result: 'matched' | 'materialized' | 'missing'
+  ) => {
+    const id = String(requestId || '').trim();
+    if (!id) return;
+    setAcademyFocusRequest((prev) => {
+      if (!prev || String(prev.requestId || '').trim() !== id) return prev;
+      return null;
+    });
+    appendLiveError({
+      source: `academy_focus_${result}`,
+      level: result === 'missing' ? 'warn' : 'info',
+      message: `Academy focus consumed ${result}`,
+      detail: { requestId: id, result }
+    });
+  }, [appendLiveError]);
 
   useEffect(() => {
     sidebarControlRef.current = {
@@ -32187,6 +33865,17 @@ const App: React.FC = () => {
     }, {} as Record<string, { total: number; fallbackUsed: number; byReason: Record<string, number> }>);
     return {
       updatedAtMs: now,
+      academyMergeAddedCount: Number(academyMergeStatsRef.current.added || 0),
+      academyMergeReplacedCount: Number(academyMergeStatsRef.current.replaced || 0),
+      academyMergeRetainedCount: Number(academyMergeStatsRef.current.retained || 0),
+      academyRichCaseCount: Number(academyDataQualityStatsRef.current.richCaseCount || 0),
+      academySparseCaseCount: Number(academyDataQualityStatsRef.current.sparseCaseCount || 0),
+      academyLessonValidCount: Number(academyDataQualityStatsRef.current.lessonValidCount || 0),
+      academyLessonDroppedCount: Number(academyDataQualityStatsRef.current.lessonDroppedCount || 0),
+      academyRepairUpserts: Number(academyDataQualityStatsRef.current.repairUpserts || 0),
+      ledgerArchiveMoves: Number(ledgerArchiveStatsRef.current.moves || 0),
+      ledgerArchiveRows: Number(ledgerArchiveStatsRef.current.rows || 0),
+      signalIdCollisionPreventedCount: Number(signalIdCollisionPreventedCountRef.current || 0),
       startupCheckedAtMs: startup?.checkedAtMs ?? null,
       startupPhase: startup?.startupPhase ?? startupPhase ?? null,
       startupOpenaiState: openaiReadinessState || null,
@@ -34324,6 +36013,83 @@ const App: React.FC = () => {
     };
   }, [addNotification, applyVisionTransform, captureTabCached, chartSessionsRef, chartWatchEnabled, chartWatchMode, chartWatchSnoozedUntilMs, isLive, isOpen, isSettingsOpen, liveMode, mode, readChatTabContextTransform, runChartWatchUpdate, sendVideoFrame]);
 
+  const effectiveSignalSnapshotStatus = React.useMemo(() => {
+    const normalizedSignal = classifyUnifiedSnapshotStatus(signalSnapshotStatus) || signalSnapshotStatus;
+    const normalizedPanel = classifyUnifiedSnapshotStatus(snapshotPanelStatus) || snapshotPanelStatus;
+    if (normalizedPanel?.state !== 'ready') return normalizedSignal;
+
+    const signalScopeKey =
+      String(normalizedSignal?.scopeKey || '').trim() ||
+      buildSnapshotScopeKey(
+        normalizedSignal?.symbol || signalPrimarySymbol || '',
+        normalizedSignal?.timeframes || signalTimeframes || []
+      ) ||
+      '';
+    const panelScopeKey =
+      String(normalizedPanel?.scopeKey || '').trim() ||
+      buildSnapshotScopeKey(
+        normalizedPanel?.symbol || snapshotPanelSymbol || '',
+        normalizedPanel?.timeframes || snapshotPanelTimeframes || []
+      ) ||
+      '';
+
+    const scopeMatches = !!signalScopeKey && !!panelScopeKey && signalScopeKey === panelScopeKey;
+    if (!scopeMatches) return normalizedSignal;
+
+    return {
+      ...(normalizedSignal || {}),
+      ...(normalizedPanel || {}),
+      symbol: normalizedSignal?.symbol || normalizedPanel?.symbol || signalPrimarySymbol || null,
+      timeframes:
+        (Array.isArray(normalizedSignal?.timeframes) && normalizedSignal.timeframes.length > 0
+          ? normalizedSignal.timeframes
+          : normalizedPanel?.timeframes) || null,
+      scopeKey: signalScopeKey || panelScopeKey || null,
+      reasonCode: null,
+      missingFrames: [],
+      shortFrames: [],
+      ok: true,
+      state: 'ready'
+    };
+  }, [
+    signalSnapshotStatus,
+    snapshotPanelStatus,
+    signalPrimarySymbol,
+    signalTimeframes,
+    snapshotPanelSymbol,
+    snapshotPanelTimeframes
+  ]);
+
+  const signalSnapshotScopeMismatch = React.useMemo(() => {
+    const signalScopeKey =
+      String(effectiveSignalSnapshotStatus?.scopeKey || '').trim() ||
+      buildSnapshotScopeKey(
+        effectiveSignalSnapshotStatus?.symbol || signalPrimarySymbol || '',
+        effectiveSignalSnapshotStatus?.timeframes || signalTimeframes || []
+      ) ||
+      '';
+    const panelScopeKey =
+      String(snapshotPanelStatus?.scopeKey || '').trim() ||
+      buildSnapshotScopeKey(
+        snapshotPanelStatus?.symbol || snapshotPanelSymbol || '',
+        snapshotPanelStatus?.timeframes || snapshotPanelTimeframes || []
+      ) ||
+      '';
+    if (!signalScopeKey || !panelScopeKey) return null;
+    if (signalScopeKey === panelScopeKey) return null;
+    return {
+      signalScopeKey,
+      panelScopeKey
+    };
+  }, [
+    effectiveSignalSnapshotStatus,
+    signalPrimarySymbol,
+    signalTimeframes,
+    snapshotPanelStatus,
+    snapshotPanelSymbol,
+    snapshotPanelTimeframes
+  ]);
+
   return (
     <ErrorBoundary
       onError={({ error, errorInfo }) => {
@@ -34586,7 +36352,8 @@ const App: React.FC = () => {
                       lastError={signalLastError}
                       lastParseError={signalLastParseError}
                       lastParseAtMs={signalLastParseAtMs}
-                      snapshotStatus={signalSnapshotStatus}
+                      snapshotStatus={effectiveSignalSnapshotStatus}
+                      snapshotScopeMismatch={signalSnapshotScopeMismatch}
                       healthSnapshot={healthSnapshot}
                       signals={signalEntries}
                       simulatedOutcomes={signalSimulatedOutcomes}
@@ -34966,6 +36733,8 @@ const App: React.FC = () => {
                       crossPanelContext={crossPanelContext}
                       outcomeFeedCursor={outcomeFeedCursor}
                       outcomeFeedConsistency={outcomeFeedConsistency}
+                      focusRequest={academyFocusRequest}
+                      onFocusRequestConsumed={handleAcademyFocusRequestConsumed}
                       panelFreshness={panelFreshness.find((row) => row.panel === 'academy') || null}
                     />
                 )}
@@ -34990,6 +36759,7 @@ const App: React.FC = () => {
                     <MT5Interface
                       onRunActionCatalog={runActionCatalog}
                       defaultSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
+                      symbolMap={brokerLinkConfig?.symbolMap || []}
                     />
                 )}
                   {mode === 'tradelocker' && (
@@ -35056,10 +36826,11 @@ const App: React.FC = () => {
                         />
                   )}
                 {(nativeChartMounted || mode === 'nativechart') && (
-                    <div className={mode === 'nativechart' ? 'flex flex-1 flex-col' : 'absolute inset-0 pointer-events-none opacity-0'}>
+                    <div className={mode === 'nativechart' ? 'flex flex-1 flex-col min-h-0 overflow-y-auto' : 'absolute inset-0 pointer-events-none opacity-0'}>
                         <NativeChartInterface
                             ref={nativeChartRef}
                               activeSymbol={nativeChartSymbol || symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
+                            isPanelVisible={mode === 'nativechart'}
                             isConnected={tlStatus === 'connected'}
                             hasDeveloperApiKey={!!tlSavedConfig?.hasSavedDeveloperApiKey}
                             positions={tlPositions}

@@ -7,10 +7,12 @@ import { Position, TradeLockerOrder } from "../types";
 import { createPanelActionRunner } from "../services/panelConnectivityEngine";
 import { requestBrokerCoordinated } from "../services/brokerRequestBridge";
 import { GLASS_EVENT } from "../services/glassEvents";
+import type { SymbolMapEntry } from "../services/brokerLink";
 
 interface MT5InterfaceProps {
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
   defaultSymbol?: string | null;
+  symbolMap?: SymbolMapEntry[];
 }
 
 type TicketSide = "BUY" | "SELL";
@@ -295,7 +297,7 @@ const buildAccountKey = (account: Record<string, any> | null) => {
   return [login, server].filter(Boolean).join(":");
 };
 
-const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, defaultSymbol }) => {
+const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, defaultSymbol, symbolMap }) => {
   const initialPanelState = useMemo(loadPanelState, []);
   const {
     wsUrl,
@@ -599,10 +601,36 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
     []
   );
 
+  const resolveMappedMt5Symbol = useCallback((raw: string) => {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return null;
+    const key = normalizeSymbolKey(trimmed);
+    if (!key) return null;
+    const entries = Array.isArray(symbolMap) ? symbolMap : [];
+    for (const entry of entries) {
+      const candidates = [entry?.mt5, entry?.canonical, entry?.tradelocker]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      if (candidates.length === 0) continue;
+      const matched = candidates.some((candidate) => normalizeSymbolKey(candidate) === key);
+      if (!matched) continue;
+      const target = String(entry?.mt5 || entry?.canonical || entry?.tradelocker || "").trim();
+      if (target) return target;
+    }
+    return null;
+  }, [symbolMap]);
+
   const resolveMt5Symbol = useCallback(async (raw: string) => {
     const trimmed = String(raw || "").trim();
     if (!trimmed) return "";
     const key = normalizeSymbolKey(trimmed);
+
+    const mapped = resolveMappedMt5Symbol(trimmed);
+    if (mapped) {
+      if (key) symbolAliasRef.current[key] = mapped;
+      return mapped;
+    }
+
     if (key && symbolAliasRef.current[key]) return symbolAliasRef.current[key];
 
     const localCandidates = [...symbols, ...subscriptions, ...symbolResults];
@@ -642,7 +670,7 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
     }
 
     return trimmed;
-  }, [fetchMt5, requestMt5Broker, symbolResults, subscriptions, symbols]);
+  }, [fetchMt5, requestMt5Broker, resolveMappedMt5Symbol, symbolResults, subscriptions, symbols]);
 
   useEffect(() => {
     const next = String(defaultSymbol || "").trim();
