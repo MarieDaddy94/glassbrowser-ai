@@ -109,6 +109,62 @@ export interface Position {
 
 export type SignalOutcome = 'WIN' | 'LOSS' | 'EXPIRED' | 'REJECTED' | 'FAILED';
 
+export type SignalIntentStatus = 'draft' | 'needs_confirmation' | 'active' | 'paused' | 'archived' | 'error';
+
+export interface SignalIntentSchedule {
+  timezone: string;
+  times: string[]; // HH:mm local to schedule timezone
+  weekdays: number[]; // 0-6 (Sun-Sat)
+  marketOpenMode?: boolean;
+}
+
+export interface SignalIntentSessionGate {
+  id: 'asia' | 'london' | 'ny' | 'custom';
+  enabled: boolean;
+  startHour?: number | null;
+  endHour?: number | null;
+}
+
+export interface SignalIntent {
+  id: string;
+  agentId: string;
+  rawPrompt: string;
+  status: SignalIntentStatus;
+  createdAtMs: number;
+  updatedAtMs: number;
+  symbol: string;
+  timeframes: string[];
+  strategyMode?: 'scalp' | 'day' | 'swing' | string | null;
+  probabilityMin?: number | null;
+  targetPoints?: number | null;
+  schedule: SignalIntentSchedule;
+  sessionGates?: SignalIntentSessionGate[] | null;
+  telegramEnabled?: boolean;
+  parseConfidence?: number | null;
+  parseNotes?: string[] | null;
+  nextDueAtMs?: number | null;
+  lastTriggeredAtMs?: number | null;
+  lastTriggeredSlotKey?: string | null;
+}
+
+export interface SignalIntentRun {
+  intentId: string;
+  runId: string;
+  triggerAtMs: number;
+  scopeKey?: string | null;
+  result: 'no_match' | 'spawned' | 'error';
+  signalIds?: string[] | null;
+  note?: string | null;
+}
+
+export interface SignalIntentChatTurn {
+  id: string;
+  intentId: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  atMs: number;
+}
+
 export type NewsImpactLevel = 'low' | 'medium' | 'high';
 export type NewsTone = 'positive' | 'negative' | 'mixed' | 'neutral';
 
@@ -421,6 +477,11 @@ export interface AcademyLesson {
   createdAtMs?: number | null;
   updatedAtMs?: number | null;
   source?: string | null;
+  lifecycleState?: 'candidate' | 'core' | 'deprecated' | null;
+  version?: number | null;
+  pinned?: boolean;
+  appliedAgents?: string[] | null;
+  experimentId?: string | null;
 }
 
 export interface AcademySymbolLearning {
@@ -441,31 +502,197 @@ export interface AcademySymbolLearning {
 
 export interface LearningGraphNode {
   id: string;
-  type: 'agent' | 'symbol' | 'pattern' | 'lesson';
+  type: 'agent' | 'symbol' | 'pattern' | 'lesson' | 'goal' | 'conflict';
+  kind?: 'agent' | 'symbol' | 'pattern' | 'lesson' | 'goal' | 'conflict';
   label: string;
   parentId?: string | null;
-  meta?: Record<string, any> | null;
+  agentKey?: string | null;
+  impactScore?: number | null;
+  confidence?: number | null;
+  sampleSize?: number | null;
+  lastSeenAtMs?: number | null;
+  hot?: boolean;
+  contradicted?: boolean;
+  evidenceCaseIds?: string[] | null;
+  meta?: (Record<string, any> & {
+    evidenceStats?: {
+      wins: number;
+      losses: number;
+      avgR: number;
+      expectancy: number;
+    };
+    pathScore?: number;
+  }) | null;
 }
 
 export interface LearningGraphEdge {
   id: string;
   source: string;
   target: string;
-  type?: 'contains' | 'supports' | 'learns_from' | string;
+  type?: 'contains' | 'supports' | 'learns_from' | 'conflicts' | 'overrides_when' | 'co_occurs' | string;
   weight?: number | null;
+  supportCount?: number | null;
+  confidence?: number | null;
+}
+
+export type LearningGraphTimelineWindow = '7d' | '30d' | '90d' | 'all' | 'custom';
+
+export interface LearningGraphTimelineRange {
+  window: LearningGraphTimelineWindow;
+  startAtMs?: number | null;
+  endAtMs?: number | null;
+}
+
+export type LearningGraphDiffMode = 'off' | 'time_compare' | 'agent_compare';
+
+export interface LearningGraphNodeDiff {
+  nodeId: string;
+  status: 'added' | 'removed' | 'changed' | 'stable';
+  impactDelta?: number | null;
+  confidenceDelta?: number | null;
+  sampleDelta?: number | null;
+  winRateDelta?: number | null;
+}
+
+export interface LearningGraphEdgeDiff {
+  edgeId: string;
+  status: 'added' | 'removed' | 'changed' | 'stable';
+  supportDelta?: number | null;
+  confidenceDelta?: number | null;
+}
+
+export interface LearningGraphDiffSnapshot {
+  baseScopeKey: string;
+  compareScopeKey: string;
+  nodeDiffs: LearningGraphNodeDiff[];
+  edgeDiffs: LearningGraphEdgeDiff[];
+  summary: {
+    addedNodes: number;
+    removedNodes: number;
+    changedNodes: number;
+    addedEdges: number;
+    removedEdges: number;
+    changedEdges: number;
+    netImpactDelta: number | null;
+    confidenceShift: number | null;
+  };
+  builtAtMs?: number;
+  buildMs?: number;
+}
+
+export type LessonConflictPolicyType =
+  | 'unresolved'
+  | 'conditional_override'
+  | 'precedence'
+  | 'scope_split';
+
+export interface LessonConflictResolution {
+  conflictId: string;
+  lessonAId: string;
+  lessonBId: string;
+  policyType: LessonConflictPolicyType;
+  condition?: {
+    symbol?: string | null;
+    timeframe?: string | null;
+    strategyMode?: string | null;
+    session?: string | null;
+    trigger?: string | null;
+  } | null;
+  precedence?: 'lessonA_wins' | 'lessonB_wins' | null;
+  scopeSplit?: {
+    lessonASymbols?: string[] | null;
+    lessonBSymbols?: string[] | null;
+    lessonATimeframes?: string[] | null;
+    lessonBTimeframes?: string[] | null;
+  } | null;
+  note?: string | null;
+  createdAtMs?: number | null;
+  updatedAtMs?: number | null;
+  source?: string | null;
+}
+
+export interface LessonConflictPolicy {
+  conflictId: string;
+  policy: LessonConflictResolution;
 }
 
 export interface LearningGraphFilters {
   agentId?: string | null;
   includeOutcomes?: Array<'WIN' | 'LOSS' | 'EXPIRED' | 'REJECTED' | 'FAILED'>;
+  lens?: 'hierarchy' | 'performance' | 'recency' | 'failure_mode' | 'strategy_broker' | null;
+  timeWindow?: '7d' | '30d' | '90d' | 'all' | null;
+  strategyMode?: string | null;
+  broker?: string | null;
+  lessonLifecycle?: 'candidate' | 'core' | 'deprecated' | 'all' | null;
+  confidenceMin?: number | null;
+  layoutMode?: 'hierarchy' | 'radial' | 'force' | null;
+  spread?: number | null;
+  focusMode?: 'off' | 'hop1' | 'hop2' | 'path' | null;
+  diffMode?: LearningGraphDiffMode | null;
+  compareAgentId?: string | null;
+  compareWindow?: LearningGraphTimelineWindow | null;
+  timelineRange?: LearningGraphTimelineRange | null;
 }
 
 export interface LearningGraphSnapshot {
   builtAtMs: number;
+  scopeKey?: string | null;
   filters?: LearningGraphFilters | null;
   nodes: LearningGraphNode[];
   edges: LearningGraphEdge[];
   rootNodeIds: string[];
+  stats?: {
+    nodeCount: number;
+    edgeCount: number;
+    buildMs: number;
+    conflictCount: number;
+    hotNodeCount: number;
+    pathBuildMs?: number;
+    pathCoverage?: number;
+    diffBuildMs?: number;
+    layoutBuildMs?: number;
+    bundleBuildMs?: number;
+    cacheHit?: number;
+  } | null;
+  builtFromCursor?: {
+    cases: number | null;
+    lessons: number | null;
+    symbols: number | null;
+  } | null;
+}
+
+export type LearningGraphInspectorView = 'overview' | 'evidence' | 'actions';
+
+export interface LearningPathSummary {
+  stepCount: number;
+  confidence: number | null;
+  sampleSize: number;
+  estimatedImpact: number | null;
+}
+
+export interface LearningCaseAction {
+  caseId: string;
+  action: 'open_chart' | 'replay_case' | 'show_reasoning';
+}
+
+export interface LearningGraphViewportState {
+  zoom: number;
+  pan: { x: number; y: number };
+  selectedNodeId?: string | null;
+  layoutMode?: 'hierarchy' | 'radial' | 'force' | null;
+  spread?: number | null;
+  focusMode?: 'off' | 'hop1' | 'hop2' | 'path' | null;
+}
+
+export interface LearningGraphRenderState {
+  zoomBand: 'far' | 'mid' | 'near';
+  labels: Record<string, string>;
+  nodeOpacity: Record<string, number>;
+  edgeOpacity: Record<string, number>;
+  nodeDiffStatus?: Record<string, 'added' | 'removed' | 'changed' | 'stable'>;
+  edgeDiffStatus?: Record<string, 'added' | 'removed' | 'changed' | 'stable'>;
+  visibleEdgeIds: string[];
+  focusNodeIds: string[];
 }
 
 export interface UnifiedSnapshotStatus {
@@ -475,7 +702,12 @@ export interface UnifiedSnapshotStatus {
   ok?: boolean;
   state?: 'warming' | 'ready' | 'coverage_delayed' | 'failed';
   reasonCode?: string | null;
-  frames?: Array<{ tf: string; barsCount: number; lastUpdatedAtMs?: number | null }>;
+  frames?: Array<{
+    tf: string;
+    barsCount: number;
+    lastUpdatedAtMs?: number | null;
+    indicators?: ChartIndicatorFrameSummary | null;
+  }>;
   missingFrames?: string[];
   shortFrames?: Array<{ tf: string; barsCount: number; minBars: number }>;
   capturedAtMs?: number | null;
@@ -1853,6 +2085,19 @@ export interface HealthSnapshot {
   academyLessonValidCount?: number | null;
   academyLessonDroppedCount?: number | null;
   academyRepairUpserts?: number | null;
+  academyLearningGraphNodeCount?: number | null;
+  academyLearningGraphEdgeCount?: number | null;
+  academyLearningGraphBuildMs?: number | null;
+  academyLearningGraphConflictCount?: number | null;
+  academyLearningGraphPathRuns?: number | null;
+  academyLearningGraphDiffBuildMs?: number | null;
+  academyLearningGraphLayoutBuildMs?: number | null;
+  academyLearningGraphBundleBuildMs?: number | null;
+  academyLearningGraphCacheHitRate?: number | null;
+  academyLearningGraphWorkerFallbacks?: number | null;
+  academyGraphCaseActions?: number | null;
+  academyGraphLifecycleActions?: number | null;
+  academyGraphExportCount?: number | null;
   ledgerArchiveMoves?: number | null;
   ledgerArchiveRows?: number | null;
   signalIdCollisionPreventedCount?: number | null;
@@ -2004,6 +2249,15 @@ export interface HealthSnapshot {
       lastFlushAtMs?: number | null;
       lastFlushError?: string | null;
       lastClearAtMs?: number | null;
+    } | null;
+    patternDetection?: {
+      fromRefresh?: number | null;
+      fromLive?: number | null;
+      fromStartupBackfill?: number | null;
+      dedupeSuppressed?: number | null;
+      indicatorCoverageCount?: number | null;
+      fibAnchorMissingCount?: number | null;
+      indicatorComputeMs?: number | null;
     } | null;
   } | null;
   workerFallback?: {
@@ -3001,6 +3255,32 @@ export interface ChartSnapshotFrameSummary {
   tf: string;
   barsCount: number;
   lastUpdatedAtMs?: number | null;
+  indicators?: ChartIndicatorFrameSummary | null;
+}
+
+export interface ChartIndicatorFrameSummary {
+  indicatorContextVersion?: 'v1' | null;
+  vwapSession?: string | null;
+  vwap?: number | null;
+  vwapDistanceBps?: number | null;
+  bbBasis?: number | null;
+  bbUpper?: number | null;
+  bbLower?: number | null;
+  bbWidthPct?: number | null;
+  bbZScore?: number | null;
+  bbPosition?: string | null;
+  ichimokuTenkan?: number | null;
+  ichimokuKijun?: number | null;
+  ichimokuSenkouA?: number | null;
+  ichimokuSenkouB?: number | null;
+  ichimokuChikou?: number | null;
+  ichimokuBias?: string | null;
+  fibAnchorHigh?: number | null;
+  fibAnchorLow?: number | null;
+  fibDirection?: 'up' | 'down' | null;
+  fibNearestLevel?: string | null;
+  fibNearestDistanceBps?: number | null;
+  fibLevels?: Record<string, number> | null;
 }
 
 export interface ChartChatSnapshotStatus {

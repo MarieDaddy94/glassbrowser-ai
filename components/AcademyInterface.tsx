@@ -5,14 +5,15 @@ import {
   AcademyLesson,
   AcademySymbolLearning,
   CrossPanelContext,
-  LearningGraphSnapshot,
+  LearningCaseAction,
+  LearningPathSummary,
   OutcomeFeedConsistencyState,
   OutcomeFeedCursor,
   PanelFreshnessState
 } from '../types';
 import TagPills from './TagPills';
 import { usePersistenceHealth } from '../hooks/usePersistenceHealth';
-import { buildAcademyLearningGraph, normalizeLearningGraphAgentKey } from '../services/academyLearningGraph';
+import LearningGraphWorkbench from './academy/LearningGraphWorkbench';
 
 interface AcademyInterfaceProps {
   cases: AcademyCase[];
@@ -48,6 +49,53 @@ interface AcademyInterfaceProps {
   panelFreshness?: PanelFreshnessState | null;
   focusRequest?: { requestId: string; signalId?: string | null; caseId?: string | null; forceVisible?: boolean } | null;
   onFocusRequestConsumed?: (requestId: string, result: 'matched' | 'materialized' | 'missing') => void;
+  onApplyLesson?: (lessonId: string, targetAgentKey?: string | null) => void;
+  onSimulateLesson?: (lessonId: string) => void;
+  onPinLesson?: (lessonId: string, nextPinned: boolean) => void;
+  onSetLessonLifecycle?: (lessonId: string, next: 'candidate' | 'core' | 'deprecated') => void;
+  onLearningGraphBuilt?: (payload: {
+    scopeKey: string;
+    lens: 'hierarchy' | 'performance' | 'recency' | 'failure_mode' | 'strategy_broker';
+    nodeCount: number;
+    edgeCount: number;
+    buildMs: number;
+    conflictCount: number;
+    hotNodeCount: number;
+  }) => void;
+  onLearningGraphLensChanged?: (payload: {
+    lens: 'hierarchy' | 'performance' | 'recency' | 'failure_mode' | 'strategy_broker';
+    scopeKey: string;
+  }) => void;
+  onLearningPathGenerated?: (payload: {
+    goalText: string;
+    stepCount: number;
+    highlightedNodeCount: number;
+    highlightedEdgeCount: number;
+    scopeKey: string;
+    summary?: LearningPathSummary | null;
+    pathBuildMs?: number;
+    pathCoverage?: number;
+  }) => void;
+  onLearningGraphCaseAction?: (payload: LearningCaseAction & {
+    scopeKey?: string | null;
+    nodeId?: string | null;
+  }) => void;
+  onLearningGraphPathZoom?: (payload: {
+    scopeKey: string;
+    highlightedNodeCount: number;
+    highlightedEdgeCount: number;
+    goalText?: string | null;
+  }) => void;
+  learningGraphFeatureFlags?: {
+    learningGraphV22Inspector?: boolean;
+    learningGraphV22PathSummary?: boolean;
+    learningGraphV22LifecycleActions?: boolean;
+    learningGraphV23Timeline?: boolean;
+    learningGraphV23Diff?: boolean;
+    learningGraphV23ConflictResolver?: boolean;
+    learningGraphV23PerfWorker?: boolean;
+    learningGraphV23EdgeBundling?: boolean;
+  } | null;
 }
 
 const PANEL_STORAGE_KEY = 'glass_academy_panel_ui_v1';
@@ -255,7 +303,17 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   outcomeFeedConsistency,
   panelFreshness,
   focusRequest,
-  onFocusRequestConsumed
+  onFocusRequestConsumed,
+  onApplyLesson,
+  onSimulateLesson,
+  onPinLesson,
+  onSetLessonLifecycle,
+  onLearningGraphBuilt,
+  onLearningGraphLensChanged,
+  onLearningPathGenerated,
+  onLearningGraphCaseAction,
+  onLearningGraphPathZoom,
+  learningGraphFeatureFlags
 }) => {
   const { degraded } = usePersistenceHealth('academy');
   const hasResolvedOutcomeFeed = Number(outcomeFeedCursor?.total || 0) > 0;
@@ -278,10 +336,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   const [query, setQuery] = useState(initialPanelState.query || '');
   const [outcomeFilter, setOutcomeFilter] = useState(initialPanelState.outcomeFilter || 'all');
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(initialPanelState.selectedSymbol ?? null);
-  const [learningGraphAgentId, setLearningGraphAgentId] = useState<string>(initialPanelState.learningGraphAgentId || '');
-  const [learningGraphExpandedIds, setLearningGraphExpandedIds] = useState<string[]>(
-    Array.isArray(initialPanelState.learningGraphExpandedIds) ? initialPanelState.learningGraphExpandedIds : []
-  );
   const [filterSymbol, setFilterSymbol] = useState(initialPanelState.filterSymbol || 'all');
   const [filterTimeframe, setFilterTimeframe] = useState(initialPanelState.filterTimeframe || 'all');
   const [filterAgent, setFilterAgent] = useState(initialPanelState.filterAgent || 'all');
@@ -305,7 +359,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
   const [forcedFocusCaseId, setForcedFocusCaseId] = useState<string | null>(null);
   const [focusRequestMiss, setFocusRequestMiss] = useState<{ signalId: string; requestId: string } | null>(null);
   const [lastConsumedFocusRequestId, setLastConsumedFocusRequestId] = useState<string>('');
-  const learningGraphLastStableAgentKeyRef = React.useRef<string>(String(initialPanelState.learningGraphAgentId || '').trim());
 
   useEffect(() => {
     persistPanelState({
@@ -313,8 +366,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
       query,
       outcomeFilter,
       selectedSymbol,
-      learningGraphAgentId,
-      learningGraphExpandedIds,
       filterSymbol,
       filterTimeframe,
       filterAgent,
@@ -342,8 +393,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
     lessonStrategy,
     lessonAgent,
     lessonOutcome,
-    learningGraphAgentId,
-    learningGraphExpandedIds,
     outcomeFilter,
     query,
     selectedSymbol
@@ -836,6 +885,36 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
     noteId: entry.id ?? null
   }), []);
 
+  const handleLearningGraphCaseAction = useCallback((payload: LearningCaseAction, entry: AcademyCase) => {
+    const action = String(payload?.action || '').trim() as LearningCaseAction['action'];
+    const caseId = String(payload?.caseId || entry?.id || '').trim();
+    if (!action || !caseId) return;
+    if (action === 'open_chart') {
+      onOpenChart?.(entry.symbol, entry.timeframe || null);
+    } else if (action === 'replay_case') {
+      if (onReplayTrade) onReplayTrade(buildReplayPayload(entry));
+    } else if (action === 'show_reasoning') {
+      setActiveTab('cases');
+      setForcedFocusCaseId(caseId);
+      onSelectCase(caseId);
+    }
+    onLearningGraphCaseAction?.({
+      caseId,
+      action,
+      scopeKey: Number.isFinite(Number(outcomeFeedCursor?.version))
+        ? `v${Number(outcomeFeedCursor?.version)}`
+        : null,
+      nodeId: null
+    });
+  }, [
+    buildReplayPayload,
+    onLearningGraphCaseAction,
+    onOpenChart,
+    onReplayTrade,
+    onSelectCase,
+    outcomeFeedCursor?.version
+  ]);
+
   const handleBulkReplay = useCallback(() => {
     if (!onReplayTrade) return;
     selectedCases.forEach((entry) => onReplayTrade(buildReplayPayload(entry)));
@@ -950,207 +1029,6 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
       setSelectedSymbol(sortedSymbolLearnings[0].symbol);
     }
   }, [selectedSymbol, sortedSymbolLearnings]);
-
-  const learningGraphAgentGraph = useMemo<LearningGraphSnapshot>(() => (
-    buildAcademyLearningGraph({
-      cases,
-      lessons,
-      symbolLearnings,
-      filters: {
-        agentId: null,
-        includeOutcomes: ['WIN', 'LOSS', 'EXPIRED', 'REJECTED', 'FAILED']
-      }
-    })
-  ), [cases, lessons, symbolLearnings]);
-
-  const learningGraphAgentOptions = useMemo(() => {
-    const labelsByKey = new Map<string, string>();
-    const register = (rawId: any, rawName: any) => {
-      const agentKey = normalizeLearningGraphAgentKey(rawId || rawName || 'unknown_agent');
-      const label = String(rawName || rawId || 'Unknown Agent').trim() || 'Unknown Agent';
-      if (!labelsByKey.has(agentKey)) {
-        labelsByKey.set(agentKey, label);
-      }
-    };
-    for (const entry of cases || []) {
-      register(entry?.agentId, entry?.agentName);
-    }
-    for (const lesson of lessons || []) {
-      register(lesson?.agentId, lesson?.agentName);
-    }
-    return Array.from(labelsByKey.entries())
-      .map(([agentKey, label]) => ({ agentKey, label }))
-      .sort((a, b) => {
-        const byKey = a.agentKey.localeCompare(b.agentKey);
-        if (byKey !== 0) return byKey;
-        return a.label.localeCompare(b.label);
-      });
-  }, [cases, lessons]);
-
-  const learningGraph = useMemo<LearningGraphSnapshot>(() => {
-    const selectedAgent = String(learningGraphAgentId || '').trim();
-    const selectedAgentKey = selectedAgent ? normalizeLearningGraphAgentKey(selectedAgent) : '';
-    return buildAcademyLearningGraph({
-      cases,
-      lessons,
-      symbolLearnings,
-      filters: {
-        agentId: selectedAgentKey || null,
-        includeOutcomes: ['WIN', 'LOSS', 'EXPIRED', 'REJECTED', 'FAILED']
-      }
-    });
-  }, [cases, learningGraphAgentId, lessons, symbolLearnings]);
-
-  useEffect(() => {
-    if (learningGraphAgentOptions.length === 0) {
-      return;
-    }
-    const selectedKey = String(learningGraphAgentId || '').trim();
-    const selectedExists = learningGraphAgentOptions.some((option) => option.agentKey === selectedKey);
-    if (selectedKey && selectedExists) {
-      learningGraphLastStableAgentKeyRef.current = selectedKey;
-      return;
-    }
-    const fallback =
-      learningGraphAgentOptions.some((option) => option.agentKey === learningGraphLastStableAgentKeyRef.current)
-        ? learningGraphLastStableAgentKeyRef.current
-        : learningGraphAgentOptions[0].agentKey;
-    if (fallback && fallback !== selectedKey) {
-      learningGraphLastStableAgentKeyRef.current = fallback;
-      setLearningGraphAgentId(fallback);
-    }
-  }, [learningGraphAgentId, learningGraphAgentOptions]);
-
-  const learningGraphSelectedAgentNodeId = useMemo(() => {
-    const selectedAgentKey = String(learningGraphAgentId || '').trim();
-    if (!selectedAgentKey && learningGraph.rootNodeIds.length > 0) {
-      return String(learningGraph.rootNodeIds[0] || '').trim();
-    }
-    const match = learningGraph.nodes.find((node) => {
-      if (node.type !== 'agent') return false;
-      const meta = node.meta && typeof node.meta === 'object' ? node.meta as Record<string, any> : {};
-      return normalizeLearningGraphAgentKey(meta.agentKey || node.label || node.id) === selectedAgentKey;
-    });
-    return String(match?.id || learningGraph.rootNodeIds[0] || '').trim();
-  }, [learningGraph.nodes, learningGraph.rootNodeIds, learningGraphAgentId]);
-
-  const learningGraphChildrenByParent = useMemo(() => {
-    const map = new Map<string, typeof learningGraph.nodes>();
-    for (const node of learningGraph.nodes) {
-      const parentId = String(node.parentId || '').trim();
-      if (!parentId) continue;
-      if (!map.has(parentId)) map.set(parentId, []);
-      map.get(parentId)?.push(node);
-    }
-    for (const list of map.values()) {
-      list.sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
-    }
-    return map;
-  }, [learningGraph.nodes]);
-
-  const toggleLearningGraphNode = useCallback((nodeId: string) => {
-    const id = String(nodeId || '').trim();
-    if (!id) return;
-    setLearningGraphExpandedIds((prev) => (prev.includes(id) ? prev.filter((entry) => entry !== id) : [...prev, id]));
-  }, []);
-
-  const learningGraphNodeById = useMemo(() => {
-    const map = new Map<string, (typeof learningGraph.nodes)[number]>();
-    for (const node of learningGraph.nodes) {
-      map.set(node.id, node);
-    }
-    return map;
-  }, [learningGraph.nodes]);
-
-  const applyLearningGraphDrilldown = useCallback((nodeId: string) => {
-    const id = String(nodeId || '').trim();
-    if (!id) return;
-    let cursor = learningGraphNodeById.get(id) || null;
-    let agentLabel = '';
-    let symbolLabel = '';
-    let patternLabel = '';
-    let lessonLabel = '';
-    while (cursor) {
-      if (!agentLabel && cursor.type === 'agent') {
-        agentLabel = String(cursor.label || '').trim();
-      }
-      if (!symbolLabel && cursor.type === 'symbol') {
-        symbolLabel = String(cursor.label || '').trim();
-      }
-      if (!patternLabel && cursor.type === 'pattern') {
-        patternLabel = String(cursor.label || '').trim();
-      }
-      if (!lessonLabel && cursor.type === 'lesson') {
-        lessonLabel = String(cursor.label || '').trim();
-      }
-      const parentId = String(cursor.parentId || '').trim();
-      cursor = parentId ? (learningGraphNodeById.get(parentId) || null) : null;
-    }
-    if (agentLabel) {
-      setFilterAgent(agentLabel);
-      setLessonAgent(agentLabel);
-    }
-    if (symbolLabel) {
-      setFilterSymbol(symbolLabel);
-      setLessonSymbol(symbolLabel);
-      setSelectedSymbol(symbolLabel);
-    }
-    if (patternLabel) {
-      setQuery(patternLabel);
-    }
-    if (lessonLabel) {
-      setLessonQuery(lessonLabel);
-    }
-    setActiveTab('cases');
-  }, [learningGraphNodeById]);
-
-  const renderLearningGraphNode = useCallback((nodeId: string, depth: number = 0): React.ReactNode => {
-    const node = learningGraphNodeById.get(nodeId);
-    if (!node) return null;
-    const children = learningGraphChildrenByParent.get(node.id) || [];
-    const expanded = learningGraphExpandedIds.includes(node.id);
-    const count = Number(node.meta?.tradeCount || node.meta?.lessonCount || 0);
-    return (
-      <div key={node.id} className="space-y-1">
-        <div
-          className="w-full px-2 py-1 rounded border border-white/10 bg-black/40 hover:border-white/20"
-          style={{ marginLeft: `${depth * 14}px` }}
-        >
-          <div className="flex items-center justify-between gap-2 text-[11px]">
-            <div className="flex min-w-0 items-center gap-2">
-              {children.length > 0 ? (
-                <button
-                  type="button"
-                  onClick={() => toggleLearningGraphNode(node.id)}
-                  className="text-gray-400 hover:text-white"
-                  title={expanded ? 'Collapse node' : 'Expand node'}
-                >
-                  {expanded ? '▾' : '▸'}
-                </button>
-              ) : (
-                <span className="text-gray-500">•</span>
-              )}
-              <button
-                type="button"
-                onClick={() => applyLearningGraphDrilldown(node.id)}
-                className="min-w-0 truncate text-left text-white hover:text-cyan-200"
-                title="Drill into related cases and lessons"
-              >
-                {node.label}
-              </button>
-            </div>
-            <span className="text-gray-500">
-              {node.type.toUpperCase()}
-              {count > 0 ? ` · ${count}` : ''}
-            </span>
-          </div>
-        </div>
-        {expanded
-          ? children.map((child) => renderLearningGraphNode(child.id, depth + 1))
-          : null}
-      </div>
-    );
-  }, [applyLearningGraphDrilldown, learningGraphChildrenByParent, learningGraphExpandedIds, learningGraphNodeById, toggleLearningGraphNode]);
 
   return (
     <div className="flex flex-col h-full w-full text-gray-200 bg-[#0a0a0a]">
@@ -1534,44 +1412,39 @@ const AcademyInterface: React.FC<AcademyInterfaceProps> = ({
             </div>
           ) : null}
           {activeTab === 'learning_graph' ? (
-            <div className="bg-white/5 border border-white/10 rounded p-3 text-xs space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-cyan-300">Learning Graph</div>
-                  <div className="text-[11px] text-gray-500">
-                    Hierarchy: Agent &gt; Symbol &gt; Pattern &gt; Lessons
-                  </div>
-                </div>
-                <div className="text-[11px] text-gray-500">
-                  Nodes {learningGraph.nodes.length} | Edges {learningGraph.edges.length}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] uppercase tracking-wider text-gray-400">Agent</span>
-                <select
-                  value={learningGraphAgentId}
-                  onChange={(e) => setLearningGraphAgentId(e.target.value)}
-                  className="px-2 py-1 rounded border border-white/10 bg-black/40 text-gray-200 text-[11px]"
-                >
-                  {learningGraphAgentOptions.length === 0 ? (
-                    <option value="">No agents</option>
-                  ) : null}
-                  {learningGraphAgentId && !learningGraphAgentOptions.some((option) => option.agentKey === learningGraphAgentId) ? (
-                    <option value={learningGraphAgentId}>Restoring selection...</option>
-                  ) : null}
-                  {learningGraphAgentOptions.map((option) => (
-                    <option key={option.agentKey} value={option.agentKey}>{option.label}</option>
-                  ))}
-                </select>
-              </div>
-              {learningGraphAgentOptions.length === 0 ? (
-                <div className="text-gray-500">No resolved cases/lessons available for graph build yet.</div>
-              ) : (
-                <div className="space-y-2">
-                  {learningGraphSelectedAgentNodeId ? renderLearningGraphNode(learningGraphSelectedAgentNodeId, 0) : null}
-                </div>
-              )}
-            </div>
+            <LearningGraphWorkbench
+              cases={cases}
+              lessons={lessons}
+              symbolLearnings={symbolLearnings}
+              onDrilldown={(target) => {
+                if (target.agent) {
+                  setFilterAgent(target.agent);
+                  setLessonAgent(target.agent);
+                }
+                if (target.symbol) {
+                  setFilterSymbol(target.symbol);
+                  setLessonSymbol(target.symbol);
+                  setSelectedSymbol(target.symbol);
+                }
+                if (target.pattern) {
+                  setQuery(target.pattern);
+                }
+                if (target.lesson) {
+                  setLessonQuery(target.lesson);
+                }
+                setActiveTab('cases');
+              }}
+              onApplyLesson={onApplyLesson}
+              onSimulateLesson={onSimulateLesson}
+              onPinLesson={onPinLesson}
+              onSetLessonLifecycle={onSetLessonLifecycle}
+              onGraphBuilt={onLearningGraphBuilt}
+              onLensChanged={onLearningGraphLensChanged}
+              onPathGenerated={onLearningPathGenerated}
+              onCaseAction={handleLearningGraphCaseAction}
+              onPathZoom={onLearningGraphPathZoom}
+              featureFlags={learningGraphFeatureFlags || null}
+            />
           ) : !selected ? (
             <div className="text-xs text-gray-500 border border-dashed border-white/10 rounded p-4">
               Select a case to view details.

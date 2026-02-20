@@ -13,9 +13,8 @@ test('auto-lock path persists academy_case_lock records and warns on lock write 
   assert.equal(lockService.includes("const LOCK_KIND = 'academy_case_lock';"), true);
   assert.equal(lockService.includes('export const lockCase = async'), true);
 
-  assert.equal(app.includes('const lockResult = await lockAcademyCase({'), true);
+  assert.equal(app.includes('lockAcademyCase({'), true);
   assert.equal(app.includes('source: lockSource,'), true);
   assert.equal(app.includes('reason: lockReason,'), true);
   assert.equal(app.includes("source: 'academy_auto_lock_failed',"), true);
 });
-

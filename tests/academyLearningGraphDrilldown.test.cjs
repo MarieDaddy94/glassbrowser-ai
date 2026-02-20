@@ -7,15 +7,13 @@ const ROOT = path.resolve(__dirname, '..');
 const read = (relPath) => fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 
 test('academy learning graph nodes support drilldown into case and lesson filters', () => {
-  const academy = read('components/AcademyInterface.tsx');
+  const workbench = read('components/academy/LearningGraphWorkbench.tsx');
 
-  assert.equal(academy.includes('const applyLearningGraphDrilldown = useCallback((nodeId: string) => {'), true);
-  assert.equal(academy.includes('setFilterAgent(agentLabel);'), true);
-  assert.equal(academy.includes('setLessonAgent(agentLabel);'), true);
-  assert.equal(academy.includes('setFilterSymbol(symbolLabel);'), true);
-  assert.equal(academy.includes('setLessonSymbol(symbolLabel);'), true);
-  assert.equal(academy.includes('setQuery(patternLabel);'), true);
-  assert.equal(academy.includes('setLessonQuery(lessonLabel);'), true);
-  assert.equal(academy.includes("setActiveTab('cases');"), true);
-  assert.equal(academy.includes('onClick={() => applyLearningGraphDrilldown(node.id)}'), true);
+  assert.equal(workbench.includes('const handleDrilldownNode = (node: LearningGraphNode) => {'), true);
+  assert.equal(workbench.includes("if (!target.lesson && cursor.type === 'lesson') target.lesson = toText(cursor.label);"), true);
+  assert.equal(workbench.includes("if (!target.pattern && cursor.type === 'pattern') target.pattern = toText(cursor.label);"), true);
+  assert.equal(workbench.includes("if (!target.symbol && cursor.type === 'symbol') target.symbol = toText(cursor.label);"), true);
+  assert.equal(workbench.includes("if (!target.agent && cursor.type === 'agent') target.agent = toText(cursor.label);"), true);
+  assert.equal(workbench.includes('onDrilldown(target);'), true);
+  assert.equal(workbench.includes('onDrilldownNode={handleDrilldownNode}'), true);
 });

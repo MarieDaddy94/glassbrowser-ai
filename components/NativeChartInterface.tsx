@@ -10,6 +10,7 @@ import { requestBrokerCoordinated } from '../services/brokerRequestBridge';
 import { getRuntimeScheduler } from '../services/runtimeScheduler';
 import { requireBridge } from '../services/bridgeGuard';
 import { createPanelActionRunner } from '../services/panelConnectivityEngine';
+import { computeBollinger20x2, computeFibRetracementFromSwings, computeIchimoku9526, computeSessionVwap } from '../services/indicatorMath';
 
 export interface NativeChartFrameMeta {
   resolution: string;
@@ -1920,6 +1921,22 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
           const smaSlowValue = smaSlow.length ? smaSlow[smaSlow.length - 1].value : null;
           const atr = computeAtr(visibleBars, 14);
           const rsi = computeRsi(visibleBars, 14);
+          const vwap = computeSessionVwap(visibleBars as any, null);
+          const bb = computeBollinger20x2(visibleBars.map((bar) => Number(bar?.c || 0)));
+          const ichimoku = computeIchimoku9526(visibleBars as any);
+          const symbolKey = normalizeSymbolLoose(resolvedSymbol || symbolInput);
+          const tfKey = normalizeTimeframeKey(frame.resolution);
+          const swingEvents = Array.isArray(patternEvents)
+            ? patternEvents
+                .filter((evt) => {
+                  if (!evt?.type || !String(evt.type).startsWith('swing_')) return false;
+                  if (symbolKey && normalizeSymbolLoose(evt.symbol) !== symbolKey) return false;
+                  if (tfKey && normalizeTimeframeKey(evt.timeframe) !== tfKey) return false;
+                  return true;
+                })
+                .slice(-50)
+            : [];
+          const fib = computeFibRetracementFromSwings(swingEvents as any, visibleBars as any);
           const lastClose = visibleBars[visibleBars.length - 1]?.c;
           const atrPct =
             atr != null && lastClose != null && Number.isFinite(lastClose) && lastClose !== 0
@@ -1932,6 +1949,12 @@ const NativeChartInterface = forwardRef<NativeChartHandle, NativeChartInterfaceP
           if (atr != null) indicatorParts.push(`ATR14 ${formatPrice(atr)}`);
           if (atrPct != null && Number.isFinite(atrPct)) indicatorParts.push(`Vol ${atrPct.toFixed(2)}%`);
           if (rsi != null) indicatorParts.push(`RSI14 ${rsi.toFixed(1)}`);
+          if (vwap.value != null) indicatorParts.push(`VWAP ${formatPrice(vwap.value)}`);
+          if (bb.basis != null && bb.upper != null && bb.lower != null) {
+            indicatorParts.push(`BB20 ${formatPrice(bb.lower)}/${formatPrice(bb.basis)}/${formatPrice(bb.upper)}`);
+          }
+          if (ichimoku.bias && ichimoku.bias !== 'unknown') indicatorParts.push(`ICHI ${String(ichimoku.bias).toUpperCase()}`);
+          if (fib.nearestLevel) indicatorParts.push(`FIB ${fib.nearestLevel}`);
 
           if (indicatorParts.length > 0) {
             const label = indicatorParts.join(' | ');

@@ -28,10 +28,18 @@ const AGENT_MEMORY_KIND_CEILINGS = Object.freeze({
 const NON_PRUNABLE_AGENT_MEMORY_KINDS = Object.freeze([
   'signal_entry',
   'signal_history',
+  'signal_intent',
+  'signal_intent_run',
+  'signal_intent_chat',
   'academy_case',
   'academy_case_lock',
   'academy_lesson',
-  'academy_symbol_learning'
+  'academy_symbol_learning',
+  'academy_lesson_experiment',
+  'academy_graph_view',
+  'academy_graph_diff_snapshot',
+  'academy_lesson_conflict_resolution',
+  'academy_graph_timeline_state'
 ]);
 
 let Database = null;
@@ -233,6 +241,14 @@ function inferAgentMemoryKind(input) {
     'academy_case',
     'academy_lesson',
     'academy_symbol_learning',
+    'academy_lesson_experiment',
+    'academy_graph_view',
+    'academy_graph_diff_snapshot',
+    'academy_lesson_conflict_resolution',
+    'academy_graph_timeline_state',
+    'signal_intent',
+    'signal_intent_run',
+    'signal_intent_chat',
     'calendar_event',
     'calendar_rule',
     'agent_scorecard',

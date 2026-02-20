@@ -33,6 +33,15 @@ export const IPC_CONTRACT = {
       "inPreload": true
     },
     {
+      "name": "app:shutdown-ready",
+      "domain": "app",
+      "scopes": [
+        "bridge"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "broker:getActive",
       "domain": "broker",
       "scopes": [

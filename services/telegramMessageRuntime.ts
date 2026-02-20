@@ -18,6 +18,33 @@ type SignalEntryLike = {
   [key: string]: any;
 };
 
+type SignalIntentLike = {
+  id: string;
+  status?: string | null;
+  symbol?: string | null;
+  timeframes?: string[] | null;
+  rawPrompt?: string | null;
+  schedule?: {
+    timezone?: string | null;
+    times?: string[] | null;
+    weekdays?: number[] | null;
+  } | null;
+  nextDueAtMs?: number | null;
+  lastTriggeredAtMs?: number | null;
+  updatedAtMs?: number | null;
+  [key: string]: any;
+};
+
+type SignalIntentRunLike = {
+  intentId: string;
+  runId?: string | null;
+  triggerAtMs?: number | null;
+  result?: string | null;
+  signalIds?: string[] | null;
+  note?: string | null;
+  [key: string]: any;
+};
+
 type TelegramMessageRuntimeInput = {
   update: any;
   allowedChatIds: Set<string>;
@@ -27,8 +54,11 @@ type TelegramMessageRuntimeInput = {
   signalTelegramAllowStatus: boolean;
   signalTelegramAllowChart: boolean;
   signalTelegramConfirmationsEnabled: boolean;
+  signalIntentTelegramOpsEnabled?: boolean;
   signalStatusSet: Set<string>;
   signalEntriesRef: MutableRef<SignalEntryLike[]>;
+  signalIntentsRef: MutableRef<SignalIntentLike[]>;
+  signalIntentRunsRef: MutableRef<SignalIntentRunLike[]>;
   tlStatus: string;
   tlPositionsRef: MutableRef<any[]>;
   tlOrdersRef: MutableRef<any[]>;
@@ -44,6 +74,9 @@ type TelegramMessageRuntimeInput = {
   telegramWatcherResumeRef: MutableRef<Set<string>>;
   sendTelegramText: (text: string, chatId?: string, opts?: { replyMarkup?: any }) => Promise<any>;
   resolveTelegramSignalEntry: (token: string) => SignalEntryLike | null | undefined;
+  resolveTelegramSignalIntent: (token: string) => SignalIntentLike | null | undefined;
+  pauseSignalIntent: (id: string, source?: string) => Promise<{ ok: boolean; error?: string; intent?: SignalIntentLike }>;
+  resumeSignalIntent: (id: string, source?: string) => Promise<{ ok: boolean; error?: string; intent?: SignalIntentLike }>;
   formatTelegramSignalLine: (entry: SignalEntryLike) => string;
   formatTimeframeLabel: (tf: any) => string;
   buildTelegramSignalInlineActions: (entry: SignalEntryLike, status: string) => any;
@@ -115,6 +148,11 @@ export async function runTelegramMessageRuntime(input: TelegramMessageRuntimeInp
         '/chart XAUUSD 1H - chart snapshot + summary',
         '/signals [n] [status] - recent signals',
         '/signal <id|symbol> - signal details',
+        '/intents [n] [status] - list signal intents',
+        '/intent <id|symbol> - intent details',
+        '/intent_status <id|symbol> - short intent status',
+        '/intent_pause <id|symbol> (manage)',
+        '/intent_resume <id|symbol> (manage)',
         '/positions | /orders - broker lists',
         '/digest | /weekly - daily/weekly digest',
         '/execute <id> | /reject <id> | /cancel <id> (manage)',
@@ -129,7 +167,19 @@ export async function runTelegramMessageRuntime(input: TelegramMessageRuntimeInp
 
   const passphrase = input.signalTelegramCommandPassphrase;
   let wantsManageText = !isCommand && /breakeven|break even|move stop|move sl|close\b/.test(lower);
-  const manageCommands = new Set(['/execute', '/reject', '/cancel', '/autopilot', '/risk', '/lot', '/lotsize', '/scope', '/watchers']);
+  const manageCommands = new Set([
+    '/execute',
+    '/reject',
+    '/cancel',
+    '/autopilot',
+    '/risk',
+    '/lot',
+    '/lotsize',
+    '/scope',
+    '/watchers',
+    '/intent_pause',
+    '/intent_resume'
+  ]);
   let manageCommand = wantsManageText || manageCommands.has(command);
 
   if (manageCommand && passphrase) {
@@ -154,6 +204,46 @@ export async function runTelegramMessageRuntime(input: TelegramMessageRuntimeInp
   const wantsStatus = explicitStatus || (!isCommand && /\bstatus\b|\bpnl\b|\bequity\b|how am i/.test(lower));
   const wantsChart = explicitChart || (!isCommand && /\bchart\b|\bsnapshot\b|how is|looking/.test(lower));
   const wantsManage = wantsManageText;
+
+  const formatDueLabel = (value: any) => {
+    const ts = Number(value);
+    if (!Number.isFinite(ts) || ts <= 0) return '--';
+    const deltaSec = Math.floor((ts - Date.now()) / 1000);
+    if (deltaSec <= 0) return 'due';
+    if (deltaSec < 60) return `in ${deltaSec}s`;
+    const deltaMin = Math.floor(deltaSec / 60);
+    if (deltaMin < 60) return `in ${deltaMin}m`;
+    const deltaHr = Math.floor(deltaMin / 60);
+    if (deltaHr < 48) return `in ${deltaHr}h`;
+    const deltaDay = Math.floor(deltaHr / 24);
+    return `in ${deltaDay}d`;
+  };
+
+  const formatAgoLabel = (value: any) => {
+    const ts = Number(value);
+    if (!Number.isFinite(ts) || ts <= 0) return '--';
+    const deltaSec = Math.floor((Date.now() - ts) / 1000);
+    if (deltaSec < 60) return `${Math.max(0, deltaSec)}s ago`;
+    const deltaMin = Math.floor(deltaSec / 60);
+    if (deltaMin < 60) return `${deltaMin}m ago`;
+    const deltaHr = Math.floor(deltaMin / 60);
+    if (deltaHr < 48) return `${deltaHr}h ago`;
+    const deltaDay = Math.floor(deltaHr / 24);
+    return `${deltaDay}d ago`;
+  };
+
+  const formatIntentToken = (idRaw: any) => {
+    const id = String(idRaw || '').trim();
+    if (!id) return '--';
+    if (id.length <= 14) return id;
+    return id.slice(-10);
+  };
+
+  const formatIntentStatus = (value: any) => {
+    const text = String(value || '').trim().toLowerCase();
+    return text ? text.toUpperCase() : 'DRAFT';
+  };
+  const intentOpsEnabled = input.signalIntentTelegramOpsEnabled !== false;
 
   if (command === '/signals') {
     if (!input.signalTelegramAllowStatus) {
@@ -444,6 +534,184 @@ export async function runTelegramMessageRuntime(input: TelegramMessageRuntimeInp
       lines.push('MT5: offline.');
     }
     await input.sendTelegramText(lines.join('\n'), chatId);
+    return { handled: true };
+  }
+
+  if (command === '/intents') {
+    if (!intentOpsEnabled) {
+      await input.sendTelegramText('Intent commands are disabled.', chatId);
+      return { handled: true };
+    }
+    if (!input.signalTelegramAllowStatus) {
+      await input.sendTelegramText('Intent list is disabled.', chatId);
+      return { handled: true };
+    }
+    const intents = Array.isArray(input.signalIntentsRef.current) ? input.signalIntentsRef.current : [];
+    if (intents.length === 0) {
+      await input.sendTelegramText('No intents available.', chatId);
+      return { handled: true };
+    }
+    let limit = 8;
+    let statusFilter = '';
+    for (const arg of args) {
+      const num = Number(arg);
+      if (Number.isFinite(num)) {
+        limit = Math.max(1, Math.min(20, Math.floor(num)));
+        continue;
+      }
+      const status = String(arg || '').trim().toLowerCase();
+      if (!status) continue;
+      if (status === 'all') {
+        statusFilter = '';
+        continue;
+      }
+      if (['draft', 'needs_confirmation', 'active', 'paused', 'archived', 'error'].includes(status)) {
+        statusFilter = status;
+      }
+    }
+    const ordered = intents
+      .slice()
+      .sort((a, b) => {
+        const aActive = String(a?.status || '').toLowerCase() === 'active' ? 0 : 1;
+        const bActive = String(b?.status || '').toLowerCase() === 'active' ? 0 : 1;
+        if (aActive !== bActive) return aActive - bActive;
+        return Number(b?.updatedAtMs || 0) - Number(a?.updatedAtMs || 0);
+      });
+    const filtered = statusFilter
+      ? ordered.filter((intent) => String(intent?.status || '').toLowerCase() === statusFilter)
+      : ordered;
+    if (filtered.length === 0) {
+      await input.sendTelegramText('No intents matched that filter.', chatId);
+      return { handled: true };
+    }
+    const lines = filtered.slice(0, limit).map((intent) => {
+      const token = formatIntentToken(intent?.id);
+      const status = formatIntentStatus(intent?.status);
+      const symbol = String(intent?.symbol || '--').toUpperCase();
+      const tf = Array.isArray(intent?.timeframes) ? intent.timeframes.map((entry: any) => String(entry || '').trim()).filter(Boolean).join('/') : '';
+      const due = formatDueLabel(intent?.nextDueAtMs);
+      return `[${token}] ${status} ${symbol}${tf ? ` ${tf}` : ''} next ${due}`;
+    });
+    const header = statusFilter ? `Intents (${statusFilter.toUpperCase()})` : 'Intents';
+    await input.sendTelegramText(`${header}\n${lines.join('\n')}\nUse /intent <id|symbol> for details.`, chatId);
+    return { handled: true };
+  }
+
+  if (command === '/intent' || command === '/intent_status') {
+    if (!intentOpsEnabled) {
+      await input.sendTelegramText('Intent commands are disabled.', chatId);
+      return { handled: true };
+    }
+    if (!input.signalTelegramAllowStatus) {
+      await input.sendTelegramText('Intent status is disabled.', chatId);
+      return { handled: true };
+    }
+    const token = String(argText || '').trim();
+    if (!token) {
+      await input.sendTelegramText('Usage: /intent <id|symbol>', chatId);
+      return { handled: true };
+    }
+    const intent = input.resolveTelegramSignalIntent(token);
+    if (!intent) {
+      await input.sendTelegramText('Intent not found. Use /intents to list.', chatId);
+      return { handled: true };
+    }
+    const intentId = String(intent.id || '').trim();
+    const runs = (Array.isArray(input.signalIntentRunsRef.current) ? input.signalIntentRunsRef.current : [])
+      .filter((run) => String(run?.intentId || '').trim() === intentId)
+      .sort((a, b) => Number(b?.triggerAtMs || 0) - Number(a?.triggerAtMs || 0));
+    const latestRun = runs[0] || null;
+    const tokenLabel = formatIntentToken(intentId);
+    const status = formatIntentStatus(intent?.status);
+    const symbol = String(intent?.symbol || '--').toUpperCase();
+    const tf = Array.isArray(intent?.timeframes)
+      ? intent.timeframes.map((entry: any) => String(entry || '').trim()).filter(Boolean).join('/')
+      : '--';
+    const times = Array.isArray(intent?.schedule?.times)
+      ? intent.schedule?.times.map((entry: any) => String(entry || '').trim()).filter(Boolean).join(', ')
+      : '--';
+    const timezone = String(intent?.schedule?.timezone || 'UTC');
+    const nextDue = formatDueLabel(intent?.nextDueAtMs);
+    const lastTriggered = formatAgoLabel(intent?.lastTriggeredAtMs);
+    const lines = [
+      `Intent ${tokenLabel}`,
+      `Status ${status} | ${symbol} ${tf}`,
+      `Schedule ${times || '--'} (${timezone})`,
+      `Next ${nextDue} | Last trigger ${lastTriggered}`,
+      latestRun
+        ? `Last run ${String(latestRun.result || 'no_match').toUpperCase()} ${formatAgoLabel(latestRun.triggerAtMs)}`
+        : 'Last run --',
+      String(intent?.rawPrompt || '').trim() ? `Prompt: ${String(intent.rawPrompt).trim().slice(0, 280)}` : null
+    ].filter(Boolean) as string[];
+    if (command === '/intent') {
+      const runLines = runs.slice(0, 3).map((run) => {
+        const result = String(run?.result || 'no_match').toUpperCase();
+        const when = formatAgoLabel(run?.triggerAtMs);
+        const count = Array.isArray(run?.signalIds) ? run.signalIds.length : 0;
+        return `${result} ${when}${count > 0 ? ` | signals ${count}` : ''}`;
+      });
+      if (runLines.length > 0) {
+        lines.push(`Recent runs: ${runLines.join(' ; ')}`);
+      }
+    }
+    await input.sendTelegramText(lines.join('\n'), chatId);
+    return { handled: true };
+  }
+
+  if (command === '/intent_pause') {
+    if (!intentOpsEnabled) {
+      await input.sendTelegramText('Intent commands are disabled.', chatId);
+      return { handled: true };
+    }
+    if (!input.signalTelegramAllowManage || input.signalTelegramCommandMode !== 'manage') {
+      await input.sendTelegramText('Manage commands are disabled.', chatId);
+      return { handled: true };
+    }
+    const token = String(argText || '').trim();
+    if (!token) {
+      await input.sendTelegramText('Usage: /intent_pause <id|symbol>', chatId);
+      return { handled: true };
+    }
+    const intent = input.resolveTelegramSignalIntent(token);
+    if (!intent) {
+      await input.sendTelegramText('Intent not found. Use /intents to list.', chatId);
+      return { handled: true };
+    }
+    const res = await input.pauseSignalIntent(String(intent.id || ''), 'telegram');
+    if (!res?.ok) {
+      await input.sendTelegramText(res?.error ? String(res.error) : 'Failed to pause intent.', chatId);
+      return { handled: true };
+    }
+    await input.sendTelegramText(`Intent ${formatIntentToken(intent.id)} paused.`, chatId);
+    return { handled: true };
+  }
+
+  if (command === '/intent_resume') {
+    if (!intentOpsEnabled) {
+      await input.sendTelegramText('Intent commands are disabled.', chatId);
+      return { handled: true };
+    }
+    if (!input.signalTelegramAllowManage || input.signalTelegramCommandMode !== 'manage') {
+      await input.sendTelegramText('Manage commands are disabled.', chatId);
+      return { handled: true };
+    }
+    const token = String(argText || '').trim();
+    if (!token) {
+      await input.sendTelegramText('Usage: /intent_resume <id|symbol>', chatId);
+      return { handled: true };
+    }
+    const intent = input.resolveTelegramSignalIntent(token);
+    if (!intent) {
+      await input.sendTelegramText('Intent not found. Use /intents to list.', chatId);
+      return { handled: true };
+    }
+    const res = await input.resumeSignalIntent(String(intent.id || ''), 'telegram');
+    if (!res?.ok) {
+      await input.sendTelegramText(res?.error ? String(res.error) : 'Failed to resume intent.', chatId);
+      return { handled: true };
+    }
+    const nextDue = formatDueLabel(res?.intent?.nextDueAtMs);
+    await input.sendTelegramText(`Intent ${formatIntentToken(intent.id)} resumed. Next ${nextDue}.`, chatId);
     return { handled: true };
   }
 

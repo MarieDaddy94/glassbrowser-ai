@@ -243,6 +243,13 @@ ipcRenderer.on('tradelocker:stream:event', (_evt, payload) => {
   }
 });
 
+const appPrepareShutdownListeners = new Set();
+ipcRenderer.on('app:prepare-shutdown', (_evt, payload) => {
+  for (const fn of appPrepareShutdownListeners) {
+    try { fn(payload); } catch { /* ignore */ }
+  }
+});
+
 const emit = (event, payload) => {
   const set = liveListeners[event];
   if (!set) return;
@@ -468,6 +475,17 @@ const guardedOnTelegramUpdate = (handler) => {
   return onTelegramUpdate(handler);
 };
 
+const onAppPrepareShutdown = (handler) => {
+  if (typeof handler !== 'function') return () => {};
+  appPrepareShutdownListeners.add(handler);
+  return () => appPrepareShutdownListeners.delete(handler);
+};
+
+const guardedOnAppPrepareShutdown = (handler) => {
+  if (!hasPermission('bridge')) return () => {};
+  return onAppPrepareShutdown(handler);
+};
+
 contextBridge.exposeInMainWorld('glass', {
   isElectron: true,
   permissions: {
@@ -476,6 +494,10 @@ contextBridge.exposeInMainWorld('glass', {
     allowedScopes: getAllowedScopes
   },
   invokeWithMeta: (channel, payload, meta) => guardedInvokeWithMeta('bridge', channel, payload, meta),
+  app: {
+    onPrepareShutdown: guardedOnAppPrepareShutdown,
+    notifyShutdownReady: (payload) => guardedInvoke('bridge', 'app:shutdown-ready', payload || {})
+  },
   getLastCaptureError: () => (hasPermission('capture') ? lastCaptureError : null),
   clipboard: {
     readText: () => {

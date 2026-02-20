@@ -14,7 +14,6 @@ test('upsertAcademyCase auto-locks WIN/LOSS outcomes and persists lock records',
   assert.equal(app.includes('const shouldAutoLock = isAutoLockOutcome(payload.outcome ?? payload.status);'), true);
   assert.equal(app.includes('if (shouldAutoLock) {'), true);
   assert.equal(app.includes("const lockReason = payload.lockReason || 'outcome_win_loss_auto_lock';"), true);
-  assert.equal(app.includes('const lockResult = await lockAcademyCase({'), true);
+  assert.equal(app.includes('lockAcademyCase({'), true);
   assert.equal(app.includes('academyCaseLocksRef.current.set(caseId, {'), true);
 });
-

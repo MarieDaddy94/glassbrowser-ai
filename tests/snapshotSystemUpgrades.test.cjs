@@ -114,6 +114,38 @@ const symbolsStub = {
   normalizeTimeframe
 };
 
+const indicatorMathStub = {
+  computeSessionVwap: () => ({ sessionKey: null, value: null }),
+  computeBollinger20x2: () => ({
+    basis: null,
+    upper: null,
+    lower: null,
+    widthPct: null,
+    zScore: null,
+    position: null
+  }),
+  computeIchimoku9526: () => ({
+    tenkan: null,
+    kijun: null,
+    senkouA: null,
+    senkouB: null,
+    chikou: null,
+    bias: null
+  }),
+  computeFibRetracementFromSwings: () => ({
+    anchorHigh: null,
+    anchorLow: null,
+    direction: null,
+    nearestLevel: null,
+    nearestDistanceBps: null,
+    levels: null
+  })
+};
+
+const harmonicPatternEngineStub = {
+  detectHarmonicPatterns: () => []
+};
+
 const createLocalStorageMock = (initial = {}, opts = {}) => {
   const map = new Map();
   for (const [key, value] of Object.entries(initial)) {
@@ -156,6 +188,8 @@ const loadChartEngine = (windowMock) => {
     require: (id) => {
       if (id === './backtestEngine') return backtestEngineStub;
       if (id === './symbols') return symbolsStub;
+      if (id === './indicatorMath') return indicatorMathStub;
+      if (id === './harmonicPatternEngine') return harmonicPatternEngineStub;
       throw new Error(`Unsupported dependency in chartEngine test loader: ${id}`);
     },
     console,

@@ -957,6 +957,10 @@ let mt5BridgeRestartTimer = null;
 let mt5BridgeStartInFlight = null;
 let mt5BridgeLastStartError = null;
 let isQuitting = false;
+const SHUTDOWN_PREPARE_TIMEOUT_MS = 5000;
+const pendingShutdownReadyByRequest = new Map();
+const shutdownCloseInFlightByWindow = new Set();
+const shutdownCloseBypassByWindow = new Set();
 let tradeLockerClient = null;
 tradeLedger = null;
 let brokerRegistry = null;
@@ -972,6 +976,41 @@ let telegramPoller = {
   inFlight: false,
   backoffMs: 1000
 };
+
+function waitForShutdownReady(webContentsId, requestId, timeoutMs = SHUTDOWN_PREPARE_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const safeWebContentsId = Number(webContentsId);
+    const safeRequestId = String(requestId || '').trim();
+    if (!Number.isFinite(safeWebContentsId) || !safeRequestId) {
+      resolve({ ok: false, timedOut: true, requestId: safeRequestId || null });
+      return;
+    }
+    const key = `${safeWebContentsId}:${safeRequestId}`;
+    const timer = setTimeout(() => {
+      const pending = pendingShutdownReadyByRequest.get(key);
+      if (pending) {
+        pendingShutdownReadyByRequest.delete(key);
+        pending.resolve({
+          ok: false,
+          timedOut: true,
+          requestId: safeRequestId,
+          timeoutMs
+        });
+      } else {
+        resolve({
+          ok: false,
+          timedOut: true,
+          requestId: safeRequestId,
+          timeoutMs
+        });
+      }
+    }, Math.max(1000, Math.floor(Number(timeoutMs) || SHUTDOWN_PREPARE_TIMEOUT_MS)));
+    pendingShutdownReadyByRequest.set(key, {
+      resolve,
+      timer
+    });
+  });
+}
 
 function ensureNewsService() {
   if (!newsService) {
@@ -1711,6 +1750,104 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  const windowId = win.id;
+  const webContentsId = Number(win.webContents?.id || 0) || null;
+
+  const clearShutdownWaiters = () => {
+    shutdownCloseInFlightByWindow.delete(windowId);
+    shutdownCloseBypassByWindow.delete(windowId);
+    if (!Number.isFinite(Number(webContentsId))) return;
+    const prefix = `${Number(webContentsId)}:`;
+    for (const [key, pending] of pendingShutdownReadyByRequest.entries()) {
+      if (!String(key).startsWith(prefix)) continue;
+      try {
+        clearTimeout(pending?.timer);
+      } catch {
+        // ignore
+      }
+      try {
+        pending?.resolve?.({
+          ok: false,
+          closed: true,
+          requestId: String(key).slice(prefix.length)
+        });
+      } catch {
+        // ignore
+      }
+      pendingShutdownReadyByRequest.delete(key);
+    }
+  };
+
+  win.on('closed', clearShutdownWaiters);
+
+  win.on('close', (event) => {
+    if (shutdownCloseBypassByWindow.has(windowId) || win.isDestroyed()) {
+      shutdownCloseBypassByWindow.delete(windowId);
+      return;
+    }
+    event.preventDefault();
+    if (shutdownCloseInFlightByWindow.has(windowId)) return;
+
+    shutdownCloseInFlightByWindow.add(windowId);
+    const requestId = `shutdown_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+    const timeoutMs = SHUTDOWN_PREPARE_TIMEOUT_MS;
+
+    const releaseClose = () => {
+      if (win.isDestroyed()) {
+        clearShutdownWaiters();
+        return;
+      }
+      shutdownCloseInFlightByWindow.delete(windowId);
+      shutdownCloseBypassByWindow.add(windowId);
+      try {
+        win.close();
+      } catch {
+        try {
+          win.destroy();
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    appendMainLog(
+      `[${new Date().toISOString()}] shutdown_prepare_send windowId=${windowId} webContentsId=${webContentsId ?? 'n/a'} requestId=${requestId} timeoutMs=${timeoutMs}\n`
+    );
+    let sent = false;
+    try {
+      win.webContents.send('app:prepare-shutdown', {
+        requestId,
+        timeoutMs,
+        issuedAtMs: Date.now()
+      });
+      sent = true;
+    } catch (err) {
+      appendMainLog(
+        `[${new Date().toISOString()}] shutdown_prepare_send_failed windowId=${windowId} requestId=${requestId} error=${err?.message || String(err)}\n`
+      );
+    }
+    if (!sent || !Number.isFinite(Number(webContentsId))) {
+      releaseClose();
+      return;
+    }
+
+    void waitForShutdownReady(Number(webContentsId), requestId, timeoutMs)
+      .then((result) => {
+        const status = result?.timedOut ? 'timeout' : (result?.ok ? 'ack' : 'fallback');
+        appendMainLog(
+          `[${new Date().toISOString()}] shutdown_prepare_result windowId=${windowId} requestId=${requestId} status=${status}\n`
+        );
+      })
+      .catch((err) => {
+        appendMainLog(
+          `[${new Date().toISOString()}] shutdown_prepare_wait_failed windowId=${windowId} requestId=${requestId} error=${err?.message || String(err)}\n`
+        );
+      })
+      .finally(() => {
+        releaseClose();
+      });
+  });
 }
 
 app.whenReady().then(async () => {
@@ -2192,6 +2329,37 @@ app.whenReady().then(async () => {
   ipcMain.handle('tradeLedger:listPlaybookRuns', async (_evt, args) => tradeLedger.listPlaybookRuns(args || {}));
   ipcMain.handle('tradeLedger:stats', async () => (tradeLedger?.stats ? tradeLedger.stats() : { ok: false, error: 'Trade ledger unavailable.' }));
   ipcMain.handle('tradeLedger:flush', async () => (tradeLedger?.flush ? tradeLedger.flush() : { ok: false, error: 'Trade ledger unavailable.' }));
+  ipcMain.handle('app:shutdown-ready', async (evt, args) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const requestId = String(args?.requestId || '').trim();
+    const webContentsId = Number(evt?.sender?.id || 0) || null;
+    if (!requestId || !Number.isFinite(Number(webContentsId))) {
+      return { ok: false, error: 'Invalid shutdown acknowledgement.' };
+    }
+    const key = `${Number(webContentsId)}:${requestId}`;
+    const pending = pendingShutdownReadyByRequest.get(key);
+    if (pending) {
+      try {
+        clearTimeout(pending.timer);
+      } catch {
+        // ignore
+      }
+      pendingShutdownReadyByRequest.delete(key);
+      try {
+        pending.resolve({
+          ok: true,
+          requestId,
+          webContentsId: Number(webContentsId),
+          payload: args?.payload || null,
+          completedAtMs: Date.now()
+        });
+      } catch {
+        // ignore
+      }
+      return { ok: true, requestId, acknowledged: true };
+    }
+    return { ok: true, requestId, acknowledged: false };
+  });
 
   // --- Secrets (OpenAI / Gemini) ---
   ipcMain.handle('secrets:getStatus', async () => {

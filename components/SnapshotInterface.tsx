@@ -159,6 +159,29 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
     return parts.join(' | ');
   }, [status]);
 
+  const indicatorLine = useMemo(() => {
+    const frames = Array.isArray(status?.frames) ? status?.frames : [];
+    if (frames.length === 0) return '';
+    let vwap = 0;
+    let bb = 0;
+    let ichimoku = 0;
+    let fib = 0;
+    for (const frame of frames) {
+      const indicators: any = frame?.indicators && typeof frame.indicators === 'object' ? frame.indicators : null;
+      if (!indicators) continue;
+      if (Number.isFinite(Number(indicators.vwap))) vwap += 1;
+      if (
+        Number.isFinite(Number(indicators.bbBasis)) &&
+        Number.isFinite(Number(indicators.bbUpper)) &&
+        Number.isFinite(Number(indicators.bbLower))
+      ) bb += 1;
+      if (String(indicators.ichimokuBias || '').trim()) ichimoku += 1;
+      if (String(indicators.fibNearestLevel || '').trim()) fib += 1;
+    }
+    const total = frames.length;
+    return `Indicators: VWAP ${vwap}/${total} | BB ${bb}/${total} | ICHI ${ichimoku}/${total} | FIB ${fib}/${total}`;
+  }, [status]);
+
   const freshnessBadges = useMemo(() => {
     const frames = Array.isArray(status?.frames) ? status?.frames : [];
     const missing = new Set((status?.missingFrames || []).map((tf) => String(tf || '').trim().toLowerCase()));
@@ -368,6 +391,11 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
           {framesLine && (
             <div className="text-[11px] text-gray-500">
               Frames: {framesLine}
+            </div>
+          )}
+          {indicatorLine && (
+            <div className="text-[11px] text-cyan-200">
+              {indicatorLine}
             </div>
           )}
           {freshnessBadges.length > 0 && (

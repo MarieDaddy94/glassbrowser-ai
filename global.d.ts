@@ -39,6 +39,19 @@ declare global {
         options?: { format?: 'jpeg' | 'png'; quality?: number; width?: number; height?: number }
       ) => Promise<{ mimeType: string; data: string } | null>;
       invokeWithMeta?: (channel: string, payload?: any, meta?: { requestId?: string; [key: string]: any }) => Promise<any>;
+      app?: {
+        onPrepareShutdown: (handler: (payload: {
+          requestId?: string;
+          timeoutMs?: number;
+          issuedAtMs?: number;
+          [key: string]: any;
+        }) => void) => () => void;
+        notifyShutdownReady: (payload: {
+          requestId?: string;
+          payload?: any;
+          [key: string]: any;
+        }) => Promise<{ ok: boolean; requestId?: string; acknowledged?: boolean; error?: string }>;
+      };
       saveUserFile?: (args: {
         dataUrl?: string;
         data?: string; // base64 (no prefix)

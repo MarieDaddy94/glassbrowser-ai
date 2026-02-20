@@ -55,6 +55,13 @@ const DETECTOR_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'inside_bar', label: 'Inside Bar' },
   { id: 'pin_bar', label: 'Pin Bar' },
   { id: 'fvg', label: 'FVG / Imbalance' },
+  { id: 'harmonic_gartley', label: 'Harmonic Gartley' },
+  { id: 'harmonic_bat', label: 'Harmonic Bat' },
+  { id: 'harmonic_butterfly', label: 'Harmonic Butterfly' },
+  { id: 'harmonic_crab', label: 'Harmonic Crab' },
+  { id: 'harmonic_deep_crab', label: 'Harmonic Deep Crab' },
+  { id: 'harmonic_cypher', label: 'Harmonic Cypher' },
+  { id: 'harmonic_shark', label: 'Harmonic Shark' },
   { id: 'swing_high', label: 'Swing High' },
   { id: 'swing_low', label: 'Swing Low' },
   { id: 'ema_cross', label: 'EMA Cross' },
@@ -84,6 +91,30 @@ const typeToneClass = (value: string) => {
   if (raw.includes('bull')) return 'text-emerald-200 border-emerald-400/40 bg-emerald-500/10';
   if (raw.includes('bear')) return 'text-red-200 border-red-400/40 bg-red-500/10';
   return 'text-slate-200 border-white/10 bg-white/5';
+};
+
+const formatHarmonicDetail = (evt: PatternEvent) => {
+  const payload = evt?.payload && typeof evt.payload === 'object' ? evt.payload : null;
+  if (!payload || String(payload.family || '').trim().toLowerCase() !== 'harmonic') return '';
+  const harmonicType = String(payload.harmonicType || '').trim().toLowerCase().replace(/_/g, ' ');
+  const direction = String(payload.direction || '').trim().toLowerCase();
+  const confidenceRaw = Number(payload.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? `${Math.round(Math.max(0, Math.min(1, confidenceRaw)) * 100)}%`
+    : '--';
+  const dPriceRaw = Number(payload?.anchors?.d?.price);
+  const dPrice = Number.isFinite(dPriceRaw) ? dPriceRaw.toFixed(2).replace(/\.?0+$/, '') : '--';
+  const przLowRaw = Number(payload?.prz?.low);
+  const przHighRaw = Number(payload?.prz?.high);
+  const przLow = Number.isFinite(przLowRaw) ? przLowRaw.toFixed(2).replace(/\.?0+$/, '') : '--';
+  const przHigh = Number.isFinite(przHighRaw) ? przHighRaw.toFixed(2).replace(/\.?0+$/, '') : '--';
+  const abXaRaw = Number(payload?.ratios?.abXa);
+  const bcAbRaw = Number(payload?.ratios?.bcAb);
+  const coreRatioRaw =
+    Number(payload?.coreRatio) ||
+    (Number.isFinite(abXaRaw) ? abXaRaw : Number.isFinite(bcAbRaw) ? bcAbRaw : NaN);
+  const coreRatio = Number.isFinite(coreRatioRaw) ? coreRatioRaw.toFixed(3) : '--';
+  return `${harmonicType || 'harmonic'} ${direction || '--'} | PRZ ${przLow}-${przHigh} | D ${dPrice} | AB/XA ${coreRatio} | Conf ${confidence}`;
 };
 
 const toggleList = <T extends string>(list: T[], value: T) => {
@@ -442,6 +473,11 @@ const PatternsInterface: React.FC<PatternsInterfaceProps> = ({
                   Open Chart
                 </button>
               </div>
+              {formatHarmonicDetail(evt) && (
+                <div className="mt-2 text-[10px] text-amber-200/90">
+                  {formatHarmonicDetail(evt)}
+                </div>
+              )}
             </div>
           ))
         )}

@@ -36,6 +36,49 @@ const coerceCandles = (bars, maxCandles) => {
   }));
 };
 
+const toNum = (value) => {
+  const raw = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(raw) ? raw : null;
+};
+
+const coerceIndicatorSummary = (indicators) => {
+  if (!indicators || typeof indicators !== 'object') return null;
+  const fibLevelsRaw = indicators.fibLevels && typeof indicators.fibLevels === 'object'
+    ? indicators.fibLevels
+    : null;
+  const fibLevels = fibLevelsRaw
+    ? Object.fromEntries(
+        Object.entries(fibLevelsRaw)
+          .map(([key, value]) => [String(key || '').trim(), toNum(value)])
+          .filter(([key, value]) => key && value != null)
+      )
+    : null;
+  return {
+    indicatorContextVersion: indicators.indicatorContextVersion === 'v1' ? 'v1' : null,
+    vwapSession: indicators.vwapSession ? String(indicators.vwapSession) : null,
+    vwap: toNum(indicators.vwap),
+    vwapDistanceBps: toNum(indicators.vwapDistanceBps),
+    bbBasis: toNum(indicators.bbBasis),
+    bbUpper: toNum(indicators.bbUpper),
+    bbLower: toNum(indicators.bbLower),
+    bbWidthPct: toNum(indicators.bbWidthPct),
+    bbZScore: toNum(indicators.bbZScore),
+    bbPosition: indicators.bbPosition ? String(indicators.bbPosition) : null,
+    ichimokuTenkan: toNum(indicators.ichimokuTenkan),
+    ichimokuKijun: toNum(indicators.ichimokuKijun),
+    ichimokuSenkouA: toNum(indicators.ichimokuSenkouA),
+    ichimokuSenkouB: toNum(indicators.ichimokuSenkouB),
+    ichimokuChikou: toNum(indicators.ichimokuChikou),
+    ichimokuBias: indicators.ichimokuBias ? String(indicators.ichimokuBias) : null,
+    fibAnchorHigh: toNum(indicators.fibAnchorHigh),
+    fibAnchorLow: toNum(indicators.fibAnchorLow),
+    fibDirection: indicators.fibDirection ? String(indicators.fibDirection) : null,
+    fibNearestLevel: indicators.fibNearestLevel ? String(indicators.fibNearestLevel) : null,
+    fibNearestDistanceBps: toNum(indicators.fibNearestDistanceBps),
+    fibLevels: fibLevels && Object.keys(fibLevels).length > 0 ? fibLevels : null
+  };
+};
+
 const estimateChars = (value) => {
   if (value == null) return 0;
   return String(value).length;
@@ -103,6 +146,7 @@ const buildChartFrames = ({
       tf: normalizeTimeframeLabel(best?.timeframe || tf),
       barsCount: Number(best?.barCount ?? barsTail.length ?? 0) || 0,
       lastUpdatedAtMs: Number.isFinite(Number(best?.updatedAtMs)) ? Number(best.updatedAtMs) : null,
+      indicators: coerceIndicatorSummary(best?.indicators),
       candles: barsTail
     });
   }

@@ -1,7 +1,7 @@
 {
   "name": "glassbrowser-ai",
   "private": true,
-  "version": "0.1.242",
+  "version": "0.1.248",
   "type": "module",
   "description": "GlassBrowser AI — a desktop AI trading browser with a Gemini-powered side panel.",
   "author": "GlassBrowser AI Team",
@@ -68,10 +68,12 @@
   "dependencies": {
     "@google/genai": "^1.31.0",
     "better-sqlite3": "^12.5.0",
+    "cytoscape": "^3.33.1",
     "fast-xml-parser": "^4.5.1",
     "keytar": "^7.9.0",
     "lucide-react": "^0.556.0",
     "react": "^19.2.1",
+    "react-cytoscapejs": "^2.0.0",
     "react-dom": "^19.2.1",
     "socket.io-client": "^4.8.3",
     "ws": "^8.18.0"

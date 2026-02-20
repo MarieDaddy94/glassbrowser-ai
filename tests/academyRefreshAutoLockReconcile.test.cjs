@@ -14,9 +14,8 @@ test('academy refresh reconciles missing lock records for WIN/LOSS cases', () =>
   assert.equal(app.includes('pendingAutoLockBySignalId.set(signalId, next);'), true);
   assert.equal(app.includes('const autoLockReconcileLimit = 250;'), true);
   assert.equal(app.includes('const pendingAutoLockEntries = Array.from(pendingAutoLockBySignalId.entries()).slice(0, autoLockReconcileLimit);'), true);
-  assert.equal(app.includes('const lockResult = await lockAcademyCase({'), true);
+  assert.equal(app.includes('lockAcademyCase({'), true);
   assert.equal(app.includes("source: 'system_repair',"), true);
   assert.equal(app.includes("reason: 'outcome_win_loss_auto_lock',"), true);
   assert.equal(app.includes('autoLockReconciledCount += 1;'), true);
 });
-

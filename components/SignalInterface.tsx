@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, CheckCircle2, ChevronDown, ChevronUp, Play, Plus, RefreshCw, Shield, X, XCircle } from 'lucide-react';
 import TagPills from './TagPills';
 import VirtualItem from './VirtualItem';
-import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalQuantTelemetry, UnifiedSnapshotStatus } from '../types';
+import SignalIntentList from './signal/SignalIntentList';
+import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalIntent, SignalQuantTelemetry, UnifiedSnapshotStatus } from '../types';
 import { requireBridge } from '../services/bridgeGuard';
 import { classifyUnifiedSnapshotStatus, formatUnifiedSnapshotStatusLabel } from '../services/unifiedSnapshotStatus';
 
@@ -51,6 +52,9 @@ export type SignalEntry = {
   shadowLedgerId?: string | null;
   tradeProposal?: any;
   runId?: string | null;
+  intentId?: string | null;
+  intentRunId?: string | null;
+  intentLabel?: string | null;
   newsSnapshot?: NewsSnapshot | null;
   quantTelemetry?: SignalQuantTelemetry | null;
 };
@@ -127,6 +131,10 @@ type SignalInterfaceProps = {
   onPrefillMt5Ticket?: (signal: SignalEntry) => void;
   onPrefillTradeLockerTicket?: (signal: SignalEntry) => void;
   onClearSignals: () => void;
+  intents?: SignalIntent[];
+  onOpenIntentComposer?: () => void;
+  onPauseIntent?: (id: string) => void;
+  onResumeIntent?: (id: string) => void;
   crossPanelContext?: CrossPanelContext | null;
   onFocusSignal?: (signal: SignalEntry) => void;
 };
@@ -386,6 +394,10 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
   onPrefillMt5Ticket,
   onPrefillTradeLockerTicket,
   onClearSignals,
+  intents = [],
+  onOpenIntentComposer,
+  onPauseIntent,
+  onResumeIntent,
   crossPanelContext,
   onFocusSignal
 }) => {
@@ -1263,6 +1275,23 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                 >
                   Clear
                 </button>
+                <button
+                  type="button"
+                  onClick={() => onOpenIntentComposer?.()}
+                  className="px-3 py-2 rounded border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/10"
+                >
+                  Agent Intent
+                </button>
+              </div>
+            </div>
+            <div className="mt-2">
+              <label className="text-[11px] uppercase tracking-wider text-gray-400">Intent Scheduler</label>
+              <div className="mt-2">
+                <SignalIntentList
+                  intents={intents}
+                  onPauseIntent={(id) => onPauseIntent?.(id)}
+                  onResumeIntent={(id) => onResumeIntent?.(id)}
+                />
               </div>
             </div>
           </div>

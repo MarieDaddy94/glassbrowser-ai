@@ -31,6 +31,7 @@ const loadChangesInterface = () => import('./components/ChangesInterface');
 const loadPerformanceDashboardInterface = () => import('./components/PerformanceDashboard');
 const loadMonitorInterface = () => import('./components/MonitorInterface');
 const loadSettingsModal = () => import('./components/SettingsModal');
+const loadSignalIntentComposer = () => import('./components/signal/SignalIntentComposer');
 
 const ChatInterface = React.lazy(loadChatInterface);
 const NotesInterface = React.lazy(loadNotesInterface);
@@ -55,6 +56,7 @@ const ChangesInterface = React.lazy(loadChangesInterface);
 const PerformanceDashboard = React.lazy(loadPerformanceDashboardInterface);
 const MonitorInterface = React.lazy(loadMonitorInterface);
 const SettingsModal = React.lazy(loadSettingsModal);
+const SignalIntentComposer = React.lazy(loadSignalIntentComposer);
 
 type OpenAiServiceModule = typeof import('./services/openaiService');
 type BacktestResearchServiceModule = typeof import('./services/backtestResearchService');
@@ -538,7 +540,19 @@ import {
   readAcademySyncCursor,
   writeAcademySyncCursor
 } from './services/academySyncService';
-import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
+import { patchLessonLifecycle } from './services/academyLessonLifecycleService';
+import { runLessonCounterfactualExperiment } from './services/academyLessonExperimentService';
+import {
+  applySignalIntentPatch,
+  buildSignalIntentFromDraft,
+  createSignalIntentRunId,
+  normalizeSignalIntentChatTurn,
+  normalizeSignalIntentRun,
+  sortSignalIntents
+} from './services/signalIntentService';
+import { normalizeSignalIntent } from './services/signalIntentParser';
+import { computeDueIntents, computeSignalIntentNextDueAt } from './services/signalIntentScheduler';
+import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
 import type { SignalEntry, SignalEntryStatus, SignalExecutionTarget, SignalSessionWindow, SignalSnapshotStatus, SignalStrategyMode } from './components/SignalInterface';
@@ -658,11 +672,18 @@ const DEFAULT_ACTION_TRACE_RETENTION_DAYS = 14;
 const DEFAULT_ACTION_TRACE_RETENTION_LIMIT = 2000;
 const DEDUPE_FALLBACK_WINDOW_MS = 45_000;
 const SHUTDOWN_STATE_KEY = 'glass_shutdown_state_v1';
+const ACADEMY_SHUTDOWN_STATE_KEY = 'glass_academy_shutdown_state_v1';
+const ACADEMY_SHUTDOWN_BACKUP_KEY = 'glass_academy_shutdown_backup_v1';
+const ACADEMY_SHUTDOWN_TIMEOUT_MS = 5000;
 const TASK_TREE_STATE_KIND = 'task_tree_state';
 const MAX_LIVE_ERRORS = 500;
 const ACADEMY_AGENT_UPDATE_MARKER = '\n\n[ACADEMY UPDATES]\n';
 const SNAPSHOT_SLA_TASK_ID = 'snapshot.panel.refresh';
 const SCHEDULER_CIRCUIT_GUARD_TASK_ID = 'scheduler.guard.circuit';
+const SIGNAL_INTENT_SCHEDULER_TASK_ID = 'signal.intent.scheduler';
+const SIGNAL_INTENT_KIND = 'signal_intent';
+const SIGNAL_INTENT_RUN_KIND = 'signal_intent_run';
+const SIGNAL_INTENT_CHAT_KIND = 'signal_intent_chat';
 const PRE_TRADE_QUANT_LATENCY_BUDGET_MS = 150;
 
 const readLegacyTradeLockerSubmissionFlag = () => {
@@ -2849,7 +2870,17 @@ const hasSignalTradeDefinition = (entry: any) => {
   );
 };
 const PATTERN_SETTINGS_STORAGE_KEY = 'glass_patterns_panel_v1';
+const PATTERN_SETTINGS_HARMONIC_UPGRADE_KEY = 'glass_patterns_harmonic_upgrade_v1';
 const DEFAULT_PATTERN_TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+const HARMONIC_PATTERN_DETECTORS = [
+  'harmonic_gartley',
+  'harmonic_bat',
+  'harmonic_butterfly',
+  'harmonic_crab',
+  'harmonic_deep_crab',
+  'harmonic_cypher',
+  'harmonic_shark'
+];
 const DEFAULT_PATTERN_DETECTORS = [
   'swing_high',
   'swing_low',
@@ -2863,7 +2894,8 @@ const DEFAULT_PATTERN_DETECTORS = [
   'engulfing',
   'inside_bar',
   'pin_bar',
-  'fvg'
+  'fvg',
+  ...HARMONIC_PATTERN_DETECTORS
 ];
 const DEFAULT_PATTERN_REFRESH_MS = 60_000;
 const DEFAULT_PATTERN_REFRESH_MODE = 'both';
@@ -3488,6 +3520,10 @@ const App: React.FC = () => {
     }
   }, [resolutionToMs]);
   const [signalEntries, setSignalEntries] = useState<SignalEntry[]>([]);
+  const [signalIntents, setSignalIntents] = useState<SignalIntent[]>([]);
+  const [signalIntentRuns, setSignalIntentRuns] = useState<SignalIntentRun[]>([]);
+  const [signalIntentChatTurns, setSignalIntentChatTurns] = useState<SignalIntentChatTurn[]>([]);
+  const [signalIntentComposerOpen, setSignalIntentComposerOpen] = useState(false);
   const [patternEvents, setPatternEvents] = useState<PatternEvent[]>([]);
   const [patternWatchSummary, setPatternWatchSummary] = useState<{ watchCount: number; truncated: number }>({
     watchCount: 0,
@@ -3968,11 +4004,14 @@ const App: React.FC = () => {
     const tfLabel = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
     const reason = entry.reason || entry.tradeProposal?.reason || '';
     const idLabel = entry.id ? entry.id.slice(-6) : '';
+    const intentIdLabel = entry.intentId ? String(entry.intentId).slice(-10) : '';
+    const intentLabel = entry.intentLabel ? String(entry.intentLabel).trim() : '';
     const lines = [
       `Signal ${status}`,
       `${entry.action} ${entry.symbol}${tfLabel ? ` • ${tfLabel}` : ''}`,
       `Entry ${formatSignalPrice(entry.entryPrice)} | SL ${formatSignalPrice(entry.stopLoss)} | TP ${formatSignalPrice(entry.takeProfit)}`,
       idLabel ? `ID ${idLabel}` : null,
+      entry.intentId ? `Intent ${intentIdLabel}${intentLabel ? ` • ${intentLabel.slice(0, 120)}` : ''}` : null,
       Number.isFinite(Number(entry.probability)) ? `Prob ${Math.round(entry.probability)}%` : null,
       entry.strategyMode ? `Mode ${entry.strategyMode}` : null,
       entry.agentName ? `Agent ${entry.agentName}` : null,
@@ -4151,6 +4190,28 @@ const App: React.FC = () => {
     });
   }, [persistPatternSettings]);
 
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(PATTERN_SETTINGS_HARMONIC_UPGRADE_KEY) === '1') return;
+      setPatternSettings((prev) => {
+        const existing = Array.isArray(prev.detectors) ? prev.detectors : [];
+        const next = [...existing];
+        let changed = false;
+        for (const detectorId of HARMONIC_PATTERN_DETECTORS) {
+          if (next.includes(detectorId)) continue;
+          next.push(detectorId);
+          changed = true;
+        }
+        const merged = changed ? normalizePatternSettings({ ...prev, detectors: next }) : prev;
+        if (changed) persistPatternSettings(merged);
+        return merged;
+      });
+      localStorage.setItem(PATTERN_SETTINGS_HARMONIC_UPGRADE_KEY, '1');
+    } catch {
+      // ignore storage failures
+    }
+  }, [persistPatternSettings]);
+
   const persistAcademySettings = useCallback((next: AcademySettings) => {
     try {
       localStorage.setItem(ACADEMY_SETTINGS_STORAGE_KEY, JSON.stringify(next));
@@ -4260,6 +4321,18 @@ const App: React.FC = () => {
   useEffect(() => {
     signalEntriesRef.current = signalEntries;
   }, [signalEntries]);
+
+  useEffect(() => {
+    signalIntentsRef.current = signalIntents;
+  }, [signalIntents]);
+
+  useEffect(() => {
+    signalIntentRunsRef.current = signalIntentRuns;
+  }, [signalIntentRuns]);
+
+  useEffect(() => {
+    signalIntentChatTurnsRef.current = signalIntentChatTurns;
+  }, [signalIntentChatTurns]);
 
   useEffect(() => {
     signalTelegramSentRef.current.clear();
@@ -5438,6 +5511,11 @@ const App: React.FC = () => {
   }) => Promise<void>) | null>(null);
   const liveStopSyncInFlightRef = React.useRef<Set<string>>(new Set());
   const signalEntriesRef = React.useRef<SignalEntry[]>([]);
+  const signalIntentsRef = React.useRef<SignalIntent[]>([]);
+  const signalIntentRunsRef = React.useRef<SignalIntentRun[]>([]);
+  const signalIntentChatTurnsRef = React.useRef<SignalIntentChatTurn[]>([]);
+  const signalIntentSeenSlotsRef = React.useRef<Set<string>>(new Set());
+  const signalIntentInFlightRef = React.useRef<Set<string>>(new Set());
   const simulatedOutcomeRef = React.useRef(new Map<string, {
     createdAtMs: number;
     outcome: 'WIN' | 'LOSS' | 'EXPIRED';
@@ -5475,6 +5553,9 @@ const App: React.FC = () => {
   const academyCaseRepairPersistedRef = React.useRef<Map<string, string>>(new Map());
   const academyLessonContextRef = React.useRef<string>('');
   const academyExportNotBeforeRef = React.useRef<number>(0);
+  const academyPersistInFlightRef = React.useRef<Map<string, Promise<any>>>(new Map());
+  const academyShutdownInProgressRef = React.useRef(false);
+  const academyShutdownRequestIdRef = React.useRef<string | null>(null);
   const academyAnalystInFlightRef = React.useRef<Set<string>>(new Set());
   const academyAutoAcceptRef = React.useRef<Set<string>>(new Set());
   const calendarBackfillRef = React.useRef(false);
@@ -5508,6 +5589,49 @@ const App: React.FC = () => {
   const academyArchiveNotBeforeRef = React.useRef(0);
   const ledgerArchiveStatsRef = React.useRef<{ moves: number; rows: number }>({ moves: 0, rows: 0 });
   const signalIdCollisionPreventedCountRef = React.useRef(0);
+  const academyLearningGraphTelemetryRef = React.useRef<{
+    scopeKey: string | null;
+    lens: string | null;
+    nodeCount: number;
+    edgeCount: number;
+    buildMs: number;
+    conflictCount: number;
+    hotNodeCount: number;
+    pathRuns: number;
+    lastPathGoal: string | null;
+    pathBuildMs: number;
+    pathCoverage: number;
+    graphCaseActions: number;
+    graphLifecycleActions: number;
+    graphExportCount: number;
+  }>({
+    scopeKey: null,
+    lens: null,
+    nodeCount: 0,
+    edgeCount: 0,
+    buildMs: 0,
+    conflictCount: 0,
+    hotNodeCount: 0,
+    pathRuns: 0,
+    lastPathGoal: null,
+    pathBuildMs: 0,
+    pathCoverage: 0,
+    graphCaseActions: 0,
+    graphLifecycleActions: 0,
+    graphExportCount: 0
+  });
+  const academyLearningGraphSnapshotRef = React.useRef<Record<string, any> | null>(null);
+  const academyLearningPathSummaryRef = React.useRef<Record<string, any> | null>(null);
+  const academyLessonPatchNotesRef = React.useRef<Array<{
+    atMs: number;
+    lessonId: string;
+    action: string;
+    fromLifecycle: string | null;
+    toLifecycle: string | null;
+    targetAgentKey: string | null;
+    title: string | null;
+  }>>([]);
+  const academyLessonExperimentsRef = React.useRef<Array<Record<string, any>>>([]);
   const pendingChartFocusRef = React.useRef<{ symbol: string; timeframe?: string } | null>(null);
   const chartEngineQuoteRef = React.useRef<Map<string, number>>(new Map());
   const patternWatchWarningRef = React.useRef(0);
@@ -5662,6 +5786,78 @@ const App: React.FC = () => {
     signalSnapshotWarmupLastDurationMs: null
   });
   const auditThrottleRef = React.useRef<Map<string, number>>(new Map());
+
+  const trackAcademyPersistence = useCallback(<T,>(promise: Promise<T>, label: string): Promise<T> => {
+    const key = `${String(label || 'academy_persist').trim() || 'academy_persist'}:${Date.now()}:${Math.random().toString(16).slice(2, 8)}`;
+    const tracked = Promise.resolve(promise).finally(() => {
+      academyPersistInFlightRef.current.delete(key);
+    });
+    academyPersistInFlightRef.current.set(key, tracked as Promise<any>);
+    return tracked;
+  }, []);
+
+  const awaitAcademyPersistenceDrain = useCallback(async (timeoutMs: number = ACADEMY_SHUTDOWN_TIMEOUT_MS) => {
+    const startedAtMs = Date.now();
+    const safeTimeoutMs = Math.max(500, Number(timeoutMs) || ACADEMY_SHUTDOWN_TIMEOUT_MS);
+    while (Date.now() - startedAtMs < safeTimeoutMs) {
+      const pending = Array.from(academyPersistInFlightRef.current.values());
+      if (pending.length === 0) {
+        return { ok: true as const, elapsedMs: Date.now() - startedAtMs, pendingCount: 0 };
+      }
+      const remainingMs = safeTimeoutMs - (Date.now() - startedAtMs);
+      if (remainingMs <= 0) break;
+      await Promise.race([
+        Promise.allSettled(pending),
+        sleepMs(Math.min(120, Math.max(40, remainingMs)))
+      ]);
+    }
+    const pendingCount = academyPersistInFlightRef.current.size;
+    return {
+      ok: pendingCount === 0,
+      elapsedMs: Date.now() - startedAtMs,
+      pendingCount,
+      timedOut: pendingCount > 0
+    };
+  }, []);
+
+  const writeAcademyShutdownState = useCallback((state: Record<string, any>) => {
+    try {
+      localStorage.setItem(ACADEMY_SHUTDOWN_STATE_KEY, JSON.stringify(state || {}));
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  const clearAcademyShutdownBackup = useCallback(() => {
+    try {
+      localStorage.removeItem(ACADEMY_SHUTDOWN_BACKUP_KEY);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
+
+  const persistAcademyShutdownBackup = useCallback((reason: string, extra?: Record<string, any>) => {
+    try {
+      const payload = {
+        reason: String(reason || 'shutdown_backup'),
+        ts: Date.now(),
+        cases: academyCasesRef.current || [],
+        lessons: academyLessonsRef.current || [],
+        symbolLearnings: academySymbolLearningsRef.current || [],
+        learningGraph: {
+          snapshot: academyLearningGraphSnapshotRef.current || null,
+          telemetry: academyLearningGraphTelemetryRef.current || null,
+          lessonPatchNotes: academyLessonPatchNotesRef.current || [],
+          lessonExperiments: academyLessonExperimentsRef.current || []
+        },
+        ...(extra || {})
+      };
+      localStorage.setItem(ACADEMY_SHUTDOWN_BACKUP_KEY, JSON.stringify(payload));
+      return { ok: true as const };
+    } catch (err: any) {
+      return { ok: false as const, error: err?.message ? String(err.message) : 'shutdown_backup_write_failed' };
+    }
+  }, []);
 
   const sanitizeBrokerArgs = useCallback((method: string, args: any) => {
     const payload: Record<string, any> = { method };
@@ -6154,7 +6350,9 @@ const App: React.FC = () => {
         ts,
         type,
         strength: payload.strength ?? null,
-        payload: payload.payload ?? payload
+        payload: payload.payload ?? payload,
+        patternKey: payload.patternKey ? String(payload.patternKey) : null,
+        source: payload.source ? String(payload.source) : null
       };
     };
 
@@ -6567,6 +6765,69 @@ const App: React.FC = () => {
   const [setupPerformanceBySymbol, setSetupPerformanceBySymbol] = useState<Record<string, SetupPerformance>>({});
   const [setupPerformanceSummary, setSetupPerformanceSummary] = useState<SetupPerformance | null>(null);
   const [healthSnapshot, setHealthSnapshot] = useState<HealthSnapshot | null>(null);
+  const learningGraphFeatureFlags = React.useMemo(() => {
+    const defaults = {
+      learningGraphV22Inspector: true,
+      learningGraphV22PathSummary: true,
+      learningGraphV22LifecycleActions: true,
+      learningGraphV23Timeline: true,
+      learningGraphV23Diff: true,
+      learningGraphV23ConflictResolver: true,
+      learningGraphV23PerfWorker: true,
+      learningGraphV23EdgeBundling: true
+    };
+    try {
+      const raw = localStorage.getItem('glass_learning_graph_flags_v22');
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return {
+        learningGraphV22Inspector: parsed?.learningGraphV22Inspector !== false,
+        learningGraphV22PathSummary: parsed?.learningGraphV22PathSummary !== false,
+        learningGraphV22LifecycleActions: parsed?.learningGraphV22LifecycleActions !== false,
+        learningGraphV23Timeline: parsed?.learningGraphV23Timeline !== false,
+        learningGraphV23Diff: parsed?.learningGraphV23Diff !== false,
+        learningGraphV23ConflictResolver: parsed?.learningGraphV23ConflictResolver !== false,
+        learningGraphV23PerfWorker: parsed?.learningGraphV23PerfWorker !== false,
+        learningGraphV23EdgeBundling: parsed?.learningGraphV23EdgeBundling !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
+  const signalIntentFeatureFlags = React.useMemo(() => {
+    const defaults = {
+      signalIntentV1Composer: true,
+      signalIntentV1Scheduler: true,
+      signalIntentV1TelegramOps: true
+    };
+    try {
+      const raw = localStorage.getItem('glass_signal_intent_flags_v1');
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return {
+        signalIntentV1Composer: parsed?.signalIntentV1Composer !== false,
+        signalIntentV1Scheduler: parsed?.signalIntentV1Scheduler !== false,
+        signalIntentV1TelegramOps: parsed?.signalIntentV1TelegramOps !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
+  const signalIndicatorFeatureFlags = React.useMemo(() => {
+    const defaults = {
+      signalIndicatorContextV1: true
+    };
+    try {
+      const raw = localStorage.getItem('glass_signal_indicator_flags_v1');
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return {
+        signalIndicatorContextV1: parsed?.signalIndicatorContextV1 !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
   const [truthProjection, setTruthProjection] = useState<TruthProjection | null>(null);
   const [playbookStatusByWatcher, setPlaybookStatusByWatcher] = useState<Record<string, any>>({});
   const [lossStreakState, setLossStreakState] = useState<{ streak: number; lastClosedAtMs?: number | null; updatedAtMs?: number | null; accountKey?: string | null } | null>(null);
@@ -8348,6 +8609,9 @@ const App: React.FC = () => {
     const toolRule = opts.allowMemoryTools
       ? '- You may call listAgentMemory/getAgentMemory to fetch signal_history/signal_review/academy_lesson if needed (no other tools).'
       : '- Do not call tools.';
+    const indicatorRule = signalIndicatorFeatureFlags.signalIndicatorContextV1
+      ? '- CHART_SNAPSHOT_JSON frames may include indicators.v1 (VWAP, Bollinger 20/2, Ichimoku 9/26/52, Fibonacci). Use them when present.'
+      : '';
     return [
       'SIGNAL PANEL MODE (RETURN JSON ONLY).',
       'You are generating trade signals, not free-form commentary.',
@@ -8381,11 +8645,12 @@ const App: React.FC = () => {
       '- Use NEWS SNAPSHOT tone (positive/negative/mixed/neutral) to bias risk/side and mention it if relevant.',
       '- If NEWS SNAPSHOT includes "Trump News", treat it as potential volatility risk and mention it if relevant.',
       '- Keep probability within the configured range when possible (see system context).',
+      indicatorRule,
       toolRule,
       '- Do not add extra keys.',
       '- Probability must be 0-100.'
     ].join('\n');
-  }, [formatTimeframeLabel]);
+  }, [formatTimeframeLabel, signalIndicatorFeatureFlags.signalIndicatorContextV1]);
 
   const ingestSetupSignals = useCallback((signals: SetupSignal[], source: 'native_chart' | 'background') => {
     if (!Array.isArray(signals) || signals.length === 0) return;
@@ -11215,7 +11480,10 @@ const App: React.FC = () => {
       ? payload.frames.map((frame: any) => ({
           tf: String(frame.tf || ''),
           barsCount: Number(frame.barsCount || 0) || 0,
-          lastUpdatedAtMs: frame.lastUpdatedAtMs ?? null
+          lastUpdatedAtMs: frame.lastUpdatedAtMs ?? null,
+          indicators: frame?.indicators && typeof frame.indicators === 'object'
+            ? frame.indicators
+            : null
         }))
       : [];
 
@@ -11825,6 +12093,9 @@ const App: React.FC = () => {
       executionOrderStatus: payload.executionOrderStatus != null ? String(payload.executionOrderStatus) : null,
       shadowLedgerId: payload.shadowLedgerId != null ? String(payload.shadowLedgerId) : null,
       runId,
+      intentId: payload.intentId != null ? String(payload.intentId) : null,
+      intentRunId: payload.intentRunId != null ? String(payload.intentRunId) : null,
+      intentLabel: payload.intentLabel != null ? String(payload.intentLabel) : null,
       newsSnapshot: payload.newsSnapshot ?? null,
       quantTelemetry
     };
@@ -12279,6 +12550,9 @@ const App: React.FC = () => {
         executionOrderStatus: entry.executionOrderStatus ?? null,
         shadowLedgerId: entry.shadowLedgerId ?? null,
         runId: entry.runId ?? null,
+        intentId: entry.intentId ?? null,
+        intentRunId: entry.intentRunId ?? null,
+        intentLabel: entry.intentLabel ?? null,
         newsSnapshot: entry.newsSnapshot ?? null,
         quantTelemetry: entry.quantTelemetry ?? null,
         updatedAtMs: now,
@@ -12301,6 +12575,7 @@ const App: React.FC = () => {
         entry.timeframe || '',
         entry.strategyMode ? `mode:${entry.strategyMode}` : '',
         entry.status ? `status:${String(entry.status).toLowerCase()}` : '',
+        entry.intentId ? 'intent_signal' : '',
         entry.newsSnapshot?.impactLevel ? `news:${entry.newsSnapshot.impactLevel}` : '',
         entry.newsSnapshot?.trumpNews ? 'trump_news' : '',
         'signal_entry'
@@ -12946,6 +13221,384 @@ const App: React.FC = () => {
   useEffect(() => {
     void refreshSignalEntries({ limit: 50000 });
   }, [refreshSignalEntries]);
+
+  const upsertSignalIntentMemory = useCallback(async (intent: SignalIntent, source: string = 'signal_intent') => {
+    const ledger = window.glass?.tradeLedger;
+    if (!ledger?.upsertAgentMemory) return;
+    const id = String(intent?.id || '').trim();
+    if (!id) return;
+    const payload = {
+      ...intent,
+      updatedAtMs: Number.isFinite(Number(intent.updatedAtMs)) ? Number(intent.updatedAtMs) : Date.now()
+    };
+    const summary = [
+      payload.status || 'draft',
+      payload.symbol || '',
+      Array.isArray(payload.timeframes) ? payload.timeframes.join('/') : ''
+    ].filter(Boolean).join(' ');
+    await ledger.upsertAgentMemory({
+      key: `${SIGNAL_INTENT_KIND}:${id}`,
+      familyKey: payload.symbol ? `${SIGNAL_INTENT_KIND}:${payload.symbol}` : SIGNAL_INTENT_KIND,
+      agentId: payload.agentId || null,
+      scope: 'shared',
+      category: 'signal',
+      subcategory: 'intent',
+      kind: SIGNAL_INTENT_KIND,
+      symbol: payload.symbol || undefined,
+      timeframe: Array.isArray(payload.timeframes) && payload.timeframes.length > 0 ? payload.timeframes[0] : undefined,
+      summary,
+      payload,
+      tags: [
+        payload.symbol || '',
+        payload.status ? `status:${String(payload.status).toLowerCase()}` : '',
+        payload.agentId ? `agent:${payload.agentId}` : '',
+        'signal_intent'
+      ].filter(Boolean),
+      source
+    });
+  }, []);
+
+  const upsertSignalIntentRunMemory = useCallback(async (run: SignalIntentRun, source: string = 'signal_intent') => {
+    const ledger = window.glass?.tradeLedger;
+    if (!ledger?.upsertAgentMemory) return;
+    const intentId = String(run?.intentId || '').trim();
+    const runId = String(run?.runId || '').trim();
+    if (!intentId || !runId) return;
+    const payload = {
+      ...run,
+      triggerAtMs: Number.isFinite(Number(run.triggerAtMs)) ? Number(run.triggerAtMs) : Date.now()
+    };
+    await ledger.upsertAgentMemory({
+      key: `${SIGNAL_INTENT_RUN_KIND}:${runId}`,
+      familyKey: `${SIGNAL_INTENT_RUN_KIND}:${intentId}`,
+      scope: 'shared',
+      category: 'signal',
+      subcategory: 'intent_run',
+      kind: SIGNAL_INTENT_RUN_KIND,
+      symbol: null,
+      timeframe: null,
+      summary: `${intentId} ${payload.result || 'no_match'}`,
+      payload,
+      tags: [
+        intentId,
+        payload.result ? `result:${payload.result}` : '',
+        'signal_intent_run'
+      ].filter(Boolean),
+      source
+    });
+  }, []);
+
+  const upsertSignalIntentChatTurnMemory = useCallback(async (turn: SignalIntentChatTurn, source: string = 'signal_intent') => {
+    const ledger = window.glass?.tradeLedger;
+    if (!ledger?.upsertAgentMemory) return;
+    const id = String(turn?.id || '').trim();
+    const intentId = String(turn?.intentId || '').trim();
+    if (!id || !intentId) return;
+    const payload = {
+      ...turn,
+      atMs: Number.isFinite(Number(turn.atMs)) ? Number(turn.atMs) : Date.now()
+    };
+    await ledger.upsertAgentMemory({
+      key: `${SIGNAL_INTENT_CHAT_KIND}:${id}`,
+      familyKey: `${SIGNAL_INTENT_CHAT_KIND}:${intentId}`,
+      scope: 'shared',
+      category: 'signal',
+      subcategory: 'intent_chat',
+      kind: SIGNAL_INTENT_CHAT_KIND,
+      symbol: null,
+      timeframe: null,
+      summary: `${payload.role}: ${String(payload.text || '').slice(0, 160)}`,
+      payload,
+      tags: [intentId, payload.role, 'signal_intent_chat'].filter(Boolean),
+      source
+    });
+  }, []);
+
+  const assistSignalIntentParse = useCallback(async (input: {
+    prompt: string;
+    agentId: string;
+    knownSymbols: string[];
+    defaultSymbol?: string | null;
+    defaultTimeframes?: string[] | null;
+  }): Promise<Partial<SignalIntent> | null> => {
+    const prompt = String(input?.prompt || '').trim();
+    const agentId = String(input?.agentId || '').trim();
+    if (!prompt || !agentId) return null;
+    const safeJsonParse = (text: string) => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+    const extractJsonObject = (text: string) => {
+      const clean = String(text || '').trim();
+      if (!clean) return null;
+      const direct = safeJsonParse(clean);
+      if (direct && typeof direct === 'object') return direct;
+      const fencedMatch = clean.match(/```json\s*([\s\S]*?)```/i) || clean.match(/```\s*([\s\S]*?)```/i);
+      if (fencedMatch?.[1]) {
+        const fenced = safeJsonParse(String(fencedMatch[1]).trim());
+        if (fenced && typeof fenced === 'object') return fenced;
+      }
+      const firstBrace = clean.indexOf('{');
+      const lastBrace = clean.lastIndexOf('}');
+      if (firstBrace >= 0 && lastBrace > firstBrace) {
+        const sliced = safeJsonParse(clean.slice(firstBrace, lastBrace + 1));
+        if (sliced && typeof sliced === 'object') return sliced;
+      }
+      return null;
+    };
+    const normalizeTimeToken = (value: any): string | null => {
+      const raw = String(value || '').trim();
+      if (!raw) return null;
+      const match = /^(\d{1,2}):(\d{2})$/.exec(raw);
+      if (!match) return null;
+      const hh = Number(match[1]);
+      const mm = Number(match[2]);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) return null;
+      return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    };
+    try {
+      const raw = await sendPlainTextToOpenAI({
+        system: [
+          'Extract a trading signal intent as strict JSON only.',
+          'Return one JSON object with fields:',
+          'symbol (string), timeframes (string[]), strategyMode (scalp|day|swing|null), probabilityMin (number|null), targetPoints (number|null),',
+          'schedule { timezone (IANA), times (HH:mm[]), weekdays (0-6[]), marketOpenMode (boolean) },',
+          'sessionGates [{id: asia|london|ny|custom, enabled: boolean, startHour?: number, endHour?: number}],',
+          'confidence (0..1).',
+          'If unknown, use null and keep valid JSON.'
+        ].join('\n'),
+        user: [
+          `Agent: ${agentId}`,
+          `Known symbols: ${(Array.isArray(input?.knownSymbols) ? input.knownSymbols : []).join(', ')}`,
+          `Prompt: ${prompt}`
+        ].join('\n')
+      });
+      const parsed = extractJsonObject(raw);
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+      const symbol = String(
+        parsed.symbol || parsed.instrument || parsed.ticker || input?.defaultSymbol || ''
+      )
+        .trim()
+        .toUpperCase();
+      const timeframePool = Array.isArray(parsed.timeframes)
+        ? parsed.timeframes
+        : (typeof parsed.timeframe === 'string' && parsed.timeframe.trim() ? [parsed.timeframe.trim()] : []);
+      const timeframes = timeframePool
+        .map((entry: any) => normalizeTimeframeKey(entry))
+        .filter((entry: string | null): entry is string => !!entry);
+      const scheduleRaw = parsed.schedule && typeof parsed.schedule === 'object' ? parsed.schedule : {};
+      const times = (Array.isArray(scheduleRaw.times) ? scheduleRaw.times : [])
+        .map((entry: any) => normalizeTimeToken(entry))
+        .filter((entry: string | null): entry is string => !!entry);
+      const weekdays = Array.isArray(scheduleRaw.weekdays)
+        ? scheduleRaw.weekdays
+            .map((entry: any) => Number(entry))
+            .filter((entry: number) => Number.isFinite(entry) && entry >= 0 && entry <= 6)
+            .map((entry: number) => Math.floor(entry))
+        : [];
+      const strategyModeRaw = String(parsed.strategyMode || '').trim().toLowerCase();
+      const strategyMode = strategyModeRaw === 'scalp' || strategyModeRaw === 'day' || strategyModeRaw === 'swing'
+        ? strategyModeRaw
+        : null;
+      return {
+        agentId,
+        rawPrompt: prompt,
+        symbol: symbol || undefined,
+        timeframes: timeframes.length > 0 ? timeframes : undefined,
+        strategyMode,
+        probabilityMin: Number.isFinite(Number(parsed.probabilityMin)) ? Number(parsed.probabilityMin) : null,
+        targetPoints: Number.isFinite(Number(parsed.targetPoints)) ? Number(parsed.targetPoints) : null,
+        schedule: {
+          timezone: String(scheduleRaw.timezone || 'America/New_York'),
+          times,
+          weekdays: weekdays.length > 0 ? weekdays : [1, 2, 3, 4, 5],
+          marketOpenMode: scheduleRaw.marketOpenMode === true
+        },
+        sessionGates: Array.isArray(parsed.sessionGates) ? parsed.sessionGates : null,
+        parseConfidence: Number.isFinite(Number(parsed.confidence)) ? Math.max(0, Math.min(1, Number(parsed.confidence))) : null
+      };
+    } catch (err: any) {
+      appendLiveError({
+        source: 'signal_intent_parse_failed',
+        level: 'warn',
+        message: err?.message ? String(err.message) : 'Signal intent parse assist failed.'
+      });
+      return null;
+    }
+  }, [appendLiveError, normalizeTimeframeKey]);
+
+  const createSignalIntent = useCallback(async (draft: Partial<SignalIntent>) => {
+    const now = Date.now();
+    const requestedStatusRaw = String(draft?.status || '').trim().toLowerCase();
+    const requestedStatus: SignalIntent['status'] =
+      requestedStatusRaw === 'needs_confirmation'
+        ? 'needs_confirmation'
+        : requestedStatusRaw === 'paused'
+          ? 'paused'
+          : 'active';
+    const built = buildSignalIntentFromDraft({
+      ...draft,
+      status: requestedStatus,
+      telegramEnabled: draft.telegramEnabled !== false,
+      createdAtMs: Number.isFinite(Number(draft.createdAtMs)) ? Number(draft.createdAtMs) : now,
+      updatedAtMs: now
+    });
+    if (!built) {
+      return { ok: false as const, error: 'Invalid intent draft.' };
+    }
+    const intent = applySignalIntentPatch(built, {
+      status: requestedStatus === 'active' ? 'active' : requestedStatus,
+      updatedAtMs: now
+    });
+    setSignalIntents((prev) => {
+      const nextMap = new Map(prev.map((entry) => [entry.id, entry]));
+      nextMap.set(intent.id, intent);
+      return sortSignalIntents(Array.from(nextMap.values()));
+    });
+    await upsertSignalIntentMemory(intent);
+
+    const userTurn: SignalIntentChatTurn = {
+      id: `intent_chat_${now}_${Math.random().toString(16).slice(2, 8)}`,
+      intentId: intent.id,
+      role: 'user',
+      text: intent.rawPrompt,
+      atMs: now
+    };
+    const assistantTurn: SignalIntentChatTurn = {
+      id: `intent_chat_${now + 1}_${Math.random().toString(16).slice(2, 8)}`,
+      intentId: intent.id,
+      role: 'assistant',
+      text: [
+        `Parsed intent for ${intent.symbol} ${(intent.timeframes || []).join('/')} (${intent.status}).`,
+        `Schedule: ${(intent.schedule?.times || []).join(', ') || '--'} ${intent.schedule?.timezone || ''}`.trim(),
+        intent.parseConfidence != null ? `Confidence: ${Math.round(Number(intent.parseConfidence || 0) * 100)}%` : '',
+        intent.targetPoints != null ? `Target points: ${intent.targetPoints}` : '',
+        intent.probabilityMin != null ? `Probability min: ${intent.probabilityMin}%` : '',
+        intent.status === 'needs_confirmation' ? 'Needs confirmation before activation.' : ''
+      ].filter(Boolean).join('\n'),
+      atMs: now + 1
+    };
+    setSignalIntentChatTurns((prev) => {
+      const next = [...prev, userTurn, assistantTurn];
+      next.sort((a, b) => Number(a.atMs || 0) - Number(b.atMs || 0));
+      return next;
+    });
+    await Promise.allSettled([
+      upsertSignalIntentChatTurnMemory(userTurn),
+      upsertSignalIntentChatTurnMemory(assistantTurn)
+    ]);
+    appendLiveError({
+      source: 'signal_intent_created',
+      level: 'info',
+      message: `Signal intent created ${intent.id}`,
+      detail: { intentId: intent.id, status: intent.status, symbol: intent.symbol, schedule: intent.schedule }
+    });
+    return { ok: true as const };
+  }, [appendLiveError, upsertSignalIntentChatTurnMemory, upsertSignalIntentMemory]);
+
+  const updateSignalIntentStatus = useCallback(async (
+    id: string,
+    status: SignalIntent['status'],
+    source: string
+  ): Promise<{ ok: boolean; intent?: SignalIntent; error?: string }> => {
+    const intentId = String(id || '').trim();
+    if (!intentId) return { ok: false, error: 'Intent id required.' };
+    const current = (signalIntentsRef.current || []).find((entry) => String(entry.id || '').trim() === intentId) || null;
+    if (!current) return { ok: false, error: 'Intent not found.' };
+    const next = applySignalIntentPatch(current, {
+      status,
+      updatedAtMs: Date.now()
+    });
+    setSignalIntents((prev) => {
+      const nextMap = new Map(prev.map((entry) => [entry.id, entry]));
+      nextMap.set(next.id, next);
+      return sortSignalIntents(Array.from(nextMap.values()));
+    });
+    await upsertSignalIntentMemory(next, source);
+    appendLiveError({
+      source: status === 'paused' ? 'signal_intent_paused' : 'signal_intent_resumed',
+      level: 'info',
+      message: `Signal intent ${status} ${next.id}`,
+      detail: { intentId: next.id, status }
+    });
+    return { ok: true, intent: next };
+  }, [appendLiveError, upsertSignalIntentMemory]);
+
+  const pauseSignalIntent = useCallback(async (id: string, source: string = 'signal_intent') => {
+    return updateSignalIntentStatus(id, 'paused', source);
+  }, [updateSignalIntentStatus]);
+
+  const resumeSignalIntent = useCallback(async (id: string, source: string = 'signal_intent') => {
+    const res = await updateSignalIntentStatus(id, 'active', source);
+    if (res.ok && res.intent?.lastTriggeredSlotKey) {
+      signalIntentSeenSlotsRef.current.add(String(res.intent.lastTriggeredSlotKey));
+    }
+    return res;
+  }, [updateSignalIntentStatus]);
+
+  const resolveSignalIntentByToken = useCallback((token: string): SignalIntent | null => {
+    const clean = String(token || '').trim();
+    if (!clean) return null;
+    const list = Array.isArray(signalIntentsRef.current) ? signalIntentsRef.current : [];
+    const exact = list.find((entry) => String(entry.id || '').trim() === clean);
+    if (exact) return exact;
+    const lower = clean.toLowerCase();
+    const suffix = list.find((entry) => String(entry.id || '').toLowerCase().endsWith(lower));
+    if (suffix) return suffix;
+    const bySymbol = list.find((entry) => String(entry.symbol || '').toLowerCase() === lower);
+    return bySymbol || null;
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrate = async () => {
+      const ledger = window.glass?.tradeLedger;
+      if (!ledger?.listAgentMemory) return;
+      try {
+        const [intentRes, runRes, chatRes] = await Promise.all([
+          ledger.listAgentMemory({ limit: 5000, kind: SIGNAL_INTENT_KIND, includeArchived: true }),
+          ledger.listAgentMemory({ limit: 10000, kind: SIGNAL_INTENT_RUN_KIND, includeArchived: true }),
+          ledger.listAgentMemory({ limit: 10000, kind: SIGNAL_INTENT_CHAT_KIND, includeArchived: true })
+        ]);
+        if (cancelled) return;
+        const intents = intentRes?.ok && Array.isArray(intentRes.memories)
+          ? intentRes.memories.map((memory: any) => normalizeSignalIntent(memory?.payload || memory)).filter(Boolean) as SignalIntent[]
+          : [];
+        const runs = runRes?.ok && Array.isArray(runRes.memories)
+          ? runRes.memories.map((memory: any) => normalizeSignalIntentRun(memory?.payload || memory)).filter(Boolean) as SignalIntentRun[]
+          : [];
+        const chatTurns = chatRes?.ok && Array.isArray(chatRes.memories)
+          ? chatRes.memories.map((memory: any) => normalizeSignalIntentChatTurn(memory?.payload || memory)).filter(Boolean) as SignalIntentChatTurn[]
+          : [];
+        runs.sort((a, b) => Number(b.triggerAtMs || 0) - Number(a.triggerAtMs || 0));
+        chatTurns.sort((a, b) => Number(a.atMs || 0) - Number(b.atMs || 0));
+        setSignalIntents(sortSignalIntents(intents));
+        setSignalIntentRuns(runs);
+        setSignalIntentChatTurns(chatTurns);
+        signalIntentSeenSlotsRef.current.clear();
+        for (const intent of intents) {
+          if (intent?.lastTriggeredSlotKey) {
+            signalIntentSeenSlotsRef.current.add(String(intent.lastTriggeredSlotKey));
+          }
+        }
+      } catch (err: any) {
+        appendLiveError({
+          source: 'signal_intent_hydrate',
+          level: 'warn',
+          message: err?.message ? String(err.message) : 'Failed to hydrate signal intents.'
+        });
+      }
+    };
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [appendLiveError]);
 
   useEffect(() => {
     appendLiveError({
@@ -15029,7 +15682,7 @@ const App: React.FC = () => {
             'academy_repair'
           ].filter(Boolean);
 
-          await ledger.upsertAgentMemory({
+          await trackAcademyPersistence(ledger.upsertAgentMemory({
             key,
             familyKey: symbolKey ? `academy_case:${symbolKey}:${timeframeKey}` : undefined,
             agentId: payload.agentId ?? null,
@@ -15043,7 +15696,7 @@ const App: React.FC = () => {
             payload,
             tags,
             source: payload.source || 'academy_repair'
-          });
+          }), `academy_case_repair:${signalId}`);
           academyCaseRepairPersistedRef.current.set(key, fingerprint);
           repairedCount += 1;
         }
@@ -15108,7 +15761,7 @@ const App: React.FC = () => {
       for (const [signalId, lockedCase] of pendingAutoLockEntries) {
         if (autoLockReconciledSignalIds.has(signalId)) continue;
         try {
-          const lockResult = await lockAcademyCase({
+          const lockResult = await trackAcademyPersistence(lockAcademyCase({
             signalId,
             caseId: String(lockedCase.id || signalId).trim(),
             symbol: lockedCase.symbol || null,
@@ -15117,7 +15770,7 @@ const App: React.FC = () => {
             source: 'system_repair',
             reason: 'outcome_win_loss_auto_lock',
             payload: lockedCase
-          });
+          }), `academy_case_lock_reconcile:${signalId}`);
           if (lockResult?.ok) {
             autoLockReconciledSignalIds.add(signalId);
             autoLockReconciledCount += 1;
@@ -15307,7 +15960,8 @@ const App: React.FC = () => {
     normalizeSignalEntryMemory,
     normalizeSignalHistoryMemory,
     normalizeSymbolKey,
-    normalizeTimeframeKey
+    normalizeTimeframeKey,
+    trackAcademyPersistence
   ]);
 
   const refreshAcademyLessons = useCallback(async (opts?: { limit?: number; force?: boolean; _fullRetry?: boolean }) => {
@@ -15580,6 +16234,23 @@ const App: React.FC = () => {
   }, [academyLessons, academySymbolLearnings, signalHistory, applyAcademyUpdatesToAgents]);
 
   const buildAcademyExportPayload = useCallback(() => {
+    const lessonIds = Array.from(new Set(
+      (academyLessonsRef.current || [])
+        .map((entry) => String(entry?.id || '').trim())
+        .filter(Boolean)
+    ));
+    const evidenceCaseIds = Array.from(new Set(
+      (academyLessonsRef.current || [])
+        .flatMap((entry) => (Array.isArray(entry?.evidenceCaseIds) ? entry.evidenceCaseIds : []))
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+    ));
+    const experimentCaseIds = Array.from(new Set(
+      (academyLessonExperimentsRef.current || [])
+        .flatMap((entry: any) => (Array.isArray(entry?.matchedCaseIds) ? entry.matchedCaseIds : []))
+        .map((entry) => String(entry || '').trim())
+        .filter(Boolean)
+    ));
     return {
       exportedAt: new Date().toISOString(),
       caseCount: academyCasesRef.current.length,
@@ -15587,7 +16258,20 @@ const App: React.FC = () => {
       symbolLearningCount: academySymbolLearningsRef.current.length,
       cases: academyCasesRef.current,
       lessons: academyLessonsRef.current,
-      symbolLearnings: academySymbolLearningsRef.current
+      symbolLearnings: academySymbolLearningsRef.current,
+      learningGraph: {
+        snapshot: academyLearningGraphSnapshotRef.current,
+        telemetry: academyLearningGraphTelemetryRef.current,
+        pathRuns: Number(academyLearningGraphTelemetryRef.current.pathRuns || 0)
+      },
+      learningGraphPathSummary: academyLearningPathSummaryRef.current || null,
+      lessonPatchNotes: academyLessonPatchNotesRef.current,
+      lessonExperiments: academyLessonExperimentsRef.current,
+      provenance: {
+        lessonIds: lessonIds.slice(0, 400),
+        evidenceCaseIds: evidenceCaseIds.slice(0, 800),
+        experimentCaseIds: experimentCaseIds.slice(0, 800)
+      }
     };
   }, []);
 
@@ -15601,12 +16285,29 @@ const App: React.FC = () => {
     } catch {
       encoded = btoa(payload);
     }
-    return saver({
+    const result = await saver({
       data: encoded,
       mimeType: 'application/json',
       subdir: 'academy',
       prefix: 'academy_export'
     });
+    academyLearningGraphTelemetryRef.current = {
+      ...academyLearningGraphTelemetryRef.current,
+      graphExportCount: Number(academyLearningGraphTelemetryRef.current.graphExportCount || 0) + 1
+    };
+    if (appendAuditEventRef.current) {
+      void appendAuditEventRef.current({
+        eventType: 'academy_graph_export_provenance',
+        level: 'info',
+        payload: {
+          ok: result?.ok === true,
+          pathRuns: Number(academyLearningGraphTelemetryRef.current.pathRuns || 0),
+          graphExportCount: Number(academyLearningGraphTelemetryRef.current.graphExportCount || 0),
+          hasPathSummary: !!academyLearningPathSummaryRef.current
+        }
+      });
+    }
+    return result;
   }, [buildAcademyExportPayload]);
 
   const scheduleAcademyExport = useCallback((opts?: { force?: boolean }) => {
@@ -15797,7 +16498,7 @@ const App: React.FC = () => {
     const symbolKey = normalizeSymbolKey(entry.symbol);
     const tfKey = entry.timeframe ? normalizeTimeframeKey(entry.timeframe) : '';
 
-    await ledger.upsertAgentMemory({
+    await trackAcademyPersistence(ledger.upsertAgentMemory({
       key,
       familyKey: symbolKey ? `academy_case:${symbolKey}:${tfKey}` : undefined,
       agentId: entry.agentId ?? null,
@@ -15811,13 +16512,13 @@ const App: React.FC = () => {
       payload,
       tags,
       source: input.source || 'academy'
-    });
+    }), `academy_case:${caseId}`);
 
     if (shouldAutoLock) {
       const lockSource = payload.lockSource || 'system_repair';
       const lockReason = payload.lockReason || 'outcome_win_loss_auto_lock';
       try {
-        const lockResult = await lockAcademyCase({
+        const lockResult = await trackAcademyPersistence(lockAcademyCase({
           signalId: caseId,
           caseId,
           symbol: payload.symbol || null,
@@ -15826,7 +16527,7 @@ const App: React.FC = () => {
           source: lockSource,
           reason: lockReason,
           payload
-        });
+        }), `academy_case_lock:${caseId}`);
         if (lockResult?.ok) {
           academyCaseLocksRef.current.set(caseId, {
             signalId: caseId,
@@ -15881,7 +16582,8 @@ const App: React.FC = () => {
     normalizeSymbolKey,
     normalizeTimeframeKey,
     resolveSignalOutcome,
-    scheduleAcademyExport
+    scheduleAcademyExport,
+    trackAcademyPersistence
   ]);
 
   const upsertAcademyLesson = useCallback(async (lesson: AcademyLesson) => {
@@ -15914,7 +16616,7 @@ const App: React.FC = () => {
       : [];
     const mergedTags = extraTags.length > 0 ? Array.from(new Set([...tags, ...extraTags])) : tags;
 
-    await ledger.upsertAgentMemory({
+    await trackAcademyPersistence(ledger.upsertAgentMemory({
       key,
       agentId: lesson.agentId ?? null,
       scope: 'shared',
@@ -15927,7 +16629,7 @@ const App: React.FC = () => {
       payload,
       tags: mergedTags,
       source: lesson.source || 'academy'
-    });
+    }), `academy_lesson:${id}`);
 
     void upsertCalendarEvent({
       id,
@@ -15957,7 +16659,7 @@ const App: React.FC = () => {
     academyLessonContextRef.current = buildAcademyLessonContextString(nextLessons, academyLessonLimit);
 
     scheduleAcademyExport();
-  }, [academyLessonLimit, buildAcademyLessonContextString, scheduleAcademyExport, upsertCalendarEvent]);
+  }, [academyLessonLimit, buildAcademyLessonContextString, scheduleAcademyExport, trackAcademyPersistence, upsertCalendarEvent]);
 
   const upsertAcademySymbolLearning = useCallback(async (learning: AcademySymbolLearning) => {
     const ledger = window.glass?.tradeLedger;
@@ -15990,7 +16692,7 @@ const App: React.FC = () => {
     const summary = payload.summary || `${symbol} learning`;
     const tags = [symbol, 'academy_symbol_learning'].filter(Boolean);
 
-    await ledger.upsertAgentMemory({
+    await trackAcademyPersistence(ledger.upsertAgentMemory({
       key,
       scope: 'shared',
       category: 'academy',
@@ -16001,7 +16703,7 @@ const App: React.FC = () => {
       payload,
       tags,
       source: learning.source || 'academy_analyst'
-    });
+    }), `academy_symbol_learning:${symbolKey}`);
 
     void upsertCalendarEvent({
       id: symbolKey,
@@ -16029,7 +16731,822 @@ const App: React.FC = () => {
     });
     setAcademySymbolLearningsUpdatedAtMs(Date.now());
     scheduleAcademyExport();
-  }, [normalizeSymbolKey, scheduleAcademyExport, upsertCalendarEvent]);
+  }, [normalizeSymbolKey, scheduleAcademyExport, trackAcademyPersistence, upsertCalendarEvent]);
+
+  const findAcademyLessonById = useCallback((lessonId: string) => {
+    const id = String(lessonId || '').trim();
+    if (!id) return null;
+    return academyLessonsRef.current.find((entry) => String(entry.id || '').trim() === id) || null;
+  }, []);
+
+  const recordAcademyLearningGraphBuilt = useCallback((payload: {
+    scopeKey: string;
+    lens: 'hierarchy' | 'performance' | 'recency' | 'failure_mode' | 'strategy_broker';
+    nodeCount: number;
+    edgeCount: number;
+    buildMs: number;
+    conflictCount: number;
+    hotNodeCount: number;
+  }) => {
+    const nextScopeKey = String(payload.scopeKey || '').trim() || null;
+    const nextLens = String(payload.lens || '').trim() || null;
+    const prev = academyLearningGraphTelemetryRef.current;
+    const changed =
+      prev.scopeKey !== nextScopeKey ||
+      prev.lens !== nextLens ||
+      prev.nodeCount !== Number(payload.nodeCount || 0) ||
+      prev.edgeCount !== Number(payload.edgeCount || 0) ||
+      prev.conflictCount !== Number(payload.conflictCount || 0);
+    academyLearningGraphTelemetryRef.current = {
+      ...prev,
+      scopeKey: nextScopeKey,
+      lens: nextLens,
+      nodeCount: Number(payload.nodeCount || 0),
+      edgeCount: Number(payload.edgeCount || 0),
+      buildMs: Number(payload.buildMs || 0),
+      conflictCount: Number(payload.conflictCount || 0),
+      hotNodeCount: Number(payload.hotNodeCount || 0)
+    };
+    academyLearningGraphSnapshotRef.current = {
+      scopeKey: nextScopeKey,
+      lens: nextLens,
+      stats: {
+        nodeCount: Number(payload.nodeCount || 0),
+        edgeCount: Number(payload.edgeCount || 0),
+        buildMs: Number(payload.buildMs || 0),
+        conflictCount: Number(payload.conflictCount || 0),
+        hotNodeCount: Number(payload.hotNodeCount || 0)
+      },
+      builtAtMs: Date.now()
+    };
+    if (!changed || !appendAuditEventRef.current) return;
+    void appendAuditEventRef.current({
+      eventType: 'academy_learning_graph_built',
+      level: 'info',
+      payload: {
+        scopeKey: nextScopeKey,
+        lens: nextLens,
+        nodeCount: Number(payload.nodeCount || 0),
+        edgeCount: Number(payload.edgeCount || 0),
+        buildMs: Number(payload.buildMs || 0),
+        conflictCount: Number(payload.conflictCount || 0),
+        hotNodeCount: Number(payload.hotNodeCount || 0)
+      }
+    });
+    if (Number(payload.conflictCount || 0) > 0) {
+      void appendAuditEventRef.current({
+        eventType: 'academy_lesson_conflict_detected',
+        level: 'warn',
+        payload: {
+          scopeKey: nextScopeKey,
+          conflictCount: Number(payload.conflictCount || 0)
+        }
+      });
+    }
+  }, []);
+
+  const recordAcademyLearningGraphLensChanged = useCallback((payload: {
+    lens: 'hierarchy' | 'performance' | 'recency' | 'failure_mode' | 'strategy_broker';
+    scopeKey: string;
+  }) => {
+    academyLearningGraphTelemetryRef.current = {
+      ...academyLearningGraphTelemetryRef.current,
+      lens: String(payload.lens || '').trim() || null,
+      scopeKey: String(payload.scopeKey || '').trim() || academyLearningGraphTelemetryRef.current.scopeKey
+    };
+    if (!appendAuditEventRef.current) return;
+    void appendAuditEventRef.current({
+      eventType: 'academy_learning_graph_lens_changed',
+      level: 'info',
+      payload: {
+        lens: payload.lens,
+        scopeKey: payload.scopeKey || null
+      }
+    });
+  }, []);
+
+  const recordAcademyLearningPathGenerated = useCallback((payload: {
+    goalText: string;
+    stepCount: number;
+    highlightedNodeCount: number;
+    highlightedEdgeCount: number;
+    scopeKey: string;
+    summary?: {
+      stepCount: number;
+      confidence: number | null;
+      sampleSize: number;
+      estimatedImpact: number | null;
+    } | null;
+    pathBuildMs?: number;
+    pathCoverage?: number;
+  }) => {
+    const nextRuns = Number(academyLearningGraphTelemetryRef.current.pathRuns || 0) + 1;
+    academyLearningGraphTelemetryRef.current = {
+      ...academyLearningGraphTelemetryRef.current,
+      pathRuns: nextRuns,
+      lastPathGoal: String(payload.goalText || '').trim() || null,
+      pathBuildMs: Number(payload.pathBuildMs || 0),
+      pathCoverage: Number(payload.pathCoverage || 0),
+      scopeKey: String(payload.scopeKey || '').trim() || academyLearningGraphTelemetryRef.current.scopeKey
+    };
+    academyLearningPathSummaryRef.current = payload.summary ? {
+      stepCount: Number(payload.summary.stepCount || 0),
+      confidence: Number.isFinite(Number(payload.summary.confidence)) ? Number(payload.summary.confidence) : null,
+      sampleSize: Number(payload.summary.sampleSize || 0),
+      estimatedImpact: Number.isFinite(Number(payload.summary.estimatedImpact))
+        ? Number(payload.summary.estimatedImpact)
+        : null,
+      goalText: String(payload.goalText || '').trim() || null,
+      generatedAtMs: Date.now()
+    } : null;
+    academyLearningGraphSnapshotRef.current = {
+      ...(academyLearningGraphSnapshotRef.current || {}),
+      pathSummary: academyLearningPathSummaryRef.current || null,
+      stats: {
+        ...((academyLearningGraphSnapshotRef.current?.stats as Record<string, any>) || {}),
+        pathBuildMs: Number(payload.pathBuildMs || 0),
+        pathCoverage: Number(payload.pathCoverage || 0)
+      }
+    };
+    if (!appendAuditEventRef.current) return;
+    void appendAuditEventRef.current({
+      eventType: 'academy_learning_path_generated',
+      level: 'info',
+      payload: {
+        goalText: payload.goalText || null,
+        stepCount: Number(payload.stepCount || 0),
+        highlightedNodeCount: Number(payload.highlightedNodeCount || 0),
+        highlightedEdgeCount: Number(payload.highlightedEdgeCount || 0),
+        scopeKey: payload.scopeKey || null,
+        pathBuildMs: Number(payload.pathBuildMs || 0),
+        pathCoverage: Number(payload.pathCoverage || 0)
+      }
+    });
+  }, []);
+
+  const recordAcademyLearningGraphCaseAction = useCallback((payload: {
+    caseId: string;
+    action: 'open_chart' | 'replay_case' | 'show_reasoning';
+    scopeKey?: string | null;
+    nodeId?: string | null;
+  }) => {
+    academyLearningGraphTelemetryRef.current = {
+      ...academyLearningGraphTelemetryRef.current,
+      graphCaseActions: Number(academyLearningGraphTelemetryRef.current.graphCaseActions || 0) + 1
+    };
+    if (!appendAuditEventRef.current) return;
+    void appendAuditEventRef.current({
+      eventType: 'academy_graph_case_action',
+      level: 'info',
+      payload: {
+        caseId: String(payload.caseId || '').trim() || null,
+        action: payload.action,
+        scopeKey: payload.scopeKey || null,
+        nodeId: payload.nodeId || null,
+        count: Number(academyLearningGraphTelemetryRef.current.graphCaseActions || 0)
+      }
+    });
+  }, []);
+
+  const recordAcademyLearningGraphPathZoom = useCallback((payload: {
+    scopeKey: string;
+    highlightedNodeCount: number;
+    highlightedEdgeCount: number;
+    goalText?: string | null;
+  }) => {
+    if (!appendAuditEventRef.current) return;
+    void appendAuditEventRef.current({
+      eventType: 'academy_graph_path_zoom',
+      level: 'info',
+      payload: {
+        scopeKey: payload.scopeKey || null,
+        highlightedNodeCount: Number(payload.highlightedNodeCount || 0),
+        highlightedEdgeCount: Number(payload.highlightedEdgeCount || 0),
+        goalText: payload.goalText || null
+      }
+    });
+  }, []);
+
+  const runAcademyLessonLifecycleAction = useCallback(async (opts: {
+    lessonId: string;
+    action: 'apply' | 'pin' | 'unpin' | 'promote' | 'demote_candidate' | 'deprecate';
+    targetAgentKey?: string | null;
+  }) => {
+    const lesson = findAcademyLessonById(opts.lessonId);
+    if (!lesson) {
+      addNotification('Academy Lesson', `Lesson not found (${opts.lessonId}).`, 'warning');
+      return { ok: false as const, message: `Lesson not found (${opts.lessonId}).` };
+    }
+    const now = Date.now();
+    const prevLifecycle = String(lesson.lifecycleState || 'candidate').trim().toLowerCase() || 'candidate';
+    const nextLesson = patchLessonLifecycle({
+      lesson,
+      action: opts.action,
+      nowMs: now,
+      agentId: opts.targetAgentKey || lesson.agentId || lesson.agentName || null
+    });
+    await upsertAcademyLesson(nextLesson);
+    academyLessonPatchNotesRef.current = [
+      {
+        atMs: now,
+        lessonId: String(nextLesson.id || ''),
+        action: String(opts.action || ''),
+        fromLifecycle: prevLifecycle || null,
+        toLifecycle: String(nextLesson.lifecycleState || prevLifecycle || '').trim().toLowerCase() || null,
+        targetAgentKey: opts.targetAgentKey ? String(opts.targetAgentKey) : null,
+        title: nextLesson.title || null
+      },
+      ...academyLessonPatchNotesRef.current
+    ].slice(0, 300);
+    academyLearningGraphTelemetryRef.current = {
+      ...academyLearningGraphTelemetryRef.current,
+      graphLifecycleActions: Number(academyLearningGraphTelemetryRef.current.graphLifecycleActions || 0) + 1
+    };
+    if (appendAuditEventRef.current) {
+      void appendAuditEventRef.current({
+        eventType: 'academy_graph_lifecycle_action',
+        level: opts.action === 'deprecate' ? 'warn' : 'info',
+        payload: {
+          lessonId: nextLesson.id,
+          action: opts.action,
+          fromLifecycle: prevLifecycle,
+          toLifecycle: nextLesson.lifecycleState || prevLifecycle,
+          targetAgentKey: opts.targetAgentKey || null,
+          count: Number(academyLearningGraphTelemetryRef.current.graphLifecycleActions || 0)
+        }
+      });
+    }
+    if (opts.action === 'apply') {
+      addNotification('Academy Lesson', `Applied "${nextLesson.title}" to ${opts.targetAgentKey || nextLesson.agentName || nextLesson.agentId || 'current scope'}.`, 'success');
+    } else if (opts.action === 'pin' || opts.action === 'unpin') {
+      addNotification('Academy Lesson', `${opts.action === 'pin' ? 'Pinned' : 'Unpinned'} "${nextLesson.title}".`, 'info');
+    } else if (opts.action === 'promote') {
+      addNotification('Academy Lesson', `Promoted "${nextLesson.title}" to CORE.`, 'success');
+      if (appendAuditEventRef.current) {
+        void appendAuditEventRef.current({
+          eventType: 'academy_lesson_promoted',
+          level: 'info',
+          payload: {
+            lessonId: nextLesson.id,
+            title: nextLesson.title || null,
+            fromLifecycle: prevLifecycle,
+            toLifecycle: nextLesson.lifecycleState || 'core'
+          }
+        });
+      }
+    } else if (opts.action === 'deprecate') {
+      addNotification('Academy Lesson', `Deprecated "${nextLesson.title}".`, 'warning');
+      if (appendAuditEventRef.current) {
+        void appendAuditEventRef.current({
+          eventType: 'academy_lesson_deprecated',
+          level: 'warn',
+          payload: {
+            lessonId: nextLesson.id,
+            title: nextLesson.title || null,
+            fromLifecycle: prevLifecycle,
+            toLifecycle: nextLesson.lifecycleState || 'deprecated'
+          }
+        });
+      }
+    } else if (opts.action === 'demote_candidate') {
+      addNotification('Academy Lesson', `Moved "${nextLesson.title}" to CANDIDATE.`, 'info');
+    }
+    return {
+      ok: true as const,
+      lessonId: String(nextLesson.id || ''),
+      lifecycleState: String(nextLesson.lifecycleState || prevLifecycle || ''),
+      message: `${opts.action} completed for "${nextLesson.title || nextLesson.id}".`
+    };
+  }, [addNotification, findAcademyLessonById, upsertAcademyLesson]);
+
+  const runAcademyLessonSimulation = useCallback(async (lessonId: string) => {
+    const lesson = findAcademyLessonById(lessonId);
+    if (!lesson) {
+      addNotification('Lesson Simulation', `Lesson not found (${lessonId}).`, 'warning');
+      return { ok: false as const, message: `Lesson not found (${lessonId}).` };
+    }
+    const nowMs = Date.now();
+    const result = runLessonCounterfactualExperiment({
+      lesson,
+      cases: academyCasesRef.current || [],
+      lookback: 80,
+      nowMs
+    });
+    academyLessonExperimentsRef.current = [
+      {
+        ...result,
+        lessonTitle: lesson.title || null,
+        lessonLifecycle: lesson.lifecycleState || 'candidate'
+      },
+      ...academyLessonExperimentsRef.current
+    ].slice(0, 400);
+    const ledger = window.glass?.tradeLedger;
+    if (ledger?.upsertAgentMemory) {
+      try {
+        await trackAcademyPersistence(ledger.upsertAgentMemory({
+          key: `academy_lesson_experiment:${result.experimentId}`,
+          scope: 'shared',
+          category: 'academy',
+          subcategory: 'lesson_experiment',
+          kind: 'academy_lesson_experiment',
+          symbol: lesson.appliesTo?.symbol || undefined,
+          timeframe: lesson.appliesTo?.timeframe || undefined,
+          summary: `Experiment ${lesson.title}`,
+          payload: {
+            ...result,
+            lessonTitle: lesson.title,
+            lessonLifecycle: lesson.lifecycleState || 'candidate',
+            agentId: lesson.agentId || null,
+            agentName: lesson.agentName || null
+          },
+          tags: [
+            'academy_lesson_experiment',
+            lesson.id ? `lesson:${lesson.id}` : '',
+            lesson.appliesTo?.symbol ? `symbol:${lesson.appliesTo.symbol}` : '',
+            lesson.appliesTo?.timeframe ? `tf:${lesson.appliesTo.timeframe}` : ''
+          ].filter(Boolean),
+          source: 'academy_learning_graph'
+        }), `academy_lesson_experiment:${result.experimentId}`);
+      } catch (err: any) {
+        appendLiveError({
+          source: 'academy_lesson_experiment',
+          level: 'warn',
+          message: `Lesson simulation persistence failed for ${lesson.id}.`,
+          detail: { error: err?.message ? String(err.message) : 'unknown_error' }
+        });
+      }
+    }
+    addNotification(
+      'Lesson Simulation',
+      `${lesson.title}: control ${result.controlWinRate != null ? `${Math.round(result.controlWinRate * 100)}%` : '--'} vs treatment ${result.treatmentWinRate != null ? `${Math.round(result.treatmentWinRate * 100)}%` : '--'} (${result.sampleSize} cases).`,
+      'info'
+    );
+    return {
+      ok: true as const,
+      message: `Simulation completed for "${lesson.title || lesson.id}".`,
+      sampleSize: Number(result.sampleSize || 0),
+      generatedAtMs: Number(result.generatedAtMs || nowMs)
+    };
+  }, [addNotification, appendLiveError, findAcademyLessonById, trackAcademyPersistence]);
+
+  const flushAcademyForShutdown = useCallback(async (
+    reason: string,
+    deadlineMs: number = ACADEMY_SHUTDOWN_TIMEOUT_MS
+  ) => {
+    const safeReason = String(reason || 'app_shutdown').trim() || 'app_shutdown';
+    const requestId = academyShutdownRequestIdRef.current;
+    if (academyShutdownInProgressRef.current) {
+      return { ok: true as const, skipped: 'in_progress', requestId: requestId || null };
+    }
+    academyShutdownInProgressRef.current = true;
+    const startedAtMs = Date.now();
+    const timeoutMs = Math.max(1000, Number(deadlineMs) || ACADEMY_SHUTDOWN_TIMEOUT_MS);
+    const deadlineAtMs = startedAtMs + timeoutMs;
+    let persistedCaseCount = 0;
+    let persistedLessonCount = 0;
+    let persistedSymbolLearningCount = 0;
+    let timedOut = false;
+    const withinDeadline = () => Date.now() < deadlineAtMs;
+    const stateBase = {
+      reason: safeReason,
+      requestId: requestId || null,
+      startedAtMs,
+      timeoutMs
+    };
+    writeAcademyShutdownState({
+      ...stateBase,
+      status: 'pending'
+    });
+    persistAcademyShutdownBackup('shutdown_pending', { requestId: requestId || null });
+    const ledger = window.glass?.tradeLedger;
+
+    try {
+      const drainRes = await awaitAcademyPersistenceDrain(Math.max(250, deadlineAtMs - Date.now()));
+      if (drainRes?.timedOut) timedOut = true;
+
+      if (ledger?.upsertAgentMemory && withinDeadline()) {
+        const graphScopeKey = String(academyLearningGraphTelemetryRef.current?.scopeKey || 'default').trim() || 'default';
+        const graphPayload = {
+          scopeKey: graphScopeKey,
+          snapshot: academyLearningGraphSnapshotRef.current || null,
+          telemetry: academyLearningGraphTelemetryRef.current || null,
+          lessonPatchNotes: academyLessonPatchNotesRef.current || [],
+          lessonExperiments: academyLessonExperimentsRef.current || [],
+          updatedAtMs: Date.now(),
+          source: 'academy_shutdown_flush'
+        };
+        await trackAcademyPersistence(ledger.upsertAgentMemory({
+          key: `academy_graph_view:${graphScopeKey}`,
+          scope: 'shared',
+          category: 'academy',
+          subcategory: 'graph_view',
+          kind: 'academy_graph_view',
+          summary: `Shutdown graph snapshot ${graphScopeKey}`,
+          payload: graphPayload,
+          tags: ['academy_graph_view', graphScopeKey].filter(Boolean),
+          source: 'academy_shutdown_flush'
+        }), `academy_graph_view:${graphScopeKey}`);
+      }
+
+      if (ledger?.upsertAgentMemory) {
+        for (const entry of academyCasesRef.current || []) {
+          if (!withinDeadline()) {
+            timedOut = true;
+            break;
+          }
+          const caseId = String(entry?.id || entry?.signalId || '').trim();
+          if (!caseId) continue;
+          const symbolKey = normalizeSymbolKey(entry.symbol || '');
+          const timeframeKey = entry.timeframe ? normalizeTimeframeKey(entry.timeframe) : '';
+          await trackAcademyPersistence(ledger.upsertAgentMemory({
+            key: `academy_case:${caseId}`,
+            familyKey: symbolKey ? `academy_case:${symbolKey}:${timeframeKey}` : undefined,
+            agentId: entry.agentId ?? null,
+            scope: 'shared',
+            category: 'academy',
+            subcategory: 'case',
+            kind: 'academy_case',
+            symbol: entry.symbol || undefined,
+            timeframe: entry.timeframe || undefined,
+            summary: [
+              entry.outcome || entry.status || 'PROPOSED',
+              entry.action || '',
+              entry.symbol || '',
+              entry.timeframe || ''
+            ].filter(Boolean).join(' '),
+            payload: { ...entry, source: entry.source || 'academy_shutdown_flush' },
+            tags: [
+              entry.symbol || '',
+              entry.timeframe || '',
+              entry.outcome ? `outcome:${String(entry.outcome).toLowerCase()}` : '',
+              'academy_case',
+              'shutdown_flush'
+            ].filter(Boolean),
+            source: entry.source || 'academy_shutdown_flush'
+          }), `academy_shutdown_case:${caseId}`);
+          persistedCaseCount += 1;
+        }
+
+        for (const lesson of academyLessonsRef.current || []) {
+          if (!withinDeadline()) {
+            timedOut = true;
+            break;
+          }
+          const lessonId = String(lesson?.id || '').trim();
+          if (!lessonId) continue;
+          await trackAcademyPersistence(ledger.upsertAgentMemory({
+            key: `academy_lesson:${lessonId}`,
+            agentId: lesson.agentId ?? null,
+            scope: 'shared',
+            category: 'academy',
+            subcategory: 'lesson',
+            kind: 'academy_lesson',
+            symbol: lesson.appliesTo?.symbol || undefined,
+            timeframe: lesson.appliesTo?.timeframe || undefined,
+            summary: lesson.summary || lesson.title,
+            payload: { ...lesson, source: lesson.source || 'academy_shutdown_flush' },
+            tags: [
+              lesson.appliesTo?.symbol || '',
+              lesson.appliesTo?.timeframe || '',
+              lesson.agentId ? `agent:${lesson.agentId}` : '',
+              lesson.outcome ? `outcome:${String(lesson.outcome).toLowerCase()}` : '',
+              'academy_lesson',
+              'shutdown_flush'
+            ].filter(Boolean),
+            source: lesson.source || 'academy_shutdown_flush'
+          }), `academy_shutdown_lesson:${lessonId}`);
+          persistedLessonCount += 1;
+        }
+
+        for (const learning of academySymbolLearningsRef.current || []) {
+          if (!withinDeadline()) {
+            timedOut = true;
+            break;
+          }
+          const symbol = String(learning?.symbol || '').trim();
+          if (!symbol) continue;
+          const symbolKey = normalizeSymbolKey(symbol) || symbol.toLowerCase();
+          await trackAcademyPersistence(ledger.upsertAgentMemory({
+            key: `academy_symbol_learning:${symbolKey}`,
+            scope: 'shared',
+            category: 'academy',
+            subcategory: 'symbol_learning',
+            kind: 'academy_symbol_learning',
+            symbol,
+            summary: learning.summary || `${symbol} learning`,
+            payload: { ...learning, source: learning.source || 'academy_shutdown_flush' },
+            tags: [symbol, 'academy_symbol_learning', 'shutdown_flush'].filter(Boolean),
+            source: learning.source || 'academy_shutdown_flush'
+          }), `academy_shutdown_symbol_learning:${symbolKey}`);
+          persistedSymbolLearningCount += 1;
+        }
+      }
+
+      if (withinDeadline()) {
+        await trackAcademyPersistence(persistAcademyExport(), 'academy_shutdown_export');
+      } else {
+        timedOut = true;
+      }
+
+      let flushOk = true;
+      if (ledger?.flush) {
+        const flushRes = await trackAcademyPersistence(ledger.flush(), 'academy_shutdown_ledger_flush');
+        flushOk = !!flushRes?.ok;
+      }
+      const completedAtMs = Date.now();
+      const ok = flushOk && !timedOut;
+
+      if (ok) {
+        clearAcademyShutdownBackup();
+      } else {
+        persistAcademyShutdownBackup('shutdown_timeout', {
+          timedOut,
+          persistedCaseCount,
+          persistedLessonCount,
+          persistedSymbolLearningCount
+        });
+      }
+      writeAcademyShutdownState({
+        ...stateBase,
+        status: ok ? 'completed' : 'timeout',
+        completedAtMs,
+        elapsedMs: completedAtMs - startedAtMs,
+        persistedCaseCount,
+        persistedLessonCount,
+        persistedSymbolLearningCount,
+        timedOut
+      });
+      return {
+        ok,
+        timedOut,
+        requestId: requestId || null,
+        persistedCaseCount,
+        persistedLessonCount,
+        persistedSymbolLearningCount,
+        elapsedMs: completedAtMs - startedAtMs
+      };
+    } catch (err: any) {
+      const completedAtMs = Date.now();
+      const error = err?.message ? String(err.message) : 'academy_shutdown_flush_failed';
+      persistAcademyShutdownBackup('shutdown_error', {
+        error,
+        persistedCaseCount,
+        persistedLessonCount,
+        persistedSymbolLearningCount
+      });
+      writeAcademyShutdownState({
+        ...stateBase,
+        status: 'failed',
+        completedAtMs,
+        elapsedMs: completedAtMs - startedAtMs,
+        error,
+        persistedCaseCount,
+        persistedLessonCount,
+        persistedSymbolLearningCount
+      });
+      appendLiveError({
+        source: 'academy_shutdown_flush',
+        level: 'warn',
+        message: `Academy shutdown flush failed (${error}).`,
+        detail: {
+          reason: safeReason,
+          requestId: requestId || null,
+          persistedCaseCount,
+          persistedLessonCount,
+          persistedSymbolLearningCount
+        }
+      });
+      return {
+        ok: false as const,
+        requestId: requestId || null,
+        error,
+        persistedCaseCount,
+        persistedLessonCount,
+        persistedSymbolLearningCount
+      };
+    } finally {
+      academyShutdownInProgressRef.current = false;
+      if (academyShutdownRequestIdRef.current && academyShutdownRequestIdRef.current === requestId) {
+        academyShutdownRequestIdRef.current = null;
+      }
+    }
+  }, [
+    appendLiveError,
+    awaitAcademyPersistenceDrain,
+    clearAcademyShutdownBackup,
+    normalizeSymbolKey,
+    normalizeTimeframeKey,
+    persistAcademyExport,
+    persistAcademyShutdownBackup,
+    trackAcademyPersistence,
+    writeAcademyShutdownState
+  ]);
+
+  const recoverAcademyFromShutdownBackup = useCallback(async (reason: string = 'startup_recovery') => {
+    let raw = '';
+    try {
+      raw = String(localStorage.getItem(ACADEMY_SHUTDOWN_BACKUP_KEY) || '');
+    } catch {
+      raw = '';
+    }
+    if (!raw) {
+      return { ok: true as const, recovered: false as const };
+    }
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      clearAcademyShutdownBackup();
+      return { ok: false as const, recovered: false as const, error: 'invalid_shutdown_backup' };
+    }
+
+    const backupCases: AcademyCase[] = Array.isArray(parsed.cases) ? parsed.cases : [];
+    const backupLessons: AcademyLesson[] = Array.isArray(parsed.lessons) ? parsed.lessons : [];
+    const backupSymbolLearnings: AcademySymbolLearning[] = Array.isArray(parsed.symbolLearnings) ? parsed.symbolLearnings : [];
+
+    const incomingCases = backupCases.map((entry) => ({
+      entry,
+      key: resolveAcademyCaseMergeKey(entry)
+    }));
+    const mergedCases = mergeAcademyCasesMergeOnly(academyCasesRef.current || [], incomingCases, 2).merged as AcademyCase[];
+    setAcademyCases(mergedCases);
+
+    const lessonMap = new Map<string, AcademyLesson>();
+    for (const lesson of academyLessonsRef.current || []) {
+      const id = String(lesson?.id || '').trim();
+      if (!id) continue;
+      lessonMap.set(id, lesson);
+    }
+    for (const lesson of backupLessons) {
+      const id = String(lesson?.id || '').trim();
+      if (!id) continue;
+      const existing = lessonMap.get(id);
+      if (!existing) {
+        lessonMap.set(id, lesson);
+        continue;
+      }
+      const existingAt = Number(existing.updatedAtMs || existing.createdAtMs || 0) || 0;
+      const nextAt = Number(lesson.updatedAtMs || lesson.createdAtMs || 0) || 0;
+      if (nextAt >= existingAt) lessonMap.set(id, { ...existing, ...lesson });
+    }
+    const mergedLessons = Array.from(lessonMap.values()).sort(
+      (a, b) => Number(b.updatedAtMs || b.createdAtMs || 0) - Number(a.updatedAtMs || a.createdAtMs || 0)
+    );
+    setAcademyLessons(mergedLessons);
+    setAcademyLessonsUpdatedAtMs(Date.now());
+    academyLessonContextRef.current = buildAcademyLessonContextString(mergedLessons, academyLessonLimit);
+
+    const symbolMap = new Map<string, AcademySymbolLearning>();
+    const learningKey = (entry: AcademySymbolLearning | null | undefined) => {
+      const symbol = String(entry?.symbol || '').trim();
+      return normalizeSymbolKey(symbol) || symbol.toLowerCase();
+    };
+    for (const entry of academySymbolLearningsRef.current || []) {
+      const key = learningKey(entry);
+      if (!key) continue;
+      symbolMap.set(key, entry);
+    }
+    for (const entry of backupSymbolLearnings) {
+      const key = learningKey(entry);
+      if (!key) continue;
+      const existing = symbolMap.get(key);
+      if (!existing) {
+        symbolMap.set(key, entry);
+        continue;
+      }
+      const existingAt = Number(existing.updatedAtMs || 0) || 0;
+      const nextAt = Number(entry.updatedAtMs || 0) || 0;
+      if (nextAt >= existingAt) symbolMap.set(key, { ...existing, ...entry });
+    }
+    const mergedSymbolLearnings = Array.from(symbolMap.values()).sort(
+      (a, b) => Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0)
+    );
+    setAcademySymbolLearnings(mergedSymbolLearnings);
+    setAcademySymbolLearningsUpdatedAtMs(Date.now());
+
+    if (parsed.learningGraph && typeof parsed.learningGraph === 'object') {
+      academyLearningGraphSnapshotRef.current = parsed.learningGraph.snapshot || academyLearningGraphSnapshotRef.current;
+      if (parsed.learningGraph.telemetry && typeof parsed.learningGraph.telemetry === 'object') {
+        academyLearningGraphTelemetryRef.current = {
+          ...academyLearningGraphTelemetryRef.current,
+          ...parsed.learningGraph.telemetry
+        };
+      }
+      if (Array.isArray(parsed.learningGraph.lessonPatchNotes)) {
+        academyLessonPatchNotesRef.current = parsed.learningGraph.lessonPatchNotes.slice(0, 300);
+      }
+      if (Array.isArray(parsed.learningGraph.lessonExperiments)) {
+        academyLessonExperimentsRef.current = parsed.learningGraph.lessonExperiments.slice(0, 400);
+      }
+    }
+
+    writeAcademyShutdownState({
+      status: 'recovered',
+      reason,
+      recoveredAtMs: Date.now(),
+      caseCount: mergedCases.length,
+      lessonCount: mergedLessons.length,
+      symbolLearningCount: mergedSymbolLearnings.length
+    });
+    clearAcademyShutdownBackup();
+
+    appendLiveError({
+      source: 'academy_shutdown_recovery',
+      level: 'info',
+      message: `Recovered Academy backup (${mergedCases.length} cases, ${mergedLessons.length} lessons, ${mergedSymbolLearnings.length} symbol learnings).`,
+      detail: { reason }
+    });
+
+    const ledger = window.glass?.tradeLedger;
+    if (ledger?.upsertAgentMemory) {
+      for (const entry of mergedCases) {
+        const id = String(entry?.id || entry?.signalId || '').trim();
+        if (!id) continue;
+        void trackAcademyPersistence(ledger.upsertAgentMemory({
+          key: `academy_case:${id}`,
+          scope: 'shared',
+          category: 'academy',
+          subcategory: 'case',
+          kind: 'academy_case',
+          symbol: entry.symbol || undefined,
+          timeframe: entry.timeframe || undefined,
+          summary: [
+            entry.outcome || entry.status || 'PROPOSED',
+            entry.action || '',
+            entry.symbol || '',
+            entry.timeframe || ''
+          ].filter(Boolean).join(' '),
+          payload: entry,
+          tags: [
+            entry.symbol || '',
+            entry.timeframe || '',
+            entry.outcome ? `outcome:${String(entry.outcome).toLowerCase()}` : '',
+            'academy_case',
+            'recovery'
+          ].filter(Boolean),
+          source: entry.source || 'academy_shutdown_recovery'
+        }), `academy_recovery_case:${id}`);
+      }
+      for (const lesson of mergedLessons) {
+        const lessonId = String(lesson?.id || '').trim();
+        if (!lessonId) continue;
+        void trackAcademyPersistence(ledger.upsertAgentMemory({
+          key: `academy_lesson:${lessonId}`,
+          scope: 'shared',
+          category: 'academy',
+          subcategory: 'lesson',
+          kind: 'academy_lesson',
+          symbol: lesson.appliesTo?.symbol || undefined,
+          timeframe: lesson.appliesTo?.timeframe || undefined,
+          summary: lesson.summary || lesson.title,
+          payload: lesson,
+          tags: [
+            lesson.appliesTo?.symbol || '',
+            lesson.appliesTo?.timeframe || '',
+            'academy_lesson',
+            'recovery'
+          ].filter(Boolean),
+          source: lesson.source || 'academy_shutdown_recovery'
+        }), `academy_recovery_lesson:${lessonId}`);
+      }
+      for (const learning of mergedSymbolLearnings) {
+        const symbol = String(learning?.symbol || '').trim();
+        if (!symbol) continue;
+        const symbolKey = normalizeSymbolKey(symbol) || symbol.toLowerCase();
+        void trackAcademyPersistence(ledger.upsertAgentMemory({
+          key: `academy_symbol_learning:${symbolKey}`,
+          scope: 'shared',
+          category: 'academy',
+          subcategory: 'symbol_learning',
+          kind: 'academy_symbol_learning',
+          symbol,
+          summary: learning.summary || `${symbol} learning`,
+          payload: learning,
+          tags: [symbol, 'academy_symbol_learning', 'recovery'].filter(Boolean),
+          source: learning.source || 'academy_shutdown_recovery'
+        }), `academy_recovery_symbol_learning:${symbolKey}`);
+      }
+    }
+
+    return {
+      ok: true as const,
+      recovered: true as const,
+      caseCount: mergedCases.length,
+      lessonCount: mergedLessons.length,
+      symbolLearningCount: mergedSymbolLearnings.length
+    };
+  }, [
+    academyLessonLimit,
+    appendLiveError,
+    buildAcademyLessonContextString,
+    clearAcademyShutdownBackup,
+    normalizeSymbolKey,
+    trackAcademyPersistence,
+    writeAcademyShutdownState
+  ]);
 
   useEffect(() => {
     academyLessonContextRef.current = buildAcademyLessonContextString(
@@ -17501,7 +19018,10 @@ const App: React.FC = () => {
       ? payload.frames.map((frame: any) => ({
           tf: String(frame.tf || ''),
           barsCount: Number(frame.barsCount || 0) || 0,
-          lastUpdatedAtMs: frame.lastUpdatedAtMs ?? null
+          lastUpdatedAtMs: frame.lastUpdatedAtMs ?? null,
+          indicators: frame?.indicators && typeof frame.indicators === 'object'
+            ? frame.indicators
+            : null
         }))
       : [];
     const warmupBarsByTimeframe = buildSignalWarmupBarsByTimeframe(resolvedTimeframes);
@@ -17681,10 +19201,27 @@ const App: React.FC = () => {
     symbolScopeSymbol
   ]);
 
-  const runSignalScan = useCallback(async (source: 'manual' | 'auto') => {
-    const symbolList = signalSymbols.length > 0
-      ? signalSymbols
-      : [resolveChartChatSymbol()].map((entry) => String(entry || '').trim()).filter(Boolean);
+  const runSignalScan = useCallback(async (
+    source: 'manual' | 'auto',
+    opts?: {
+      symbolListOverride?: string[] | null;
+      timeframesOverride?: string[] | null;
+      strategyModesOverride?: SignalStrategyMode[] | null;
+      probabilityMinOverride?: number | null;
+      probabilityMaxOverride?: number | null;
+      targetPointsOverride?: number | null;
+      forceSuggestOnly?: boolean;
+      intentMeta?: { intentId: string; intentRunId: string; intentLabel?: string | null } | null;
+    }
+  ) => {
+    const overrideSymbols = Array.isArray(opts?.symbolListOverride)
+      ? opts.symbolListOverride.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    const symbolList = overrideSymbols.length > 0
+      ? overrideSymbols
+      : signalSymbols.length > 0
+        ? signalSymbols
+        : [resolveChartChatSymbol()].map((entry) => String(entry || '').trim()).filter(Boolean);
     if (symbolList.length === 0) return;
     const scanAttemptAt = Date.now();
     setSignalLastAttemptAtMs(scanAttemptAt);
@@ -17699,11 +19236,31 @@ const App: React.FC = () => {
     if (source === 'auto') {
       refreshSlaMonitor.noteAttempt(SIGNAL_AUTO_REFRESH_TASK_ID, scanAttemptAt);
     }
-    const baseTimeframes = signalTimeframes.length > 0 ? signalTimeframes : DEFAULT_SIGNAL_TIMEFRAMES;
-    const timeframes = buildSignalSnapshotTimeframes(baseTimeframes, signalStrategyModes);
+    const overrideTimeframes = Array.isArray(opts?.timeframesOverride)
+      ? opts.timeframesOverride.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    const baseTimeframes = overrideTimeframes.length > 0
+      ? overrideTimeframes
+      : signalTimeframes.length > 0
+        ? signalTimeframes
+        : DEFAULT_SIGNAL_TIMEFRAMES;
+    const strategyModesActive = Array.isArray(opts?.strategyModesOverride) && opts?.strategyModesOverride.length > 0
+      ? opts.strategyModesOverride
+      : signalStrategyModes;
+    const timeframes = buildSignalSnapshotTimeframes(baseTimeframes, strategyModesActive);
     const warmupBarsByTimeframe = buildSignalWarmupBarsByTimeframe(timeframes);
-    const probabilityMin = Math.max(1, Math.min(100, signalProbabilityThreshold));
-    const probabilityMax = Math.max(probabilityMin, Math.min(100, signalProbabilityMax));
+    const probabilityMinRaw = Number.isFinite(Number(opts?.probabilityMinOverride))
+      ? Number(opts?.probabilityMinOverride)
+      : signalProbabilityThreshold;
+    const probabilityMaxRaw = Number.isFinite(Number(opts?.probabilityMaxOverride))
+      ? Number(opts?.probabilityMaxOverride)
+      : signalProbabilityMax;
+    const probabilityMin = Math.max(1, Math.min(100, probabilityMinRaw));
+    const probabilityMax = Math.max(probabilityMin, Math.min(100, probabilityMaxRaw));
+    const targetPointsMin = Number.isFinite(Number(opts?.targetPointsOverride))
+      ? Math.max(0, Number(opts?.targetPointsOverride))
+      : null;
+    const intentMeta = opts?.intentMeta || null;
     const primarySymbol = signalPrimarySymbol || symbolList[0] || null;
     const primaryScopeKey = primarySymbol ? buildSnapshotScopeKey(primarySymbol, timeframes) : null;
     const pendingGaps = await computeFrameGapWorker({
@@ -17974,25 +19531,25 @@ const App: React.FC = () => {
           ? ''
           : await buildSignalMemoryContext({ symbol, limit: signalMemoryLimit });
         const newsContext = buildSignalNewsContext(newsSnapshot, symbol);
-        const baseSystemContext = {
-          symbol,
-          timeframes,
-          strategyModes: signalStrategyModes,
-          expiryMinutes: signalExpiryMinutes,
-          thresholdMin: probabilityMin,
-          thresholdMax: probabilityMax,
+          const baseSystemContext = {
+            symbol,
+            timeframes,
+            strategyModes: strategyModesActive,
+            expiryMinutes: signalExpiryMinutes,
+            thresholdMin: probabilityMin,
+            thresholdMax: probabilityMax,
           memoryMode: signalMemoryMode,
           memoryContext,
           newsContext,
           includePatterns: signalIncludePatterns
         };
-        const prompt = buildSignalPrompt({
-          symbol,
-          timeframes,
-          strategyModes: signalStrategyModes,
-          expiryMinutes: signalExpiryMinutes,
-          allowMemoryTools
-        });
+          const prompt = buildSignalPrompt({
+            symbol,
+            timeframes,
+            strategyModes: strategyModesActive,
+            expiryMinutes: signalExpiryMinutes,
+            allowMemoryTools
+          });
         const attachments = snapshotBundle?.imageDataUrl
           ? [{ dataUrl: snapshotBundle.imageDataUrl, label: 'Native chart snapshot' }]
           : null;
@@ -18066,13 +19623,17 @@ const App: React.FC = () => {
               const targets = Array.isArray(item?.targets) ? item.targets.map((v: any) => Number(v)).filter((v: any) => Number.isFinite(v)) : [];
               const takeProfit = Number(item?.takeProfit ?? item?.tp ?? targets[0]);
               if (!Number.isFinite(entryPrice) || !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit)) continue;
+              if (targetPointsMin != null) {
+                const targetDistance = Math.abs(takeProfit - entryPrice);
+                if (!Number.isFinite(targetDistance) || targetDistance < targetPointsMin) continue;
+              }
               const probability = normalizeSignalProbability(item?.probability ?? item?.confidence ?? 0);
               const strategyRaw = String(item?.strategyMode || item?.strategy || '').trim().toLowerCase();
               const strategyMode =
                 strategyRaw === 'scalp' || strategyRaw === 'day' || strategyRaw === 'swing'
                   ? (strategyRaw as SignalStrategyMode)
                   : null;
-              if (strategyMode && signalStrategyModes.length > 0 && !signalStrategyModes.includes(strategyMode)) {
+              if (strategyMode && strategyModesActive.length > 0 && !strategyModesActive.includes(strategyMode)) {
                 continue;
               }
               const reason = item?.reason ? String(item.reason) : '';
@@ -18111,6 +19672,9 @@ const App: React.FC = () => {
                 agentName: agent?.name || null,
                 executionSource: null,
                 runId,
+                intentId: intentMeta?.intentId || null,
+                intentRunId: intentMeta?.intentRunId || null,
+                intentLabel: intentMeta?.intentLabel || null,
                 newsSnapshot
               };
               entry.tradeProposal = buildTradeProposalFromSignal(entry, agent?.id || null);
@@ -18120,6 +19684,12 @@ const App: React.FC = () => {
           if (res?.tradeProposal) {
             const proposal = res.tradeProposal;
             if (proposal?.symbol && proposal?.entryPrice && proposal?.stopLoss && proposal?.takeProfit) {
+              if (targetPointsMin != null) {
+                const targetDistance = Math.abs(Number(proposal.takeProfit) - Number(proposal.entryPrice));
+                if (!Number.isFinite(targetDistance) || targetDistance < targetPointsMin) {
+                  continue;
+                }
+              }
               const modeRaw = String(proposal?.setup?.mode || '').trim().toLowerCase();
               const proposalMode =
                 modeRaw === 'scalp' || modeRaw === 'day' || modeRaw === 'swing'
@@ -18175,6 +19745,9 @@ const App: React.FC = () => {
                 agentName: agent?.name || null,
                 executionSource: null,
                 runId,
+                intentId: intentMeta?.intentId || null,
+                intentRunId: intentMeta?.intentRunId || null,
+                intentLabel: intentMeta?.intentLabel || null,
                 tradeProposal: normalizedProposal,
                 newsSnapshot
               };
@@ -18277,6 +19850,7 @@ const App: React.FC = () => {
 
       const autoCfg = autoPilotConfigRef.current || {};
       const allowAuto =
+        !opts?.forceSuggestOnly &&
         signalAutoExecuteEnabled &&
         autoCfg?.enabled &&
         !autoCfg?.killSwitch &&
@@ -18412,6 +19986,135 @@ const App: React.FC = () => {
   useEffect(() => {
     runSignalScanAutoRef.current = runSignalScan;
   }, [runSignalScan]);
+
+  const runSignalIntent = useCallback(async (intent: SignalIntent, slotKey: string) => {
+    const intentId = String(intent?.id || '').trim();
+    if (!intentId || signalIntentInFlightRef.current.has(intentId)) return;
+    signalIntentInFlightRef.current.add(intentId);
+    const triggerAtMs = Date.now();
+    const runId = createSignalIntentRunId(intentId);
+    const symbol = String(intent.symbol || '').trim();
+    const timeframes = Array.isArray(intent.timeframes)
+      ? intent.timeframes.map((entry) => normalizeTimeframeKey(entry)).filter((entry): entry is string => !!entry)
+      : [];
+    const scopeKey = symbol && timeframes.length > 0 ? buildSnapshotScopeKey(symbol, timeframes) : null;
+    let runResult: SignalIntentRun['result'] = 'no_match';
+    let signalIds: string[] = [];
+    let note: string | null = null;
+    try {
+      await runSignalScan('auto', {
+        symbolListOverride: symbol ? [symbol] : null,
+        timeframesOverride: timeframes.length > 0 ? timeframes : null,
+        strategyModesOverride: intent.strategyMode ? [String(intent.strategyMode).toLowerCase() as SignalStrategyMode] : null,
+        probabilityMinOverride: intent.probabilityMin ?? null,
+        targetPointsOverride: intent.targetPoints ?? null,
+        forceSuggestOnly: true,
+        intentMeta: {
+          intentId,
+          intentRunId: runId,
+          intentLabel: intent.rawPrompt || null
+        }
+      });
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        const spawned = (signalEntriesRef.current || []).filter((entry) => String(entry.intentRunId || '').trim() === runId);
+        if (spawned.length > 0) {
+          signalIds = spawned.map((entry) => entry.id);
+          runResult = 'spawned';
+          break;
+        }
+        await sleepMs(50);
+      }
+      if (runResult !== 'spawned') {
+        runResult = 'no_match';
+      }
+    } catch (err: any) {
+      runResult = 'error';
+      note = err?.message ? String(err.message) : 'Signal intent trigger failed.';
+      appendLiveError({
+        source: 'signal_intent_trigger_failed',
+        level: 'warn',
+        message: note,
+        detail: { intentId, slotKey, runId }
+      });
+    } finally {
+      const run: SignalIntentRun = {
+        intentId,
+        runId,
+        triggerAtMs,
+        scopeKey,
+        result: runResult,
+        signalIds: signalIds.length > 0 ? signalIds : null,
+        note
+      };
+      setSignalIntentRuns((prev) => [run, ...prev].slice(0, 10000));
+      await upsertSignalIntentRunMemory(run).catch(() => null);
+      const currentIntent = (signalIntentsRef.current || []).find((entry) => String(entry.id || '').trim() === intentId) || intent;
+      const patched = applySignalIntentPatch(currentIntent, {
+        lastTriggeredAtMs: triggerAtMs,
+        lastTriggeredSlotKey: slotKey,
+        nextDueAtMs: computeSignalIntentNextDueAt(currentIntent, triggerAtMs)
+      });
+      setSignalIntents((prev) => {
+        const nextMap = new Map(prev.map((entry) => [entry.id, entry]));
+        nextMap.set(patched.id, patched);
+        return sortSignalIntents(Array.from(nextMap.values()));
+      });
+      await upsertSignalIntentMemory(patched, 'signal_intent_scheduler').catch(() => null);
+      appendLiveError({
+        source: runResult === 'spawned' ? 'signal_intent_signal_spawned' : runResult === 'error' ? 'signal_intent_trigger_failed' : 'signal_intent_no_match',
+        level: runResult === 'error' ? 'warn' : 'info',
+        message: `Signal intent ${runResult} ${intentId}`,
+        detail: {
+          intentId,
+          slotKey,
+          runId,
+          signalIds: signalIds.length > 0 ? signalIds : null
+        }
+      });
+      signalIntentInFlightRef.current.delete(intentId);
+    }
+  }, [appendLiveError, normalizeTimeframeKey, runSignalScan, upsertSignalIntentMemory, upsertSignalIntentRunMemory]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let stop: (() => void) | null = null;
+    if (!signalIntentFeatureFlags.signalIntentV1Scheduler) {
+      return () => {};
+    }
+    const tick = async () => {
+      if (cancelled) return;
+      const intents = (signalIntentsRef.current || []).filter((intent) => intent && intent.status === 'active');
+      if (intents.length === 0) return;
+      const now = Date.now();
+      const due = computeDueIntents(intents, now, signalIntentSeenSlotsRef.current);
+      if (!Array.isArray(due) || due.length === 0) return;
+      for (const item of due) {
+        const slotKey = String(item?.slotKey || '').trim();
+        const intentId = String(item?.intent?.id || '').trim();
+        if (!slotKey || !intentId) continue;
+        if (signalIntentSeenSlotsRef.current.has(slotKey)) continue;
+        signalIntentSeenSlotsRef.current.add(slotKey);
+        while (signalIntentSeenSlotsRef.current.size > 4000) {
+          const first = signalIntentSeenSlotsRef.current.values().next().value;
+          if (!first) break;
+          signalIntentSeenSlotsRef.current.delete(first);
+        }
+        void runSignalIntent(item.intent, slotKey);
+      }
+    };
+    void tick();
+    void loadFeatureControllers().then((mod) => {
+      if (cancelled) return;
+      stop = mod.startIntervalControllerSafe({
+        intervalMs: 15_000,
+        onTick: () => tick()
+      });
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [runSignalIntent, signalIntentFeatureFlags.signalIntentV1Scheduler]);
 
   useEffect(() => {
     const intervalMs = Number.isFinite(Number(signalRefreshIntervalMs))
@@ -31806,6 +33509,43 @@ const App: React.FC = () => {
       // ignore storage errors
     }
 
+    const runStartupAcademyRecovery = async () => {
+      let shouldRecoverAcademy = hadDirtyShutdown;
+      try {
+        const rawAcademyState = localStorage.getItem(ACADEMY_SHUTDOWN_STATE_KEY);
+        if (rawAcademyState) {
+          const parsed = JSON.parse(rawAcademyState);
+          const status = String(parsed?.status || '').trim().toLowerCase();
+          if (status === 'pending' || status === 'failed' || status === 'timeout') {
+            shouldRecoverAcademy = true;
+          }
+        }
+      } catch {
+        // ignore storage errors
+      }
+      let backupExists = false;
+      try {
+        backupExists = !!String(localStorage.getItem(ACADEMY_SHUTDOWN_BACKUP_KEY) || '').trim();
+      } catch {
+        backupExists = false;
+      }
+      if (!shouldRecoverAcademy && !backupExists) return;
+      const recoveryReason = shouldRecoverAcademy ? 'unclean_shutdown' : 'startup_backup_present';
+      const result = await recoverAcademyFromShutdownBackup(recoveryReason);
+      if (!result?.recovered) return;
+      void appendAuditEvent({
+        eventType: 'academy_shutdown_recovery',
+        level: 'info',
+        payload: {
+          reason: recoveryReason,
+          caseCount: result.caseCount ?? 0,
+          lessonCount: result.lessonCount ?? 0,
+          symbolLearningCount: result.symbolLearningCount ?? 0
+        }
+      });
+    };
+    void runStartupAcademyRecovery();
+
     const handleUnload = () => {
       try {
         localStorage.setItem(SHUTDOWN_STATE_KEY, JSON.stringify({ clean: true, ts: Date.now() }));
@@ -31816,13 +33556,65 @@ const App: React.FC = () => {
         eventType: 'app_shutdown',
         payload: { clean: true }
       });
+      if (!academyShutdownInProgressRef.current) {
+        void flushAcademyForShutdown('beforeunload', ACADEMY_SHUTDOWN_TIMEOUT_MS);
+      }
     };
 
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
     };
-  }, [addNotification, appendAuditEvent, setAutoPilotConfig]);
+  }, [
+    addNotification,
+    appendAuditEvent,
+    flushAcademyForShutdown,
+    recoverAcademyFromShutdownBackup,
+    setAutoPilotConfig
+  ]);
+
+  useEffect(() => {
+    const subscribePrepareShutdown = window.glass?.app?.onPrepareShutdown;
+    const notifyShutdownReady = window.glass?.app?.notifyShutdownReady;
+    if (typeof subscribePrepareShutdown !== 'function' || typeof notifyShutdownReady !== 'function') {
+      return;
+    }
+    return subscribePrepareShutdown((payload) => {
+      const requestId = String(payload?.requestId || '').trim();
+      academyShutdownRequestIdRef.current = requestId || null;
+      const timeoutMs = Math.max(
+        1000,
+        Number(payload?.timeoutMs || ACADEMY_SHUTDOWN_TIMEOUT_MS) || ACADEMY_SHUTDOWN_TIMEOUT_MS
+      );
+      void (async () => {
+        const result = await flushAcademyForShutdown('app_prepare_shutdown', timeoutMs);
+        try {
+          await notifyShutdownReady({
+            requestId: requestId || undefined,
+            payload: {
+              ok: !!result?.ok,
+              timedOut: !!result?.timedOut,
+              elapsedMs: Number(result?.elapsedMs || 0) || null,
+              persistedCaseCount: Number(result?.persistedCaseCount || 0) || 0,
+              persistedLessonCount: Number(result?.persistedLessonCount || 0) || 0,
+              persistedSymbolLearningCount: Number(result?.persistedSymbolLearningCount || 0) || 0,
+              reason: 'app_prepare_shutdown'
+            }
+          });
+        } catch (err: any) {
+          appendLiveError({
+            source: 'academy_shutdown_handshake',
+            level: 'warn',
+            message: 'Shutdown ready acknowledgement failed.',
+            detail: {
+              requestId: requestId || null,
+              error: err?.message ? String(err.message) : 'unknown_error'
+            }
+          });
+        }
+      })();
+    });
+  }, [appendLiveError, flushAcademyForShutdown]);
 
   
   // Sidebar state management
@@ -33169,8 +34961,11 @@ const App: React.FC = () => {
         signalTelegramAllowStatus,
         signalTelegramAllowChart,
         signalTelegramConfirmationsEnabled,
+        signalIntentTelegramOpsEnabled: signalIntentFeatureFlags.signalIntentV1TelegramOps,
         signalStatusSet: SIGNAL_TELEGRAM_STATUS_SET as Set<string>,
         signalEntriesRef,
+        signalIntentsRef,
+        signalIntentRunsRef,
         tlStatus,
         tlPositionsRef,
         tlOrdersRef,
@@ -33186,6 +34981,9 @@ const App: React.FC = () => {
         telegramWatcherResumeRef,
         sendTelegramText,
         resolveTelegramSignalEntry,
+        resolveTelegramSignalIntent: resolveSignalIntentByToken,
+        pauseSignalIntent,
+        resumeSignalIntent,
         formatTelegramSignalLine,
         formatTimeframeLabel,
         buildTelegramSignalInlineActions,
@@ -33233,11 +35031,14 @@ const App: React.FC = () => {
     parseTelegramSymbol,
     parseTelegramTimeframe,
     patternSymbols,
+    pauseSignalIntent,
     queueTelegramConfirmation,
     rejectSignalEntry,
+    resolveSignalIntentByToken,
     resolveTelegramPendingAction,
     resolveTradeLockerSymbolBestEffort,
     resolveTelegramSignalEntry,
+    resumeSignalIntent,
     runTelegramManageAction,
     runTelegramSignalAction,
     sendTelegramPhoto,
@@ -33246,6 +35047,7 @@ const App: React.FC = () => {
     signalTelegramAllowChart,
     signalTelegramAllowManage,
     signalTelegramAllowStatus,
+    signalIntentFeatureFlags.signalIntentV1TelegramOps,
     signalTelegramBotToken,
     signalTelegramChatId,
     signalTelegramCommandMode,
@@ -33873,6 +35675,14 @@ const App: React.FC = () => {
       academyLessonValidCount: Number(academyDataQualityStatsRef.current.lessonValidCount || 0),
       academyLessonDroppedCount: Number(academyDataQualityStatsRef.current.lessonDroppedCount || 0),
       academyRepairUpserts: Number(academyDataQualityStatsRef.current.repairUpserts || 0),
+      academyLearningGraphNodeCount: Number(academyLearningGraphTelemetryRef.current.nodeCount || 0),
+      academyLearningGraphEdgeCount: Number(academyLearningGraphTelemetryRef.current.edgeCount || 0),
+      academyLearningGraphBuildMs: Number(academyLearningGraphTelemetryRef.current.buildMs || 0),
+      academyLearningGraphConflictCount: Number(academyLearningGraphTelemetryRef.current.conflictCount || 0),
+      academyLearningGraphPathRuns: Number(academyLearningGraphTelemetryRef.current.pathRuns || 0),
+      academyGraphCaseActions: Number(academyLearningGraphTelemetryRef.current.graphCaseActions || 0),
+      academyGraphLifecycleActions: Number(academyLearningGraphTelemetryRef.current.graphLifecycleActions || 0),
+      academyGraphExportCount: Number(academyLearningGraphTelemetryRef.current.graphExportCount || 0),
       ledgerArchiveMoves: Number(ledgerArchiveStatsRef.current.moves || 0),
       ledgerArchiveRows: Number(ledgerArchiveStatsRef.current.rows || 0),
       signalIdCollisionPreventedCount: Number(signalIdCollisionPreventedCountRef.current || 0),
@@ -36373,6 +38183,17 @@ const App: React.FC = () => {
                         void prefillSignalTicket(entry, 'tradelocker');
                       }}
                       onClearSignals={clearSignalEntries}
+                      intents={signalIntentFeatureFlags.signalIntentV1Composer ? signalIntents : []}
+                      onOpenIntentComposer={() => {
+                        if (!signalIntentFeatureFlags.signalIntentV1Composer) return;
+                        setSignalIntentComposerOpen(true);
+                      }}
+                      onPauseIntent={(id) => {
+                        void pauseSignalIntent(id, 'signal_panel');
+                      }}
+                      onResumeIntent={(id) => {
+                        void resumeSignalIntent(id, 'signal_panel');
+                      }}
                       crossPanelContext={crossPanelContext}
                     />
                 )}
@@ -36735,6 +38556,38 @@ const App: React.FC = () => {
                       outcomeFeedConsistency={outcomeFeedConsistency}
                       focusRequest={academyFocusRequest}
                       onFocusRequestConsumed={handleAcademyFocusRequestConsumed}
+                      onApplyLesson={(lessonId, targetAgentKey) => {
+                        return runAcademyLessonLifecycleAction({
+                          lessonId,
+                          action: 'apply',
+                          targetAgentKey: targetAgentKey || null
+                        });
+                      }}
+                      onSimulateLesson={(lessonId) => {
+                        return runAcademyLessonSimulation(lessonId);
+                      }}
+                      onPinLesson={(lessonId, nextPinned) => {
+                        return runAcademyLessonLifecycleAction({
+                          lessonId,
+                          action: nextPinned ? 'pin' : 'unpin'
+                        });
+                      }}
+                      onSetLessonLifecycle={(lessonId, next) => {
+                        return runAcademyLessonLifecycleAction({
+                          lessonId,
+                          action: next === 'core'
+                            ? 'promote'
+                            : next === 'deprecated'
+                              ? 'deprecate'
+                              : 'demote_candidate'
+                        });
+                      }}
+                      onLearningGraphBuilt={recordAcademyLearningGraphBuilt}
+                      onLearningGraphLensChanged={recordAcademyLearningGraphLensChanged}
+                      onLearningPathGenerated={recordAcademyLearningPathGenerated}
+                      onLearningGraphCaseAction={recordAcademyLearningGraphCaseAction}
+                      onLearningGraphPathZoom={recordAcademyLearningGraphPathZoom}
+                      learningGraphFeatureFlags={learningGraphFeatureFlags}
                       panelFreshness={panelFreshness.find((row) => row.panel === 'academy') || null}
                     />
                 )}
@@ -36975,6 +38828,37 @@ const App: React.FC = () => {
         </WindowFrame>
 
       </div>
+
+      {signalIntentFeatureFlags.signalIntentV1Composer && signalIntentComposerOpen && (
+        <React.Suspense fallback={null}>
+          <SignalIntentComposer
+            open={signalIntentComposerOpen}
+            onClose={() => setSignalIntentComposerOpen(false)}
+            agents={(agents || []).map((agent) => ({
+              id: String(agent?.id || '').trim(),
+              name: agent?.name ? String(agent.name) : null
+            })).filter((agent) => agent.id)}
+            knownSymbols={Array.from(
+              new Set(
+                [
+                  ...(Array.isArray(signalSymbols) ? signalSymbols : []),
+                  ...(Array.isArray(patternSymbols) ? patternSymbols : []),
+                  ...(Array.isArray(brokerWatchSymbols) ? brokerWatchSymbols : []),
+                  symbolScopeSymbol,
+                  activeBrokerSymbol,
+                  signalPrimarySymbol
+                ]
+                  .map((entry) => String(entry || '').trim().toUpperCase())
+                  .filter(Boolean)
+              )
+            )}
+            defaultSymbol={signalPrimarySymbol || symbolScopeSymbol || activeBrokerSymbol || null}
+            defaultTimeframes={signalTimeframes}
+            onAssistParse={assistSignalIntentParse}
+            onCreateIntent={createSignalIntent}
+          />
+        </React.Suspense>
+      )}
 
       <OnboardingGate
         open={onboardingOpen}

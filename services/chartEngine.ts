@@ -1,5 +1,7 @@
 import { Candle, computeAtrSeries, computeEmaSeries, computeRsiSeries, computeSmaSeries, resolutionToMs } from './backtestEngine';
 import { normalizeSymbolKey, normalizeSymbolLoose, normalizeTimeframe } from './symbols';
+import { computeBollinger20x2, computeFibRetracementFromSwings, computeIchimoku9526, computeSessionVwap } from './indicatorMath';
+import { detectHarmonicPatterns } from './harmonicPatternEngine';
 
 export type ChartQuote = {
   symbol: string;
@@ -19,6 +21,28 @@ export type ChartIndicators = {
   emaSlow?: number | null;
   atr?: number | null;
   rsi?: number | null;
+  indicatorContextVersion?: 'v1' | null;
+  vwapSession?: string | null;
+  vwap?: number | null;
+  vwapDistanceBps?: number | null;
+  bbBasis?: number | null;
+  bbUpper?: number | null;
+  bbLower?: number | null;
+  bbWidthPct?: number | null;
+  bbZScore?: number | null;
+  bbPosition?: string | null;
+  ichimokuTenkan?: number | null;
+  ichimokuKijun?: number | null;
+  ichimokuSenkouA?: number | null;
+  ichimokuSenkouB?: number | null;
+  ichimokuChikou?: number | null;
+  ichimokuBias?: string | null;
+  fibAnchorHigh?: number | null;
+  fibAnchorLow?: number | null;
+  fibDirection?: 'up' | 'down' | null;
+  fibNearestLevel?: string | null;
+  fibNearestDistanceBps?: number | null;
+  fibLevels?: Record<string, number> | null;
 };
 
 export type ChartSessionHealth = {
@@ -39,6 +63,8 @@ export type PatternEvent = {
   type: string;
   strength?: number | null;
   payload?: Record<string, any> | null;
+  patternKey?: string | null;
+  source?: 'live' | 'refresh' | 'startup_backfill' | string | null;
 };
 
 export type ChartWatchConfig = {
@@ -119,6 +145,19 @@ export type ChartFrameCacheTelemetry = {
     lastFlushError: string | null;
     lastClearAtMs: number | null;
   };
+  patternDetection: {
+    fromRefresh: number;
+    fromLive: number;
+    fromStartupBackfill: number;
+    dedupeSuppressed: number;
+    harmonicDetectedFromRefresh?: number;
+    harmonicDetectedFromLive?: number;
+    harmonicDetectedFromStartupBackfill?: number;
+    harmonicDedupeSuppressed?: number;
+    indicatorCoverageCount?: number;
+    fibAnchorMissingCount?: number;
+    indicatorComputeMs?: number;
+  };
 };
 
 type ChartSessionInternal = {
@@ -176,7 +215,14 @@ const DEFAULT_DETECTORS = [
   'engulfing',
   'inside_bar',
   'pin_bar',
-  'fvg'
+  'fvg',
+  'harmonic_gartley',
+  'harmonic_bat',
+  'harmonic_butterfly',
+  'harmonic_crab',
+  'harmonic_deep_crab',
+  'harmonic_cypher',
+  'harmonic_shark'
 ];
 const DEFAULT_BARS_BACKFILL = 320;
 const DEFAULT_MAX_BARS = 600;
@@ -193,7 +239,11 @@ const DEFAULT_SMA_FAST = 20;
 const DEFAULT_SMA_SLOW = 50;
 const DEFAULT_EMA_FAST = 12;
 const DEFAULT_EMA_SLOW = 26;
+const BB_SQUEEZE_WIDTH_PCT = 1.2;
+const FIB_NEAR_LEVEL_BPS = 20;
 const MAX_EVENT_KEY_CACHE = 5000;
+const MAX_PATTERN_EVENT_KEY_CACHE = 20000;
+const PATTERN_REFRESH_BACKFILL_BARS = 6;
 
 const nowFallback = () => Date.now();
 
@@ -433,6 +483,20 @@ const clampNumber = (value: number | null, digits = 4) => {
   return Math.round(value * factor) / factor;
 };
 
+const buildPatternEventKey = (event: Partial<PatternEvent> | null | undefined) => {
+  if (!event) return '';
+  const preferred = String((event as any)?.patternKey || '').trim();
+  if (preferred) return preferred;
+  const symbol = normalizeSymbolLoose(String(event.symbol || '').trim()) || normalizeSymbolKey(String(event.symbol || '').trim());
+  const timeframe = normalizeTimeframe(String(event.timeframe || '').trim());
+  const type = String(event.type || '').trim().toLowerCase();
+  const ts = Number(event.ts || 0);
+  if (!symbol || !timeframe || !type || !Number.isFinite(ts) || ts <= 0) return '';
+  return `${symbol}|${timeframe}|${type}|${Math.floor(ts)}`;
+};
+
+type PatternDetectionSource = 'live' | 'refresh' | 'startup_backfill';
+
 export class ChartEngine {
   private readonly getHistorySeries: ChartEngineOptions['getHistorySeries'];
   private readonly nowMs: () => number;
@@ -447,6 +511,8 @@ export class ChartEngine {
   private recentEvents: PatternEvent[] = [];
   private eventKeyCache = new Set<string>();
   private eventKeyOrder: string[] = [];
+  private patternEventKeyCache = new Set<string>();
+  private patternEventKeyOrder: string[] = [];
   private historyInFlightCount = 0;
   private historyConcurrency = 1;
   private historyWaiters: Array<() => void> = [];
@@ -462,6 +528,17 @@ export class ChartEngine {
   private frameCacheLastFlushError: string | null = null;
   private frameCacheLastHydrateAtMs: number | null = null;
   private frameCacheLastClearAtMs: number | null = null;
+  private patternDetectionFromRefresh = 0;
+  private patternDetectionFromLive = 0;
+  private patternDetectionFromStartupBackfill = 0;
+  private patternDetectionDedupeSuppressed = 0;
+  private harmonicDetectionFromRefresh = 0;
+  private harmonicDetectionFromLive = 0;
+  private harmonicDetectionFromStartupBackfill = 0;
+  private harmonicDetectionDedupeSuppressed = 0;
+  private indicatorCoverageCount = 0;
+  private fibAnchorMissingCount = 0;
+  private indicatorComputeMsTotal = 0;
 
   constructor(options: ChartEngineOptions) {
     this.getHistorySeries = options.getHistorySeries;
@@ -526,6 +603,19 @@ export class ChartEngine {
         lastFlushAtMs: this.frameCacheLastFlushAtMs,
         lastFlushError: this.frameCacheLastFlushError,
         lastClearAtMs: this.frameCacheLastClearAtMs
+      },
+      patternDetection: {
+        fromRefresh: Math.max(0, Number(this.patternDetectionFromRefresh || 0)),
+        fromLive: Math.max(0, Number(this.patternDetectionFromLive || 0)),
+        fromStartupBackfill: Math.max(0, Number(this.patternDetectionFromStartupBackfill || 0)),
+        dedupeSuppressed: Math.max(0, Number(this.patternDetectionDedupeSuppressed || 0)),
+        harmonicDetectedFromRefresh: Math.max(0, Number(this.harmonicDetectionFromRefresh || 0)),
+        harmonicDetectedFromLive: Math.max(0, Number(this.harmonicDetectionFromLive || 0)),
+        harmonicDetectedFromStartupBackfill: Math.max(0, Number(this.harmonicDetectionFromStartupBackfill || 0)),
+        harmonicDedupeSuppressed: Math.max(0, Number(this.harmonicDetectionDedupeSuppressed || 0)),
+        indicatorCoverageCount: Math.max(0, Number(this.indicatorCoverageCount || 0)),
+        fibAnchorMissingCount: Math.max(0, Number(this.fibAnchorMissingCount || 0)),
+        indicatorComputeMs: Math.max(0, Number(this.indicatorComputeMsTotal || 0))
       }
     };
   }
@@ -588,6 +678,8 @@ export class ChartEngine {
         this.recentEvents = events.slice(-limit);
         for (const evt of this.recentEvents) {
           if (evt?.id) this.eventKeyCache.add(evt.id);
+          const patternKey = buildPatternEventKey(evt);
+          if (patternKey) this.rememberPatternEventKey(patternKey);
         }
         return this.recentEvents;
       }
@@ -901,7 +993,29 @@ export class ChartEngine {
       const smaSlow = clampNumber(session.indicators.smaSlow ?? null, 4);
       const emaFast = clampNumber(session.indicators.emaFast ?? null, 4);
       const emaSlow = clampNumber(session.indicators.emaSlow ?? null, 4);
+      const vwap = clampNumber(session.indicators.vwap ?? null, 4);
+      const vwapDistanceBps = clampNumber(session.indicators.vwapDistanceBps ?? null, 2);
+      const bbBasis = clampNumber(session.indicators.bbBasis ?? null, 4);
+      const bbUpper = clampNumber(session.indicators.bbUpper ?? null, 4);
+      const bbLower = clampNumber(session.indicators.bbLower ?? null, 4);
+      const bbWidthPct = clampNumber(session.indicators.bbWidthPct ?? null, 3);
+      const bbZScore = clampNumber(session.indicators.bbZScore ?? null, 3);
+      const ichiBias = String(session.indicators.ichimokuBias || '').trim() || '--';
+      const fibNearestLevel = String(session.indicators.fibNearestLevel || '').trim() || '--';
+      const fibDistanceBps = clampNumber(session.indicators.fibNearestDistanceBps ?? null, 2);
       const health = session.health.status;
+      const indicatorTags: string[] = [];
+      if (bbWidthPct != null && bbWidthPct <= BB_SQUEEZE_WIDTH_PCT) indicatorTags.push('bb_squeeze');
+      if (vwapDistanceBps != null) {
+        if (vwapDistanceBps > 0) indicatorTags.push('above_vwap');
+        else if (vwapDistanceBps < 0) indicatorTags.push('below_vwap');
+      }
+      if (ichiBias === 'bullish') indicatorTags.push('ichimoku_cloud_above');
+      else if (ichiBias === 'bearish') indicatorTags.push('ichimoku_cloud_below');
+      else if (ichiBias === 'in_cloud') indicatorTags.push('ichimoku_in_cloud');
+      if (fibDistanceBps != null && fibDistanceBps <= FIB_NEAR_LEVEL_BPS && fibNearestLevel !== '--') {
+        indicatorTags.push('near_fib_level');
+      }
 
       bodyLines.push(`CHART ${session.symbol} ${session.timeframe}`);
       bodyLines.push(`- Status ${health}${updated ? ` | updated ${updated}` : ''}${session.barCount ? ` | bars ${session.barCount}` : ''}`);
@@ -913,6 +1027,13 @@ export class ChartEngine {
       }
       bodyLines.push(`- Trend ${trend}${emaFast != null && emaSlow != null ? ` | EMA ${emaFast}/${emaSlow}` : ''}${smaFast != null && smaSlow != null ? ` | SMA ${smaFast}/${smaSlow}` : ''}`);
       bodyLines.push(`- RSI ${rsi ?? '--'} | ATR ${atr ?? '--'}`);
+      bodyLines.push(
+        `- Indicator V1 VWAP ${vwap ?? '--'}${vwapDistanceBps != null ? ` (${vwapDistanceBps > 0 ? '+' : ''}${vwapDistanceBps}bps)` : ''}`
+        + ` | BB ${bbLower ?? '--'}/${bbBasis ?? '--'}/${bbUpper ?? '--'}${bbWidthPct != null ? ` w${bbWidthPct}%` : ''}${bbZScore != null ? ` z${bbZScore}` : ''}`
+        + ` | ICHI ${ichiBias}`
+        + ` | FIB ${fibNearestLevel}${fibDistanceBps != null ? ` (${fibDistanceBps}bps)` : ''}`
+      );
+      if (indicatorTags.length > 0) bodyLines.push(`- Indicator tags ${indicatorTags.join(', ')}`);
 
       const persisted = this.recentEvents.filter(
         (evt) => evt.symbol === session.symbol && normalizeTimeframe(evt.timeframe) === session.timeframe
@@ -925,6 +1046,20 @@ export class ChartEngine {
     const merged = eventsLimit > 0 ? Array.from(mergedMap.values()).slice(-eventsLimit) : [];
     const patterns = merged.map((evt) => `${evt.type}@${new Date(evt.ts).toISOString().slice(11, 19)}`);
       if (patterns.length > 0) bodyLines.push(`- Patterns ${patterns.join(', ')}`);
+      const harmonicEvents = merged.filter((evt) => String(evt?.payload?.family || '').trim().toLowerCase() === 'harmonic');
+      if (harmonicEvents.length > 0) {
+        const tokens = harmonicEvents.slice(-6).map((evt) => {
+          const harmonicType = String(evt?.payload?.harmonicType || '').trim().toLowerCase() || 'unknown';
+          const direction = String(evt?.payload?.direction || '').trim().toLowerCase() || 'unknown';
+          const przLow = clampNumber(Number(evt?.payload?.prz?.low), 2);
+          const przHigh = clampNumber(Number(evt?.payload?.prz?.high), 2);
+          const confidence = clampNumber(Number(evt?.payload?.confidence), 2);
+          const przToken = przLow != null && przHigh != null ? `${przLow}-${przHigh}` : '--';
+          const confToken = confidence != null ? confidence : '--';
+          return `harmonic:${harmonicType}:${direction} prz:${przToken} confidence:${confToken}`;
+        });
+        if (tokens.length > 0) bodyLines.push(`- Harmonics ${tokens.join(' | ')}`);
+      }
 
       const barsTail = session.barsTail.map((bar) => [bar.t, bar.o, bar.h, bar.l, bar.c]);
       if (barsTail.length > 0) bodyLines.push(`- BarsTail ${JSON.stringify(barsTail)}`);
@@ -1188,10 +1323,12 @@ export class ChartEngine {
     };
   }
 
-  private async refreshSessionHistory(session: ChartSessionInternal, opts?: { force?: boolean }) {
+  private async refreshSessionHistory(session: ChartSessionInternal, opts?: { force?: boolean; detectionSource?: PatternDetectionSource }) {
     const now = this.nowMs();
     if (!opts?.force && !this.shouldRefreshSession(session, now)) return;
     await this.acquireHistorySlot();
+    const hadHistoryBeforeFetch = Number.isFinite(Number(session.lastHistoryFetchAtMs || 0)) && Number(session.lastHistoryFetchAtMs || 0) > 0;
+    const detectionSource: PatternDetectionSource = opts?.detectionSource || (hadHistoryBeforeFetch ? 'refresh' : 'startup_backfill');
     const resMs = session.resolutionMs || resolutionToMs(session.timeframe) || 60_000;
     const lookback = Math.max(1, session.barsBackfill);
     const to = now;
@@ -1281,6 +1418,7 @@ export class ChartEngine {
           session.source = shouldFullFetch ? 'tradelocker' : 'mixed';
         }
         this.refreshIndicators(session);
+        this.detectPatternsForRecentClosedBars(session, detectionSource, PATTERN_REFRESH_BACKFILL_BARS);
         const sessionKey = buildSessionKey(session.symbolKey, session.timeframe);
         this.persistSessionFrames(sessionKey, session);
         this.bumpRevision(session);
@@ -1364,33 +1502,91 @@ export class ChartEngine {
       session.updatedAtMs = this.nowMs();
       session.lastBarCloseAtMs = last.t;
       this.refreshIndicators(session);
-      this.detectPatterns(session, session.bars.length - 2);
+      this.detectPatterns(session, session.bars.length - 2, 'live');
       this.persistSessionFrames(buildSessionKey(session.symbolKey, session.timeframe), session);
       this.bumpRevision(session);
+    }
+  }
+
+  private detectPatternsForRecentClosedBars(
+    session: ChartSessionInternal,
+    source: PatternDetectionSource,
+    barsToScan = PATTERN_REFRESH_BACKFILL_BARS
+  ) {
+    const bars = Array.isArray(session.bars) ? session.bars : [];
+    if (bars.length < 2) return;
+    const closedBarIndex = bars.length - 2;
+    if (closedBarIndex <= 0) return;
+    const boundedBars = Math.max(1, Math.floor(Number(barsToScan) || PATTERN_REFRESH_BACKFILL_BARS));
+    const startIndex = Math.max(1, closedBarIndex - (boundedBars - 1));
+    for (let i = startIndex; i <= closedBarIndex; i += 1) {
+      this.detectPatterns(session, i, source);
     }
   }
 
   private refreshIndicators(session: ChartSessionInternal) {
     const bars = session.bars;
     if (bars.length === 0) return;
-    const smaFastSeries = computeSmaSeries(bars, DEFAULT_SMA_FAST);
-    const smaSlowSeries = computeSmaSeries(bars, DEFAULT_SMA_SLOW);
-    const emaFastSeries = computeEmaSeries(bars, DEFAULT_EMA_FAST);
-    const emaSlowSeries = computeEmaSeries(bars, DEFAULT_EMA_SLOW);
-    const atrSeries = computeAtrSeries(bars, DEFAULT_ATR_PERIOD);
-    const rsiSeries = computeRsiSeries(bars, DEFAULT_RSI_PERIOD);
+    const startedAtMs = Date.now();
+    this.indicatorCoverageCount += 1;
+    const closedBars = bars.length > 1 ? bars.slice(0, -1) : [...bars];
+    const barsForCalc = closedBars.length > 0 ? closedBars : bars;
+    const smaFastSeries = computeSmaSeries(barsForCalc, DEFAULT_SMA_FAST);
+    const smaSlowSeries = computeSmaSeries(barsForCalc, DEFAULT_SMA_SLOW);
+    const emaFastSeries = computeEmaSeries(barsForCalc, DEFAULT_EMA_FAST);
+    const emaSlowSeries = computeEmaSeries(barsForCalc, DEFAULT_EMA_SLOW);
+    const atrSeries = computeAtrSeries(barsForCalc, DEFAULT_ATR_PERIOD);
+    const rsiSeries = computeRsiSeries(barsForCalc, DEFAULT_RSI_PERIOD);
+    const closes = barsForCalc.map((bar) => Number(bar?.c || 0)).filter((value) => Number.isFinite(value));
+    const activeBar = barsForCalc.length > 0 ? barsForCalc[barsForCalc.length - 1] : bars[bars.length - 1];
+    const sessionKey = activeBar?.t ? new Date(activeBar.t).toISOString().slice(0, 10) : '';
+    const vwap = computeSessionVwap(barsForCalc as any, sessionKey || null);
+    const bb = computeBollinger20x2(closes);
+    const ichimoku = computeIchimoku9526(barsForCalc as any);
+    const swingEvents = (Array.isArray(session.patterns) ? session.patterns : []).filter((evt) =>
+      String(evt?.type || '').startsWith('swing_')
+    );
+    const fib = computeFibRetracementFromSwings(swingEvents as any, barsForCalc as any);
+    if (fib.anchorHigh == null || fib.anchorLow == null) this.fibAnchorMissingCount += 1;
+    const activeClose = activeBar?.c != null ? Number(activeBar.c) : null;
+    const vwapDistanceBps = activeClose != null && vwap.value != null && activeClose !== 0
+      ? ((activeClose - vwap.value) / Math.abs(activeClose)) * 10000
+      : null;
 
     session.indicators = {
+      indicatorContextVersion: 'v1',
       smaFast: pickLastValue(smaFastSeries),
       smaSlow: pickLastValue(smaSlowSeries),
       emaFast: pickLastValue(emaFastSeries),
       emaSlow: pickLastValue(emaSlowSeries),
       atr: pickLastValue(atrSeries),
-      rsi: pickLastValue(rsiSeries)
+      rsi: pickLastValue(rsiSeries),
+      vwapSession: vwap.sessionKey || null,
+      vwap: vwap.value ?? null,
+      vwapDistanceBps: clampNumber(vwapDistanceBps, 3),
+      bbBasis: bb.basis ?? null,
+      bbUpper: bb.upper ?? null,
+      bbLower: bb.lower ?? null,
+      bbWidthPct: bb.widthPct ?? null,
+      bbZScore: bb.zScore ?? null,
+      bbPosition: bb.position || null,
+      ichimokuTenkan: ichimoku.tenkan ?? null,
+      ichimokuKijun: ichimoku.kijun ?? null,
+      ichimokuSenkouA: ichimoku.senkouA ?? null,
+      ichimokuSenkouB: ichimoku.senkouB ?? null,
+      ichimokuChikou: ichimoku.chikou ?? null,
+      ichimokuBias: ichimoku.bias || null,
+      fibAnchorHigh: fib.anchorHigh ?? null,
+      fibAnchorLow: fib.anchorLow ?? null,
+      fibDirection: fib.direction ?? null,
+      fibNearestLevel: fib.nearestLevel ?? null,
+      fibNearestDistanceBps: fib.nearestDistanceBps ?? null,
+      fibLevels: fib.levels ?? null
     };
+    this.indicatorComputeMsTotal += Math.max(0, Date.now() - startedAtMs);
   }
 
-  private detectPatterns(session: ChartSessionInternal, barIndex: number) {
+  private detectPatterns(session: ChartSessionInternal, barIndex: number, source: PatternDetectionSource = 'live') {
     const bars = session.bars;
     if (bars.length === 0 || barIndex <= 0) return;
 
@@ -1748,11 +1944,101 @@ export class ChartEngine {
       }
     }
 
+    const harmonicDetectors = Array.from(detectors).filter((detectorId) => String(detectorId || '').startsWith('harmonic_'));
+    if (harmonicDetectors.length > 0) {
+      const harmonicBars = bars.slice(0, barIndex + 1);
+      const harmonicEvents = detectHarmonicPatterns({
+        bars: harmonicBars,
+        symbol: session.symbol,
+        timeframe: session.timeframe,
+        barIndex,
+        enabledDetectors: harmonicDetectors
+      });
+      for (const harmonic of harmonicEvents) {
+        const d = harmonic.anchors.d;
+        const coreRatio = harmonic.ratios.abXa != null
+          ? clampNumber(harmonic.ratios.abXa, 4)
+          : harmonic.ratios.bXaProj != null
+            ? clampNumber(harmonic.ratios.bXaProj, 4)
+            : null;
+        events.push({
+          id: `harmonic_${harmonic.harmonicType}:${harmonic.direction}:${session.symbol}:${session.timeframe}:${d.ts}:${harmonic.anchors.x.ts}`,
+          symbol: session.symbol,
+          timeframe: session.timeframe,
+          ts: d.ts,
+          type: `harmonic_${harmonic.harmonicType}_${harmonic.direction}`,
+          strength: clampNumber(harmonic.score, 4),
+          patternKey: harmonic.patternKey,
+          payload: {
+            family: 'harmonic',
+            harmonicType: harmonic.harmonicType,
+            direction: harmonic.direction,
+            status: 'complete',
+            anchors: {
+              ...(harmonic.anchors.o
+                ? {
+                    o: {
+                      ts: harmonic.anchors.o.ts,
+                      price: clampNumber(harmonic.anchors.o.price, 5),
+                      index: harmonic.anchors.o.index
+                    }
+                  }
+                : {}),
+              x: { ts: harmonic.anchors.x.ts, price: clampNumber(harmonic.anchors.x.price, 5), index: harmonic.anchors.x.index },
+              a: { ts: harmonic.anchors.a.ts, price: clampNumber(harmonic.anchors.a.price, 5), index: harmonic.anchors.a.index },
+              b: { ts: harmonic.anchors.b.ts, price: clampNumber(harmonic.anchors.b.price, 5), index: harmonic.anchors.b.index },
+              c: { ts: harmonic.anchors.c.ts, price: clampNumber(harmonic.anchors.c.price, 5), index: harmonic.anchors.c.index },
+              d: { ts: harmonic.anchors.d.ts, price: clampNumber(harmonic.anchors.d.price, 5), index: harmonic.anchors.d.index }
+            },
+            ratios: {
+              abXa: clampNumber(harmonic.ratios.abXa, 5),
+              bcAb: clampNumber(harmonic.ratios.bcAb, 5),
+              cdBc: clampNumber(harmonic.ratios.cdBc, 5),
+              dXa: clampNumber(harmonic.ratios.dXa, 5),
+              dXc: clampNumber(harmonic.ratios.dXc, 5),
+              bXaProj: clampNumber(harmonic.ratios.bXaProj, 5),
+              cAbProj: clampNumber(harmonic.ratios.cAbProj, 5),
+              dOx: clampNumber(harmonic.ratios.dOx, 5)
+            },
+            prz: {
+              low: clampNumber(harmonic.prz.low, 5),
+              high: clampNumber(harmonic.prz.high, 5),
+              mid: clampNumber(harmonic.prz.mid, 5),
+              widthBps: clampNumber(harmonic.prz.widthBps, 3)
+            },
+            confidence: clampNumber(harmonic.confidence, 4),
+            score: clampNumber(harmonic.score, 4),
+            matureBarsSinceD: harmonic.matureBarsSinceD,
+            coreRatio,
+            source
+          }
+        });
+      }
+    }
+
     if (events.length === 0) return;
     for (const event of events) {
+      event.source = source;
+      const patternKey = buildPatternEventKey(event);
+      event.patternKey = patternKey || null;
+      const isHarmonic = String(event?.payload?.family || '').trim().toLowerCase() === 'harmonic';
+      if (patternKey && this.patternEventKeyCache.has(patternKey)) {
+        this.patternDetectionDedupeSuppressed += 1;
+        if (isHarmonic) this.harmonicDetectionDedupeSuppressed += 1;
+        continue;
+      }
       const typeKey = `${event.type}:${event.ts}`;
       if (session.lastEventKeyByType.get(event.type) === typeKey) continue;
       session.lastEventKeyByType.set(event.type, typeKey);
+      if (patternKey) this.rememberPatternEventKey(patternKey);
+      if (source === 'refresh') this.patternDetectionFromRefresh += 1;
+      else if (source === 'startup_backfill') this.patternDetectionFromStartupBackfill += 1;
+      else this.patternDetectionFromLive += 1;
+      if (isHarmonic) {
+        if (source === 'refresh') this.harmonicDetectionFromRefresh += 1;
+        else if (source === 'startup_backfill') this.harmonicDetectionFromStartupBackfill += 1;
+        else this.harmonicDetectionFromLive += 1;
+      }
       session.patterns.push(event);
       session.patterns = session.patterns.slice(-50);
       this.recentEvents.push(event);
@@ -1783,5 +2069,17 @@ export class ChartEngine {
   private bumpRevision(session: ChartSessionInternal) {
     session.revision += 1;
     this.onUpdate?.({ sessionId: session.id, revision: session.revision, updatedAtMs: session.updatedAtMs });
+  }
+
+  private rememberPatternEventKey(patternKey: string) {
+    const key = String(patternKey || '').trim();
+    if (!key) return;
+    if (this.patternEventKeyCache.has(key)) return;
+    this.patternEventKeyCache.add(key);
+    this.patternEventKeyOrder.push(key);
+    if (this.patternEventKeyOrder.length > MAX_PATTERN_EVENT_KEY_CACHE) {
+      const expired = this.patternEventKeyOrder.shift();
+      if (expired) this.patternEventKeyCache.delete(expired);
+    }
   }
 }
