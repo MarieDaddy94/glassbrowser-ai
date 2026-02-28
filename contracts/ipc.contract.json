@@ -156,6 +156,24 @@
       "inPreload": true
     },
     {
+      "name": "diagnostics:runtimeStream:start",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "diagnostics:runtimeStream:stop",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "gemini:tts",
       "domain": "gemini",
       "scopes": [
@@ -250,6 +268,51 @@
       "domain": "openai",
       "scopes": [
         "openai"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "runtime_ops:controller_state:update",
+      "domain": "runtime_ops",
+      "scopes": [
+        "bridge"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "runtime_ops:external_command:result",
+      "domain": "runtime_ops",
+      "scopes": [
+        "bridge"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "runtime_ops:external_command:subscribe",
+      "domain": "runtime_ops",
+      "scopes": [
+        "bridge"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "runtime_ops:external_command:unsubscribe",
+      "domain": "runtime_ops",
+      "scopes": [
+        "bridge"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "runtime_ops:renderer_event",
+      "domain": "runtime_ops",
+      "scopes": [
+        "bridge"
       ],
       "inMain": true,
       "inPreload": true
