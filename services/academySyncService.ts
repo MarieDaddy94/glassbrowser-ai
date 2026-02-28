@@ -4,6 +4,10 @@ export type AcademySyncCursorState = {
   casesUpdatedAfterMs?: number | null;
   lessonsUpdatedAfterMs?: number | null;
   symbolLearningsUpdatedAfterMs?: number | null;
+  companionSignalHistoryUpdatedAfterMs?: number | null;
+  companionSignalEntryUpdatedAfterMs?: number | null;
+  companionLockUpdatedAfterMs?: number | null;
+  companionLastFullAtMs?: number | null;
 };
 
 const toSafeMs = (value: any) => {
@@ -20,7 +24,11 @@ export const readAcademySyncCursor = (): AcademySyncCursorState => {
     return {
       casesUpdatedAfterMs: toSafeMs(parsed?.casesUpdatedAfterMs),
       lessonsUpdatedAfterMs: toSafeMs(parsed?.lessonsUpdatedAfterMs),
-      symbolLearningsUpdatedAfterMs: toSafeMs(parsed?.symbolLearningsUpdatedAfterMs)
+      symbolLearningsUpdatedAfterMs: toSafeMs(parsed?.symbolLearningsUpdatedAfterMs),
+      companionSignalHistoryUpdatedAfterMs: toSafeMs(parsed?.companionSignalHistoryUpdatedAfterMs),
+      companionSignalEntryUpdatedAfterMs: toSafeMs(parsed?.companionSignalEntryUpdatedAfterMs),
+      companionLockUpdatedAfterMs: toSafeMs(parsed?.companionLockUpdatedAfterMs),
+      companionLastFullAtMs: toSafeMs(parsed?.companionLastFullAtMs)
     };
   } catch {
     return {};
@@ -32,7 +40,11 @@ export const writeAcademySyncCursor = (state: AcademySyncCursorState) => {
     localStorage.setItem(ACADEMY_SYNC_CURSOR_KEY, JSON.stringify({
       casesUpdatedAfterMs: toSafeMs(state?.casesUpdatedAfterMs),
       lessonsUpdatedAfterMs: toSafeMs(state?.lessonsUpdatedAfterMs),
-      symbolLearningsUpdatedAfterMs: toSafeMs(state?.symbolLearningsUpdatedAfterMs)
+      symbolLearningsUpdatedAfterMs: toSafeMs(state?.symbolLearningsUpdatedAfterMs),
+      companionSignalHistoryUpdatedAfterMs: toSafeMs(state?.companionSignalHistoryUpdatedAfterMs),
+      companionSignalEntryUpdatedAfterMs: toSafeMs(state?.companionSignalEntryUpdatedAfterMs),
+      companionLockUpdatedAfterMs: toSafeMs(state?.companionLockUpdatedAfterMs),
+      companionLastFullAtMs: toSafeMs(state?.companionLastFullAtMs)
     }));
   } catch {
     // ignore persistence failures
@@ -67,4 +79,3 @@ export const buildIncrementalListOptions = (
   if (updatedAfter) options.updatedAfterMs = updatedAfter;
   return options;
 };
-

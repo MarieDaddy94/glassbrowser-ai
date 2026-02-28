@@ -8,6 +8,7 @@ import { createPanelActionRunner } from "../services/panelConnectivityEngine";
 import { requestBrokerCoordinated } from "../services/brokerRequestBridge";
 import { GLASS_EVENT } from "../services/glassEvents";
 import type { SymbolMapEntry } from "../services/brokerLink";
+import { areAccountKeysEquivalent } from "../services/accountKeyIdentity";
 
 interface MT5InterfaceProps {
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
@@ -384,7 +385,7 @@ const MT5Interface: React.FC<MT5InterfaceProps> = ({ onRunActionCatalog, default
   const accountKey = useMemo(() => buildAccountKey(account), [account]);
   const visiblePresets = useMemo(() => {
     if (!accountKey) return presets.filter((preset) => !preset.accountKey);
-    return presets.filter((preset) => !preset.accountKey || preset.accountKey === accountKey);
+    return presets.filter((preset) => !preset.accountKey || areAccountKeysEquivalent(preset.accountKey, accountKey));
   }, [accountKey, presets]);
 
   useEffect(() => {

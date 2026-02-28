@@ -14,9 +14,10 @@ test('academy lock service and refresh merge keep locked cases out of auto-prune
   assert.equal(lockService.includes("const LOCK_PREFIX = 'academy_case_lock:';"), true);
   assert.equal(lockService.includes('export const lockCase = async'), true);
   assert.equal(lockService.includes('export const listLocks = async'), true);
+  assert.equal(lockService.includes('updatedAfterMs:'), true);
 
   assert.equal(app.includes('const academyCaseLocksRef = React.useRef<Map<string, AcademyCaseLockRecord>>(new Map());'), true);
-  assert.equal(app.includes('listAcademyCaseLocks(Math.max(limit, 50000))'), true);
+  assert.equal(app.includes('listAcademyCaseLocks(lockListOptions)'), true);
   assert.equal(app.includes('for (const [signalId, lockInfo] of lockMap.entries()) {'), true);
   assert.equal(app.includes('locked: true,'), true);
   assert.equal(app.includes('academyMissingCaseStreakRef'), false);

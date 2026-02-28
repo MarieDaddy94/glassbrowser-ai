@@ -47,5 +47,5 @@ test('restart path includes persisted lesson and score restore inputs', () => {
 
   // Rank score persistence restore (paired proof requirement)
   assert.equal(app.includes("ledger.listAgentMemory({ limit, kind: 'agent_scorecard' })"), true);
-  assert.equal(app.includes('setAgentScorecards(entries);'), true);
+  assert.equal(app.includes('setAgentScorecards(mergeResult.merged);'), true);
 });

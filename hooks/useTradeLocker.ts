@@ -5,7 +5,7 @@ import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { GLASS_EVENT } from "../services/glassEvents";
 
-export type TradeLockerConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+export type TradeLockerConnectionStatus = "disconnected" | "connecting" | "connected" | "degraded_account_auth" | "error";
 
 export interface TradeLockerAccount {
   id: number;
@@ -93,6 +93,42 @@ function parseTradeLockerAccountId(value: any): number | null {
   if (parsed == null) return null;
   const normalized = Math.trunc(parsed);
   return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
+}
+
+function normalizeTradeLockerAccount(raw: any): TradeLockerAccount | null {
+  if (!raw || typeof raw !== "object") return null;
+  const accountId =
+    parseTradeLockerAccountId(pickFirstValue(raw, ["id", "accountId", "accountID"])) ??
+    parseTradeLockerAccountId(raw?.id);
+  if (accountId == null) return null;
+  const accNum =
+    parseTradeLockerAccountId(pickFirstValue(raw, ["accNum", "accountNum", "accountNumber"])) ??
+    null;
+  const nameRaw = pickFirstValue(raw, ["name", "accountName", "label"]);
+  const name = String(nameRaw || "").trim() || `Account ${accountId}${accNum != null ? `/${accNum}` : ""}`;
+  const currencyRaw = pickFirstValue(raw, ["currency", "accountCurrency", "baseCurrency"]);
+  const statusRaw = pickFirstValue(raw, ["status", "state", "accountStatus"]);
+  return {
+    id: accountId,
+    name,
+    accNum: accNum ?? undefined,
+    currency: currencyRaw != null ? String(currencyRaw) : undefined,
+    status: statusRaw != null ? String(statusRaw) : undefined
+  };
+}
+
+function normalizeTradeLockerAccounts(list: any[]): TradeLockerAccount[] {
+  const next: TradeLockerAccount[] = [];
+  const seen = new Set<string>();
+  for (const raw of Array.isArray(list) ? list : []) {
+    const account = normalizeTradeLockerAccount(raw);
+    if (!account) continue;
+    const key = `${account.id}:${account.accNum != null ? account.accNum : "na"}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(account);
+  }
+  return next;
 }
 
 function normalizeSide(value: any): "BUY" | "SELL" {
@@ -565,6 +601,13 @@ export function useTradeLocker(
     rateLimitPolicy?: 'safe' | 'balanced' | 'aggressive' | null;
     rateLimitPolicies?: Array<'safe' | 'balanced' | 'aggressive'> | null;
     rateLimitTelemetry?: TradeLockerRateLimitTelemetry | null;
+    tokenConnected?: boolean | null;
+    accountContextReady?: boolean | null;
+    accountRouteHealthy?: boolean | null;
+    connectionState?: 'disconnected' | 'connected' | 'degraded_account_auth' | 'error' | null;
+    degradedReason?: string | null;
+    lastAccountAuthError?: string | null;
+    lastAccountAuthAtMs?: number | null;
   } | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
 
@@ -594,6 +637,7 @@ export function useTradeLocker(
   const [streamReason, setStreamReason] = useState<string | null>(null);
   const [streamUpdatedAtMs, setStreamUpdatedAtMs] = useState<number | null>(null);
   const [streamLastMessageAtMs, setStreamLastMessageAtMs] = useState<number | null>(null);
+  const [switchShieldUntilMs, setSwitchShieldUntilMs] = useState(0);
   const [startupAutoRestore, setStartupAutoRestore] = useState<{
     attempted: boolean;
     success: boolean;
@@ -659,6 +703,7 @@ export function useTradeLocker(
   const streamConfigKeyRef = useRef<string>("");
   const streamRevisionRef = useRef<number>(0);
   const accountSwitchRefreshAtRef = useRef<number>(0);
+  const switchShieldUntilRef = useRef<number>(0);
   const suppressRateLimitUntilRef = useRef(0);
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
 
@@ -680,6 +725,46 @@ export function useTradeLocker(
   const startupBridgeReady = opts?.startupBridgeReady === true;
   const tradeLockerBridgeState = requireBridge('tradelocker.runtime');
   const startupBridgeOperational = startupBridgeReady && tradeLockerBridgeState.ok;
+  const switchShieldActive = switchShieldUntilMs > Date.now();
+
+  useEffect(() => {
+    switchShieldUntilRef.current = switchShieldUntilMs;
+  }, [switchShieldUntilMs]);
+
+  useEffect(() => {
+    if (!switchShieldUntilMs) return;
+    const now = Date.now();
+    if (now >= switchShieldUntilMs) {
+      setSwitchShieldUntilMs(0);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSwitchShieldUntilMs((prev) => (prev > Date.now() ? prev : 0));
+    }, Math.max(250, switchShieldUntilMs - now + 200));
+    return () => window.clearTimeout(timer);
+  }, [switchShieldUntilMs]);
+
+  useEffect(() => {
+    const eventName = GLASS_EVENT.TRADELOCKER_SWITCH_SHIELD;
+    const onShieldEvent = (evt: Event) => {
+      const detail = (evt as CustomEvent<any>)?.detail;
+      const active = detail?.active === true;
+      if (!active) {
+        setSwitchShieldUntilMs(0);
+        return;
+      }
+      const holdMsRaw = Number(detail?.holdMs);
+      const holdMs = Number.isFinite(holdMsRaw) && holdMsRaw > 0
+        ? Math.max(1_000, Math.min(180_000, holdMsRaw))
+        : 45_000;
+      const untilMs = Date.now() + holdMs;
+      setSwitchShieldUntilMs((prev) => Math.max(prev || 0, untilMs));
+    };
+    window.addEventListener(eventName, onShieldEvent as EventListener);
+    return () => {
+      window.removeEventListener(eventName, onShieldEvent as EventListener);
+    };
+  }, []);
 
   useEffect(() => {
     if (startupPhase !== 'settled') return;
@@ -886,9 +971,21 @@ export function useTradeLocker(
     return runWithLock(async () => {
       try {
         const res = await api.getStatus();
-        const connected = !!res?.connected;
-        setStatus(connected ? "connected" : "disconnected");
-        setLastError(res?.lastError ? String(res.lastError) : null);
+        const rawConnectionState = String(res?.connectionState || "").trim().toLowerCase();
+        const tokenConnected = res?.tokenConnected === true;
+        const accountRouteHealthy = res?.accountRouteHealthy === true;
+        const degraded = rawConnectionState === "degraded_account_auth" || (tokenConnected && !accountRouteHealthy && res?.connected !== true);
+        const nextStatus: TradeLockerConnectionStatus =
+          res?.connected === true
+            ? "connected"
+            : degraded
+              ? "degraded_account_auth"
+              : rawConnectionState === "error"
+                ? "error"
+                : "disconnected";
+        setStatus(nextStatus);
+        const degradedError = res?.lastAccountAuthError ? String(res.lastAccountAuthError) : null;
+        setLastError(degradedError || (res?.lastError ? String(res.lastError) : null));
         setUpstreamLastError(res?.upstreamLastError ? String(res.upstreamLastError) : null);
         const upstreamStatus = toNumber(res?.upstreamLastStatus, NaN);
         setUpstreamLastStatus(Number.isFinite(upstreamStatus) ? upstreamStatus : null);
@@ -922,7 +1019,20 @@ export function useTradeLocker(
           rateLimitTelemetry:
             res?.rateLimitTelemetry && typeof res.rateLimitTelemetry === 'object'
               ? (res.rateLimitTelemetry as TradeLockerRateLimitTelemetry)
-              : null
+              : null,
+          tokenConnected: res?.tokenConnected === true,
+          accountContextReady: res?.accountContextReady === true,
+          accountRouteHealthy: res?.accountRouteHealthy === true,
+          connectionState:
+            rawConnectionState === 'connected' ||
+            rawConnectionState === 'degraded_account_auth' ||
+            rawConnectionState === 'error' ||
+            rawConnectionState === 'disconnected'
+              ? (rawConnectionState as 'disconnected' | 'connected' | 'degraded_account_auth' | 'error')
+              : null,
+          degradedReason: res?.degradedReason ? String(res.degradedReason) : null,
+          lastAccountAuthError: res?.lastAccountAuthError ? String(res.lastAccountAuthError) : null,
+          lastAccountAuthAtMs: readNumber(res?.lastAccountAuthAtMs)
         });
         return res;
       } catch (e: any) {
@@ -969,9 +1079,10 @@ export function useTradeLocker(
       try {
         const res = await api.getAccounts();
         if (res?.ok && Array.isArray(res.accounts)) {
-          setAccounts(res.accounts as TradeLockerAccount[]);
+          const normalizedAccounts = normalizeTradeLockerAccounts(res.accounts);
+          setAccounts(normalizedAccounts);
           setAccountsError(null);
-          return { ok: true, accounts: res.accounts as TradeLockerAccount[] };
+          return { ok: true, accounts: normalizedAccounts };
         }
         const err = res?.error ? String(res.error) : "Failed to fetch accounts";
         setLastError(err);
@@ -1086,6 +1197,7 @@ export function useTradeLocker(
 
   const refreshOrdersHistory = useCallback(async () => {
     if (!api?.getOrdersHistory) return;
+    if (switchShieldUntilRef.current > Date.now()) return;
     if (accountBusyRef?.current) return;
     if (ordersHistoryInFlightRef.current) return;
     const backoff = ordersHistoryBackoffRef.current;
@@ -1165,8 +1277,9 @@ export function useTradeLocker(
     }
   }, [api, accountBusyRef, clearOrdersHistoryBackoff, formatRetryIn, noteOrdersHistoryBackoff, noteRateLimit, runWithLock, shouldSuppressRateLimit]);
 
-  const refreshQuotes = useCallback(async (opts?: { symbols?: string[]; maxAgeMs?: number }) => {
+  const refreshQuotes = useCallback(async (opts?: { symbols?: string[]; maxAgeMs?: number; bypassSwitchShield?: boolean }) => {
     if (!api?.getQuotes && !api?.getQuote) return;
+    if (switchShieldUntilRef.current > Date.now() && opts?.bypassSwitchShield !== true) return;
     if (accountBusyRef?.current) return;
     if (quotesInFlightRef.current) return;
     quotesInFlightRef.current = true;
@@ -1350,8 +1463,17 @@ export function useTradeLocker(
         return { ok: false, error: err };
       }
       setLastError(null);
-      await refreshStatus();
+      const statusRes = await refreshStatus();
       await refreshSavedConfig();
+      if (statusRes?.connected !== true) {
+        const degradedError =
+          statusRes?.lastAccountAuthError
+            ? String(statusRes.lastAccountAuthError)
+            : statusRes?.lastError
+              ? String(statusRes.lastError)
+              : "TradeLocker connected token but account context is not ready.";
+        return { ok: false, error: degradedError, code: statusRes?.connectionState || "degraded_account_auth" };
+      }
       return { ok: true };
     } catch (e: any) {
       const err = e?.message ? String(e.message) : "Failed to connect";
@@ -1390,18 +1512,50 @@ export function useTradeLocker(
     setStreamLastMessageAtMs(null);
   }, [api]);
 
-  const setActiveAccount = useCallback(async (accountId: number, accNum: number) => {
+  const setActiveAccount = useCallback(async (accountId: number, accNum?: number) => {
     const bridge = requireBridge('tradelocker.set_active_account');
     if (!bridge.ok) return { ok: false, error: bridge.error };
     if (!api?.setActiveAccount) return { ok: false };
     try {
-      const res = await api.setActiveAccount({ accountId, accNum });
+      const parsedAccountId = parseTradeLockerAccountId(accountId);
+      const parsedAccNum = parseTradeLockerAccountId(accNum);
+      if (parsedAccountId == null) return { ok: false, error: 'TradeLocker accountId is required.' };
+      const res = await api.setActiveAccount({ accountId: parsedAccountId, accNum: parsedAccNum ?? undefined });
+      if (res?.ok === false) {
+        return { ok: false, error: res?.error ? String(res.error) : 'Failed to switch TradeLocker account.' };
+      }
+      if (api?.getAccountMetrics) {
+        const verify = await api.getAccountMetrics({ maxAgeMs: 0 });
+        if (verify?.ok === false) {
+          const verifyError = verify?.error ? String(verify.error) : 'TradeLocker account context verification failed.';
+          setLastError(verifyError);
+          return { ok: false, error: verifyError, code: 'account_auth_invalid' };
+        }
+      }
       await refreshSavedConfig();
+      await refreshAccounts();
+      await refreshStatus();
+      try {
+        dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+          accountId: parsedAccountId,
+          accNum: parsedAccNum ?? null,
+          source: 'use_tradelocker',
+          atMs: Date.now()
+        });
+      } catch {
+        // ignore renderer event dispatch failures
+      }
+      if (status === "connected") {
+        void refreshSnapshot();
+        void refreshOrders();
+        void refreshAccountMetrics();
+        void refreshQuotes();
+      }
       return res;
-    } catch {
-      return { ok: false };
+    } catch (err: any) {
+      return { ok: false, error: err?.message ? String(err.message) : 'Failed to switch TradeLocker account.' };
     }
-  }, [api, refreshSavedConfig]);
+  }, [api, refreshAccountMetrics, refreshAccounts, refreshOrders, refreshQuotes, refreshSavedConfig, refreshSnapshot, refreshStatus, status]);
 
   const setTradingOptions = useCallback(async (options: any) => {
     const bridge = requireBridge('tradelocker.set_trading_options');
@@ -1515,6 +1669,7 @@ export function useTradeLocker(
   const connectionMeta = useMemo(() => {
     if (status === "connected") return { dot: "bg-green-500", label: "CONNECTED" };
     if (status === "connecting") return { dot: "bg-yellow-500 animate-pulse", label: "CONNECTING..." };
+    if (status === "degraded_account_auth") return { dot: "bg-amber-500 animate-pulse", label: "DEGRADED (ACCOUNT AUTH)" };
     if (status === "error") return { dot: "bg-red-500 animate-pulse", label: "ERROR" };
     return { dot: "bg-gray-600", label: "DISCONNECTED" };
   }, [status]);
@@ -1684,6 +1839,7 @@ export function useTradeLocker(
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
 
     const hasOpenPositions = positions.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
@@ -1716,7 +1872,7 @@ export function useTradeLocker(
       if (pollTimerRef.current) pollTimerRef.current();
       pollTimerRef.current = null;
     };
-  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, positions.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshSnapshot, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, positions.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshSnapshot, runtimeScheduler, startupBridgeOperational, status, streamStatus, switchShieldActive]);
 
   useEffect(() => {
     if (ordersTimerRef.current) {
@@ -1726,6 +1882,7 @@ export function useTradeLocker(
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
 
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
@@ -1760,7 +1917,7 @@ export function useTradeLocker(
       ordersTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrders, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrders, runtimeScheduler, startupBridgeOperational, status, streamStatus, switchShieldActive]);
 
   useEffect(() => {
     if (ordersHistoryTimerRef.current) {
@@ -1770,6 +1927,8 @@ export function useTradeLocker(
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
+    if (switchShieldActive) return;
     if (!api?.getOrdersHistory) return;
 
     const isRl = rateLimitedUntilMs > Date.now();
@@ -1805,7 +1964,7 @@ export function useTradeLocker(
       ordersHistoryTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [adaptiveMinIntervalMs, adaptivePressure, api, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrdersHistory, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, api, isActive, rateLimitGovernorMode, rateLimitedUntilMs, refreshOrdersHistory, runtimeScheduler, startupBridgeOperational, status, streamStatus, switchShieldActive]);
 
   useEffect(() => {
     if (metricsTimerRef.current) {
@@ -1815,6 +1974,7 @@ export function useTradeLocker(
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
 
     const hasOpenPositions = positions.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
@@ -1900,15 +2060,16 @@ export function useTradeLocker(
       quotesTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, orders.length, positionsRaw.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, startupBridgeOperational, status, watchSymbols.length, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, orders.length, positionsRaw.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, startupBridgeOperational, status, switchShieldActive, watchSymbols.length, streamStatus]);
 
   useEffect(() => {
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
     if (watchSymbols.length === 0) return;
     refreshQuotes({ symbols: watchSymbols, maxAgeMs: 0 });
-  }, [isActive, refreshQuotes, startupBridgeOperational, status, watchSymbols]);
+  }, [isActive, refreshQuotes, startupBridgeOperational, status, switchShieldActive, watchSymbols]);
 
   useEffect(() => {
     if (!startupBridgeOperational) return;

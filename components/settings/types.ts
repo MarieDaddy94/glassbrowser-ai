@@ -202,9 +202,17 @@ export interface BrokerAdapterSectionCtx {
   handleTradeLockerDisconnect: () => Promise<void>;
   handleTradeLockerRefreshAccounts: () => Promise<void>;
   handleTradeLockerClearSecrets: () => Promise<void>;
-  tlSelectedAccountId: string;
+  tlSelectedAccountValue: string;
   handleTradeLockerAccountSelected: (id: string) => void;
-  tlAccounts: Array<{ id?: string | number; name?: string; currency?: string }>;
+  tlAccounts: Array<{
+    id?: string | number;
+    accountId?: string | number;
+    accNum?: string | number;
+    accountNum?: string | number;
+    accountNumber?: string | number;
+    name?: string;
+    currency?: string;
+  }>;
   tlSelectedAccNum?: string | null;
   tlDefaultOrderQty: string;
   setTlDefaultOrderQty: React.Dispatch<React.SetStateAction<string>>;

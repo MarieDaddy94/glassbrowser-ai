@@ -5,7 +5,13 @@ import VirtualItem from './VirtualItem';
 import SignalIntentList from './signal/SignalIntentList';
 import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalIntent, SignalQuantTelemetry, UnifiedSnapshotStatus } from '../types';
 import { requireBridge } from '../services/bridgeGuard';
-import { classifyUnifiedSnapshotStatus, formatUnifiedSnapshotStatusLabel } from '../services/unifiedSnapshotStatus';
+import {
+  classifyUnifiedSnapshotStatus,
+  formatUnifiedSnapshotStatusLabel,
+  UNIFIED_SNAPSHOT_MISSING_LABEL,
+  UNIFIED_SNAPSHOT_READY_LABEL,
+  UNIFIED_SNAPSHOT_WARMING_LABEL
+} from '../services/unifiedSnapshotStatus';
 
 export type SignalStrategyMode = 'scalp' | 'day' | 'swing';
 export type SignalEntryStatus = 'PROPOSED' | 'SUBMITTING' | 'PENDING' | 'EXECUTED' | 'REJECTED' | 'EXPIRED' | 'WIN' | 'LOSS' | 'FAILED';
@@ -337,7 +343,6 @@ const clampNumber = (value: any, min: number, max: number) => {
 const toggleList = <T extends string>(list: T[], value: T) => {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 };
-
 const SignalInterface: React.FC<SignalInterfaceProps> = ({
   symbols,
   onAddSymbol,
@@ -829,9 +834,9 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
 
   const formatSnapshotStatusLabel = useCallback((status: SignalSnapshotStatus | null) => {
     return formatUnifiedSnapshotStatusLabel(status, {
-      readyLabel: 'Native chart snapshot ready',
-      missingLabel: 'No snapshot yet.',
-      warmingLabel: 'Warming up...'
+      readyLabel: UNIFIED_SNAPSHOT_READY_LABEL,
+      missingLabel: UNIFIED_SNAPSHOT_MISSING_LABEL,
+      warmingLabel: UNIFIED_SNAPSHOT_WARMING_LABEL
     });
   }, []);
 

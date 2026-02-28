@@ -53,7 +53,7 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
     handleTradeLockerDisconnect,
     handleTradeLockerRefreshAccounts,
     handleTradeLockerClearSecrets,
-    tlSelectedAccountId,
+    tlSelectedAccountValue,
     handleTradeLockerAccountSelected,
     tlAccounts,
     tlSelectedAccNum,
@@ -87,6 +87,26 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
     brokerLinkSymbolMapText,
     setBrokerLinkSymbolMapText,
   } = ctx;
+
+  const tradeLockerAccountOptions = Array.isArray(tlAccounts)
+    ? tlAccounts.map((a: any) => {
+        const accountId = String(a?.id ?? a?.accountId ?? '').trim();
+        const accNum = String(a?.accNum ?? a?.accountNum ?? a?.accountNumber ?? '').trim();
+        const value = accNum ? `${accountId}:${accNum}` : accountId;
+        const label = `${String(a?.name || a?.id || a?.accountId)} ${a?.currency ? `(${a.currency})` : ''}`.trim();
+        return { value, label };
+      })
+    : [];
+  const hasSelectedTradeLockerAccountOption = tlSelectedAccountValue
+    ? tradeLockerAccountOptions.some((entry) => entry.value === tlSelectedAccountValue)
+    : true;
+  const syntheticSelectedTradeLockerAccountOption =
+    !hasSelectedTradeLockerAccountOption && tlSelectedAccountValue
+      ? {
+          value: tlSelectedAccountValue,
+          label: `Selected account (${tlSelectedAccountValue})`
+        }
+      : null;
 
   return (
     <>
@@ -257,11 +277,25 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <label className="text-[10px] text-gray-500 uppercase tracking-wider">Account</label>
-            <select value={tlSelectedAccountId} onChange={(e) => handleTradeLockerAccountSelected(e.target.value)} className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-purple-500/50 transition-colors font-mono">
+            <select
+              value={tlSelectedAccountValue}
+              onChange={(e) => handleTradeLockerAccountSelected(e.target.value)}
+              disabled={tlConnecting}
+              className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-purple-500/50 transition-colors font-mono disabled:opacity-50"
+            >
               <option value="">Select account…</option>
-              {tlAccounts.map((a: any) => (
-                <option key={String(a?.id)} value={String(a?.id)}>{String(a?.name || a?.id)} {a?.currency ? `(${a.currency})` : ''}</option>
-              ))}
+              {syntheticSelectedTradeLockerAccountOption ? (
+                <option key={`synthetic-${syntheticSelectedTradeLockerAccountOption.value}`} value={syntheticSelectedTradeLockerAccountOption.value}>
+                  {syntheticSelectedTradeLockerAccountOption.label}
+                </option>
+              ) : null}
+              {tradeLockerAccountOptions.map((entry) => {
+                return (
+                  <option key={entry.value} value={entry.value}>
+                    {entry.label}
+                  </option>
+                );
+              })}
             </select>
             <div className="text-[10px] text-gray-600 font-mono">accNum: {tlSelectedAccNum || '--'}</div>
           </div>

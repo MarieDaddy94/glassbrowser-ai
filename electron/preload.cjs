@@ -110,10 +110,25 @@ const loadGeneratedAllowedScopes = () => {
 };
 
 const GENERATED_SCOPE_LOAD = loadGeneratedAllowedScopes();
+const shouldWarnGeneratedScopeFallback = () => {
+  try {
+    if (String(process?.env?.NODE_ENV || '').trim().toLowerCase() === 'development') return false;
+    if (process?.defaultApp) return false;
+    const execPath = String(process?.execPath || '').toLowerCase();
+    if (!execPath) return false;
+    if (execPath.includes('\\temp\\') && execPath.includes('_extract')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+};
 if (GENERATED_SCOPE_LOAD.source === 'fallback_inline') {
   try {
-    console.warn('[preload] generated scope module missing; falling back to inline allowlist', {
-      attempts: GENERATED_SCOPE_LOAD.attempts
+    const shouldWarn = shouldWarnGeneratedScopeFallback();
+    const log = shouldWarn ? console.warn : console.info;
+    log('[preload] generated scope module missing; falling back to inline allowlist', {
+      attempts: GENERATED_SCOPE_LOAD.attempts,
+      severity: shouldWarn ? 'warn' : 'info'
     });
   } catch {
     // ignore console serialization issues
@@ -246,6 +261,40 @@ ipcRenderer.on('tradelocker:stream:event', (_evt, payload) => {
 const appPrepareShutdownListeners = new Set();
 ipcRenderer.on('app:prepare-shutdown', (_evt, payload) => {
   for (const fn of appPrepareShutdownListeners) {
+    try { fn(payload); } catch { /* ignore */ }
+  }
+});
+
+const diagnosticsRuntimeEventListeners = new Set();
+ipcRenderer.on('diagnostics:runtime:event', (_evt, payload) => {
+  for (const fn of diagnosticsRuntimeEventListeners) {
+    try { fn(payload); } catch { /* ignore */ }
+  }
+});
+
+const runtimeOpsExternalCommandListeners = new Set();
+ipcRenderer.on('runtime_ops:external_command', (_evt, payload) => {
+  if (!runtimeOpsExternalCommandListeners || runtimeOpsExternalCommandListeners.size === 0) {
+    const requestId = payload?.requestId ? String(payload.requestId) : '';
+    if (requestId) {
+      try {
+        void guardedInvoke('bridge', 'runtime_ops:external_command:result', {
+          requestId,
+          result: {
+            ok: false,
+            requestId,
+            command: payload?.command ? String(payload.command) : null,
+            code: 'no_handler',
+            error: 'No runtime external command handler is registered in renderer.'
+          }
+        });
+      } catch {
+        // ignore nack send failures
+      }
+    }
+    return;
+  }
+  for (const fn of runtimeOpsExternalCommandListeners) {
     try { fn(payload); } catch { /* ignore */ }
   }
 });
@@ -486,6 +535,26 @@ const guardedOnAppPrepareShutdown = (handler) => {
   return onAppPrepareShutdown(handler);
 };
 
+const onRuntimeDiagnosticsEvent = (handler) => {
+  if (typeof handler !== 'function') return () => {};
+  diagnosticsRuntimeEventListeners.add(handler);
+  return () => diagnosticsRuntimeEventListeners.delete(handler);
+};
+
+const guardedOnRuntimeDiagnosticsEvent = (handler) => {
+  return onRuntimeDiagnosticsEvent(handler);
+};
+
+const onRuntimeOpsExternalCommand = (handler) => {
+  if (typeof handler !== 'function') return () => {};
+  runtimeOpsExternalCommandListeners.add(handler);
+  return () => runtimeOpsExternalCommandListeners.delete(handler);
+};
+
+const guardedOnRuntimeOpsExternalCommand = (handler) => {
+  return onRuntimeOpsExternalCommand(handler);
+};
+
 contextBridge.exposeInMainWorld('glass', {
   isElectron: true,
   permissions: {
@@ -533,8 +602,21 @@ contextBridge.exposeInMainWorld('glass', {
   diagnostics: {
     getAppMeta: () => guardedInvoke('diagnostics', 'diagnostics:getAppMeta'),
     getMainLog: (args) => guardedInvoke('diagnostics', 'diagnostics:getMainLog', args),
+    startRuntimeStream: (args) => guardedInvoke('diagnostics', 'diagnostics:runtimeStream:start', args),
+    stopRuntimeStream: (args) => guardedInvoke('diagnostics', 'diagnostics:runtimeStream:stop', args),
+    onRuntimeEvent: guardedOnRuntimeDiagnosticsEvent,
     listReleases: (args) => guardedInvoke('diagnostics', 'diagnostics:listReleases', args),
     getBundleStats: () => guardedInvoke('diagnostics', 'diagnostics:getBundleStats')
+  },
+  runtimeOps: {
+    onExternalCommand: guardedOnRuntimeOpsExternalCommand,
+    subscribeExternalCommand: () => guardedInvoke('bridge', 'runtime_ops:external_command:subscribe'),
+    unsubscribeExternalCommand: () => guardedInvoke('bridge', 'runtime_ops:external_command:unsubscribe'),
+    updateControllerState: (payload) =>
+      guardedInvoke('bridge', 'runtime_ops:controller_state:update', payload || {}),
+    emitRendererEvent: (payload) =>
+      guardedInvoke('bridge', 'runtime_ops:renderer_event', payload || {}),
+    replyExternalCommand: (payload) => guardedInvoke('bridge', 'runtime_ops:external_command:result', payload || {})
   },
   news: {
     getSnapshot: (args) => guardedInvoke('news', 'news:getSnapshot', args)

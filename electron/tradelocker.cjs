@@ -211,7 +211,8 @@ const DEFAULT_STATE = Object.freeze({
   debug: { ...DEFAULT_DEBUG },
   secrets: {
     password: null, // base64 encrypted
-    developerApiKey: null // base64 encrypted
+    developerApiKey: null, // base64 encrypted
+    profiles: {} // profileKey => { password, developerApiKey }
   }
 });
 
@@ -458,6 +459,12 @@ function loadPersistedState() {
     const merged = deepMerge(DEFAULT_STATE, parsed);
     // Ensure secrets object exists
     merged.secrets = deepMerge(DEFAULT_STATE.secrets, merged.secrets || {});
+    if (!merged.secrets || typeof merged.secrets !== 'object') {
+      merged.secrets = deepMerge(DEFAULT_STATE.secrets, {});
+    }
+    if (!merged.secrets.profiles || typeof merged.secrets.profiles !== 'object' || Array.isArray(merged.secrets.profiles)) {
+      merged.secrets.profiles = {};
+    }
     merged.debug = normalizeDebugSettings(merged.debug);
     merged.accountId = parseAccountIdentifier(merged.accountId);
     merged.accNum = parseAccountIdentifier(merged.accNum);
@@ -930,10 +937,79 @@ function classifyTradeLockerError({ status, message }) {
   return null;
 }
 
+function classifyAccountRouteFailureReason({ status, message, code }) {
+  const statusCode = Number(status);
+  const rawCode = String(code || '').trim();
+  const msg = String(message || '').toLowerCase();
+
+  if (rawCode === 'ACCOUNT_NOT_READY') return 'account_not_ready';
+  if (rawCode === 'ACCOUNT_UNRESOLVED' || rawCode === 'account_unresolved' || rawCode === 'account_ambiguous') {
+    return 'account_context_mismatch';
+  }
+  if (statusCode === 401 || statusCode === 403) return 'account_auth_invalid';
+  if (statusCode === 400) {
+    if (
+      msg.includes('accnum') ||
+      msg.includes('accountid') ||
+      msg.includes('account context') ||
+      msg.includes('account not selected') ||
+      msg.includes('account could not be resolved') ||
+      msg.includes('account unresolved')
+    ) {
+      return 'account_context_mismatch';
+    }
+    if (
+      msg.includes('authentication error') ||
+      msg.includes('unauthorized') ||
+      msg.includes('forbidden') ||
+      msg.includes('invalid credential')
+    ) {
+      return 'account_auth_invalid';
+    }
+  }
+  if (msg.includes('account not selected') || msg.includes('accnum not set') || msg.includes('accountid not set')) {
+    return 'account_not_ready';
+  }
+  return null;
+}
+
+function isAccountRouteFailure({ status, message, code }) {
+  return classifyAccountRouteFailureReason({ status, message, code }) != null;
+}
+
 function normalizeEnv(value) {
   const v = String(value || '').trim().toLowerCase();
   if (v === 'live') return 'live';
   return 'demo';
+}
+
+function normalizeTradeLockerProfileSecretKey(raw) {
+  const text = String(raw || '').trim().toLowerCase();
+  if (!text) return '';
+  const parts = text.split(':').map((part) => String(part || '').trim()).filter(Boolean);
+  if (parts.length < 3) return '';
+  const env = normalizeEnv(parts[0]);
+  const server = String(parts[1] || '').trim().toLowerCase();
+  const email = String(parts.slice(2).join(':') || '').trim().toLowerCase();
+  if (!server || !email) return '';
+  return `${env}:${server}:${email}`;
+}
+
+function buildTradeLockerProfileSecretKey({ env, server, email }) {
+  const normalizedEnv = normalizeEnv(env);
+  const normalizedServer = String(server || '').trim().toLowerCase();
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  if (!normalizedServer || !normalizedEmail) return '';
+  return `${normalizedEnv}:${normalizedServer}:${normalizedEmail}`;
+}
+
+function ensureTradeLockerProfileSecretMap(state) {
+  if (!state.secrets || typeof state.secrets !== 'object') state.secrets = {};
+  const map = state.secrets.profiles;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) {
+    state.secrets.profiles = {};
+  }
+  return state.secrets.profiles;
 }
 
 function parseNumberLoose(value) {
@@ -956,6 +1032,152 @@ function parseAccountIdentifier(value) {
   if (parsed == null) return null;
   const normalized = Math.trunc(parsed);
   return Number.isFinite(normalized) && normalized > 0 ? normalized : null;
+}
+
+function readAccountIdFromEntry(entry) {
+  return parseAccountIdentifier(pickFirst(entry, ['id', 'accountId', 'accountID']));
+}
+
+function readAccNumFromEntry(entry) {
+  return parseAccountIdentifier(pickFirst(entry, ['accNum', 'accountNum', 'accountNumber']));
+}
+
+function normalizeAccountEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const accountId = readAccountIdFromEntry(entry);
+  if (accountId == null) return null;
+  const accNum = readAccNumFromEntry(entry);
+  return {
+    ...entry,
+    id: accountId,
+    accountId,
+    accNum: accNum ?? null,
+    accountNum: accNum ?? null,
+    accountNumber: accNum ?? null
+  };
+}
+
+function normalizeAccountsList(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const next = [];
+  const seen = new Set();
+  for (const raw of list) {
+    const normalized = normalizeAccountEntry(raw);
+    if (!normalized) continue;
+    const key = `${normalized.id}:${normalized.accNum != null ? normalized.accNum : 'na'}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(normalized);
+  }
+  return next;
+}
+
+function resolveTradeLockerAccountPair(accounts, { accountId, accNum, allowSingleAccountFallback = true } = {}) {
+  const safeAccounts = normalizeAccountsList(Array.isArray(accounts) ? accounts : []);
+  const parsedAccountId = parseAccountIdentifier(accountId);
+  const parsedAccNum = parseAccountIdentifier(accNum);
+
+  const byAccountId =
+    parsedAccountId == null
+      ? []
+      : safeAccounts.filter((entry) => readAccountIdFromEntry(entry) === parsedAccountId);
+  const byAccNum =
+    parsedAccNum == null
+      ? []
+      : safeAccounts.filter((entry) => readAccNumFromEntry(entry) === parsedAccNum);
+
+  const buildPair = (entry) => {
+    const nextAccountId = readAccountIdFromEntry(entry);
+    const nextAccNum = readAccNumFromEntry(entry);
+    if (nextAccountId == null || nextAccNum == null) return null;
+    return { accountId: nextAccountId, accNum: nextAccNum };
+  };
+
+  if (parsedAccountId != null && parsedAccNum != null) {
+    const exact = safeAccounts.find((entry) => {
+      const entryAccountId = readAccountIdFromEntry(entry);
+      const entryAccNum = readAccNumFromEntry(entry);
+      return entryAccountId === parsedAccountId && entryAccNum === parsedAccNum;
+    });
+    if (exact) {
+      return {
+        ok: true,
+        accountId: parsedAccountId,
+        accNum: parsedAccNum,
+        resolvedBy: 'exact'
+      };
+    }
+    return {
+      ok: false,
+      code: 'account_context_mismatch',
+      error: 'TradeLocker accountId/accNum pair does not match available accounts.'
+    };
+  }
+
+  if (parsedAccountId != null) {
+    if (byAccountId.length === 1) {
+      const pair = buildPair(byAccountId[0]);
+      if (pair) {
+        return { ok: true, ...pair, resolvedBy: 'accountId_fallback' };
+      }
+      return {
+        ok: false,
+        code: 'account_unresolved',
+        error: 'TradeLocker account could not be resolved to a valid accNum.'
+      };
+    }
+    if (byAccountId.length > 1) {
+      return {
+        ok: false,
+        code: 'account_ambiguous',
+        error: 'TradeLocker accountId maps to multiple accNum values. Select an exact pair.'
+      };
+    }
+    return {
+      ok: false,
+      code: 'account_unresolved',
+      error: 'TradeLocker accountId is not available in current accounts.'
+    };
+  }
+
+  if (parsedAccNum != null) {
+    if (byAccNum.length === 1) {
+      const pair = buildPair(byAccNum[0]);
+      if (pair) {
+        return { ok: true, ...pair, resolvedBy: 'accNum_unique' };
+      }
+      return {
+        ok: false,
+        code: 'account_unresolved',
+        error: 'TradeLocker accNum could not be resolved to a valid accountId.'
+      };
+    }
+    if (byAccNum.length > 1) {
+      return {
+        ok: false,
+        code: 'account_ambiguous',
+        error: 'TradeLocker accNum maps to multiple accountIds. Select an exact pair.'
+      };
+    }
+    return {
+      ok: false,
+      code: 'account_unresolved',
+      error: 'TradeLocker accNum is not available in current accounts.'
+    };
+  }
+
+  if (allowSingleAccountFallback && safeAccounts.length === 1) {
+    const pair = buildPair(safeAccounts[0]);
+    if (pair) return { ok: true, ...pair, resolvedBy: 'single_account' };
+  }
+
+  return {
+    ok: false,
+    code: safeAccounts.length > 1 ? 'account_ambiguous' : 'account_not_ready',
+    error: safeAccounts.length > 1
+      ? 'TradeLocker account selection is ambiguous.'
+      : 'TradeLocker account not selected.'
+  };
 }
 
 const RESOLUTION_MS = Object.freeze({
@@ -2058,6 +2280,10 @@ class TradeLockerClient {
     this.sessionStatusCache = new Map();
     this.infoRouteCache = new Map();
     this.sessionDeveloperApiKey = null;
+    this.accountRouteHealthy = false;
+    this.accountRouteDegradedReason = 'account_not_ready';
+    this.lastAccountAuthError = null;
+    this.lastAccountAuthAtMs = null;
     this.streamTokensCache = { tokens: [], fetchedAtMs: 0, minExpireAtMs: 0 };
     this.streamTokensInFlight = null;
     this.stream = { status: STREAM_STATUS.DISCONNECTED, lastError: null, lastMessageAtMs: 0, url: null, reason: null, detail: null };
@@ -2102,6 +2328,86 @@ class TradeLockerClient {
     this.rateLimitRouteStats = new Map();
     this.rateLimitAccountStats = new Map();
     this.resetRateLimitTelemetryState();
+    this.migrateLegacySecretsToCurrentProfile();
+  }
+
+  migrateLegacySecretsToCurrentProfile() {
+    const env = normalizeEnv(this.state?.env);
+    const server = String(this.state?.server || '').trim();
+    const email = String(this.state?.email || '').trim();
+    const profileKey = buildTradeLockerProfileSecretKey({ env, server, email });
+    if (!profileKey) return;
+    const secrets = this.state?.secrets || {};
+    const legacyPassword = secrets?.password || null;
+    const legacyDeveloperApiKey = secrets?.developerApiKey || null;
+    if (!legacyPassword && !legacyDeveloperApiKey) return;
+    const map = ensureTradeLockerProfileSecretMap(this.state);
+    const entry = map[profileKey] && typeof map[profileKey] === 'object' ? { ...map[profileKey] } : {};
+    let mutated = false;
+    if (!entry.password && legacyPassword) {
+      entry.password = legacyPassword;
+      mutated = true;
+    }
+    if (!entry.developerApiKey && legacyDeveloperApiKey) {
+      entry.developerApiKey = legacyDeveloperApiKey;
+      mutated = true;
+    }
+    if (!mutated) return;
+    map[profileKey] = entry;
+    persistState(this.state);
+  }
+
+  resetAccountRouteHealth(reason = 'account_not_ready') {
+    this.accountRouteHealthy = false;
+    this.accountRouteDegradedReason = reason || 'account_not_ready';
+    this.lastAccountAuthError = null;
+    this.lastAccountAuthAtMs = null;
+  }
+
+  noteAccountRouteHealthy() {
+    this.accountRouteHealthy = true;
+    this.accountRouteDegradedReason = null;
+    this.lastAccountAuthError = null;
+    this.lastAccountAuthAtMs = nowMs();
+  }
+
+  noteAccountRouteFailure(reason, errorMessage = null) {
+    this.accountRouteHealthy = false;
+    this.accountRouteDegradedReason = String(reason || 'account_auth_invalid');
+    this.lastAccountAuthError = errorMessage ? redactErrorMessage(String(errorMessage)) : null;
+    this.lastAccountAuthAtMs = nowMs();
+  }
+
+  getConnectionStateSnapshot() {
+    const tokenConnected = !!(this.tokens && this.tokens.accessToken);
+    const accountId = parseAccountIdentifier(this.state.accountId);
+    const accNum = parseAccountIdentifier(this.state.accNum);
+    const accountContextReady = accountId != null && accNum != null;
+    const accountRouteHealthy = tokenConnected && accountContextReady && this.accountRouteHealthy === true;
+
+    let connectionState = 'disconnected';
+    let degradedReason = null;
+    if (tokenConnected) {
+      if (!accountContextReady) {
+        connectionState = 'degraded_account_auth';
+        degradedReason = 'account_not_ready';
+      } else if (!accountRouteHealthy) {
+        connectionState = 'degraded_account_auth';
+        degradedReason = this.accountRouteDegradedReason || 'account_auth_invalid';
+      } else {
+        connectionState = 'connected';
+      }
+    } else if (this.lastError) {
+      connectionState = 'error';
+    }
+
+    return {
+      tokenConnected,
+      accountContextReady,
+      accountRouteHealthy,
+      connectionState,
+      degradedReason
+    };
   }
 
   resetRateLimitTelemetryState() {
@@ -2993,9 +3299,17 @@ class TradeLockerClient {
   getStatus() {
     this.applyRateLimitGovernor(nowMs());
     const queueMetrics = this.requestQueueMetrics ? this.requestQueueMetrics.snapshot() : { maxDepth: 0, maxWaitMs: 0 };
+    const snapshot = this.getConnectionStateSnapshot();
     return {
       ok: true,
-      connected: !!(this.tokens && this.tokens.accessToken),
+      connected: snapshot.connectionState === 'connected',
+      tokenConnected: snapshot.tokenConnected,
+      accountContextReady: snapshot.accountContextReady,
+      accountRouteHealthy: snapshot.accountRouteHealthy,
+      connectionState: snapshot.connectionState,
+      degradedReason: snapshot.degradedReason || undefined,
+      lastAccountAuthError: this.lastAccountAuthError || null,
+      lastAccountAuthAtMs: this.lastAccountAuthAtMs || null,
       env: this.state.env,
       server: this.state.server || null,
       email: this.state.email || null,
@@ -3814,7 +4128,7 @@ class TradeLockerClient {
 
   clearSavedSecrets() {
     this.state = deepMerge(this.state, {
-      secrets: { password: null, developerApiKey: null }
+      secrets: { password: null, developerApiKey: null, profiles: {} }
     });
     this.sessionDeveloperApiKey = null;
     const res = persistState(this.state);
@@ -3825,22 +4139,46 @@ class TradeLockerClient {
     const env = normalizeEnv(opts?.env);
     const server = String(opts?.server || this.state.server || '').trim();
     const email = String(opts?.email || this.state.email || '').trim();
+    const explicitProfileKey = normalizeTradeLockerProfileSecretKey(opts?.profileKey);
+    const profileKey = explicitProfileKey || buildTradeLockerProfileSecretKey({ env, server, email });
+    const profileScopedConnect = explicitProfileKey !== '' || opts?.profileScoped === true;
     const requestedAccountId = parseAccountIdentifier(opts?.accountId);
     const requestedAccNum = parseAccountIdentifier(opts?.accNum);
 
     const rememberPassword = opts?.rememberPassword === true;
     const rememberDeveloperApiKey = opts?.rememberDeveloperApiKey === true;
 
-    let password = String(opts?.password || '').trim();
-    if (!password) password = decryptSecret(this.state.secrets?.password) || '';
-
-    let developerApiKey = String(opts?.developerApiKey || '').trim();
-    if (!developerApiKey) developerApiKey = decryptSecret(this.state.secrets?.developerApiKey) || '';
-    this.sessionDeveloperApiKey = developerApiKey || null;
-
     if (!server) return { ok: false, error: 'TradeLocker server is required.' };
     if (!email) return { ok: false, error: 'TradeLocker email is required.' };
-    if (!password) return { ok: false, error: 'TradeLocker password is required (or save it in Settings).' };
+
+    const profileSecretMap = ensureTradeLockerProfileSecretMap(this.state);
+    const profileSecretEntryRaw = profileKey ? profileSecretMap[profileKey] : null;
+    const profileSecretEntry =
+      profileSecretEntryRaw && typeof profileSecretEntryRaw === 'object' && !Array.isArray(profileSecretEntryRaw)
+        ? profileSecretEntryRaw
+        : {};
+
+    let password = String(opts?.password || '').trim();
+    if (!password && profileSecretEntry?.password) password = decryptSecret(profileSecretEntry.password) || '';
+    if (!password && !profileScopedConnect) password = decryptSecret(this.state.secrets?.password) || '';
+
+    let developerApiKey = String(opts?.developerApiKey || '').trim();
+    if (!developerApiKey && profileSecretEntry?.developerApiKey) {
+      developerApiKey = decryptSecret(profileSecretEntry.developerApiKey) || '';
+    }
+    if (!developerApiKey && !profileScopedConnect) developerApiKey = decryptSecret(this.state.secrets?.developerApiKey) || '';
+    this.sessionDeveloperApiKey = developerApiKey || null;
+
+    if (!password) {
+      if (profileScopedConnect) {
+        return {
+          ok: false,
+          error: 'TradeLocker password is required for the selected profile.',
+          code: 'password_required_for_profile'
+        };
+      }
+      return { ok: false, error: 'TradeLocker password is required (or save it in Settings).' };
+    }
 
     this.lastError = null;
 
@@ -3868,12 +4206,32 @@ class TradeLockerClient {
     if (rememberPassword) {
       const enc = encryptSecret(password);
       if (!enc) warnings.push('Password was not saved (encryption unavailable).');
-      else this.state.secrets.password = enc;
+      else {
+        this.state.secrets.password = enc;
+        if (profileKey) {
+          const profileMap = ensureTradeLockerProfileSecretMap(this.state);
+          const nextEntry = {
+            ...(profileMap[profileKey] && typeof profileMap[profileKey] === 'object' ? profileMap[profileKey] : {}),
+            password: enc
+          };
+          profileMap[profileKey] = nextEntry;
+        }
+      }
     }
     if (rememberDeveloperApiKey) {
       const enc = encryptSecret(developerApiKey);
       if (!enc && developerApiKey) warnings.push('Developer API key was not saved (encryption unavailable).');
-      else this.state.secrets.developerApiKey = enc;
+      else {
+        this.state.secrets.developerApiKey = enc;
+        if (profileKey) {
+          const profileMap = ensureTradeLockerProfileSecretMap(this.state);
+          const nextEntry = {
+            ...(profileMap[profileKey] && typeof profileMap[profileKey] === 'object' ? profileMap[profileKey] : {}),
+            developerApiKey: enc
+          };
+          profileMap[profileKey] = nextEntry;
+        }
+      }
     }
     if (rememberPassword || rememberDeveloperApiKey) persistState(this.state);
 
@@ -3985,6 +4343,7 @@ class TradeLockerClient {
           expireAtMs: tokenInfo.expireAtMs,
           obtainedAtMs: nowMs()
         };
+      this.resetAccountRouteHealth('account_not_ready');
 
       // Clear caches that depend on auth/account
       this.config = null;
@@ -4005,42 +4364,33 @@ class TradeLockerClient {
       // Auto-select account if possible (or fill in missing accountId/accNum).
       try {
         const accountsJson = await this.apiJson('/auth/jwt/all-accounts');
-        const accounts = Array.isArray(accountsJson?.accounts) ? accountsJson.accounts : [];
+        const accounts = normalizeAccountsList(Array.isArray(accountsJson?.accounts) ? accountsJson.accounts : []);
         this.accountsCache = { accounts, fetchedAtMs: nowMs() };
 
-        const activeAccountId = parseAccountIdentifier(this.state.accountId);
-        const activeAccNum = parseAccountIdentifier(this.state.accNum);
-        const hasAccountId = activeAccountId != null;
-        const hasAccNum = activeAccNum != null;
-
-        const match = accounts.find((a) => {
-          const aId = parseAccountIdentifier(a?.id);
-          const aAccNum = parseAccountIdentifier(a?.accNum);
-          if (hasAccountId && aId != null && aId === activeAccountId) return true;
-          if (hasAccNum && aAccNum != null && aAccNum === activeAccNum) return true;
-          return false;
+        const resolved = resolveTradeLockerAccountPair(accounts, {
+          accountId: this.state.accountId,
+          accNum: this.state.accNum,
+          allowSingleAccountFallback: true
         });
-
-        if (match && parseAccountIdentifier(match.id) != null && parseAccountIdentifier(match.accNum) != null) {
-          this.state.accountId = parseAccountIdentifier(match.id);
-          this.state.accNum = parseAccountIdentifier(match.accNum);
+        if (resolved?.ok) {
+          this.state.accountId = resolved.accountId;
+          this.state.accNum = resolved.accNum;
           persistState(this.state);
-        } else if ((!hasAccountId || !hasAccNum) && accounts.length === 1) {
-          const only = accounts[0];
-          if (parseAccountIdentifier(only?.id) != null && parseAccountIdentifier(only?.accNum) != null) {
-            this.state.accountId = parseAccountIdentifier(only.id);
-            this.state.accNum = parseAccountIdentifier(only.accNum);
-            persistState(this.state);
-          }
         }
       } catch {
         // ignore auto-account selection errors
       }
 
-      try {
-        await this.ensureAccountContext();
-      } catch {
-        // ignore account context errors
+      const verifyRes = await this.verifyActiveAccountContext({ allowRepair: true });
+      if (!verifyRes?.ok) {
+        const verifyError = verifyRes?.error ? String(verifyRes.error) : 'TradeLocker account context verification failed.';
+        this.lastError = verifyError;
+        return {
+          ok: false,
+          error: verifyError,
+          code: verifyRes?.code || 'account_auth_invalid',
+          stage: 'verify'
+        };
       }
 
       try {
@@ -4067,6 +4417,7 @@ class TradeLockerClient {
     try { this.stopStream(); } catch {}
     this.tokens = null;
     this.lastError = null;
+    this.resetAccountRouteHealth('account_not_ready');
     this.config = null;
     this.rateLimitConfig = null;
     this.rateLimitBuckets = new Map();
@@ -4098,10 +4449,26 @@ class TradeLockerClient {
   }
 
   setActiveAccount({ accountId, accNum }) {
-    const parsedAccountId = parseAccountIdentifier(accountId);
-    const parsedAccNum = parseAccountIdentifier(accNum);
-    this.state.accountId = parsedAccountId;
-    this.state.accNum = parsedAccNum;
+    const accounts = Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : [];
+    const resolved = resolveTradeLockerAccountPair(accounts, {
+      accountId,
+      accNum,
+      allowSingleAccountFallback: false
+    });
+    if (!resolved?.ok) {
+      const msg = resolved?.error || 'TradeLocker account could not be resolved.';
+      this.lastError = msg;
+      this.noteAccountRouteFailure('account_context_mismatch', msg);
+      return {
+        ok: false,
+        error: msg,
+        code: 'ACCOUNT_UNRESOLVED',
+        accountId: parseAccountIdentifier(accountId) ?? null,
+        accNum: parseAccountIdentifier(accNum) ?? null
+      };
+    }
+    this.state.accountId = resolved.accountId;
+    this.state.accNum = resolved.accNum;
     persistState(this.state);
     this.instruments = null;
     this.instrumentsByTradableId = new Map();
@@ -4111,7 +4478,8 @@ class TradeLockerClient {
     this.historyCache = new Map();
     this.infoRouteCache = new Map();
     this.resetRateLimitTelemetryState();
-    return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum };
+    this.resetAccountRouteHealth('account_not_ready');
+    return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum, resolvedBy: resolved.resolvedBy || 'exact' };
   }
 
   setTradingOptions({ tradingEnabled, autoPilotEnabled, defaultOrderQty, defaultOrderType }) {
@@ -4306,6 +4674,7 @@ class TradeLockerClient {
 
       await this.ensureAccessTokenValid();
       const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
+      const accountScopedRequest = includeAccNumFinal;
       if (includeAccNumFinal && parseAccountIdentifier(this.state.accNum) == null) {
         await this.ensureAccountContext();
       }
@@ -4388,6 +4757,10 @@ class TradeLockerClient {
         if (isUpstreamStatus(res.status)) {
           this.noteUpstreamFailure(res.status, errWithEndpoint);
         }
+        if (accountScopedRequest && isAccountRouteFailure({ status: res.status, message: errWithEndpoint, code: null })) {
+          const reason = classifyAccountRouteFailureReason({ status: res.status, message: errWithEndpoint, code: null }) || 'account_auth_invalid';
+          this.noteAccountRouteFailure(reason, errWithEndpoint);
+        }
         throw new HttpError(errWithEndpoint, {
           status: res.status,
           retryAfterMs,
@@ -4395,6 +4768,7 @@ class TradeLockerClient {
         });
       }
       this.noteUpstreamSuccess();
+      if (accountScopedRequest) this.noteAccountRouteHealthy();
       this.noteRateLimitTelemetry({
         method,
         pathname,
@@ -4430,14 +4804,22 @@ class TradeLockerClient {
         try {
           await this.ensureAccessTokenValid();
           const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
+          const accountScopedRequest = includeAccNumFinal;
           if (includeAccNumFinal && parseAccountIdentifier(this.state.accNum) == null) {
             await this.ensureAccountContext();
+          }
+          if (accountScopedRequest && parseAccountIdentifier(this.state.accNum) == null) {
+            this.noteAccountRouteFailure('account_not_ready', 'TradeLocker accNum not set. Select an account first.');
           }
         } catch (e) {
           const msg = redactErrorMessage(e?.message || String(e));
           const status = typeof e?.status === 'number' ? e.status : 0;
           const code = e?.code || classifyTradeLockerError({ status, message: msg }) || undefined;
           this.lastError = msg;
+          if ((includeAccNum || this.requiresAccNum(pathname)) && isAccountRouteFailure({ status, message: msg, code })) {
+            const reason = classifyAccountRouteFailureReason({ status, message: msg, code }) || 'account_auth_invalid';
+            this.noteAccountRouteFailure(reason, msg);
+          }
           return {
             ok: false,
             status,
@@ -4453,6 +4835,7 @@ class TradeLockerClient {
 
         const url = `${this.getBaseUrl()}${pathname.startsWith('/') ? '' : '/'}${pathname}`;
         const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
+        const accountScopedRequest = includeAccNumFinal;
         const finalHeaders = {
           ...this.buildAuthHeaders({ includeAccNum: includeAccNumFinal }),
           ...headers
@@ -4539,10 +4922,15 @@ class TradeLockerClient {
           } else if (out.code == null) {
             out.code = classifyTradeLockerError({ status: res.status, message: out.error }) || null;
           }
+          if (accountScopedRequest && isAccountRouteFailure({ status: res.status, message: out.error, code: out.code })) {
+            const reason = classifyAccountRouteFailureReason({ status: res.status, message: out.error, code: out.code }) || 'account_auth_invalid';
+            this.noteAccountRouteFailure(reason, out.error);
+          }
         }
 
         if (res.ok) {
           this.noteUpstreamSuccess();
+          if (accountScopedRequest) this.noteAccountRouteHealthy();
           this.noteRateLimitTelemetry({
             method,
             pathname,
@@ -4580,7 +4968,7 @@ class TradeLockerClient {
   async getAllAccounts() {
     try {
       const json = await this.apiJson('/auth/jwt/all-accounts');
-      const accounts = Array.isArray(json?.accounts) ? json.accounts : [];
+      const accounts = normalizeAccountsList(Array.isArray(json?.accounts) ? json.accounts : []);
       this.accountsCache = { accounts, fetchedAtMs: nowMs() };
       return { ok: true, accounts };
     } catch (e) {
@@ -4597,18 +4985,24 @@ class TradeLockerClient {
     }
     try {
       const json = await this.apiJson('/auth/jwt/all-accounts');
-      const accounts = Array.isArray(json?.accounts) ? json.accounts : [];
+      const accounts = normalizeAccountsList(Array.isArray(json?.accounts) ? json.accounts : []);
       if (accounts.length > 0) {
         this.accountsCache = { accounts, fetchedAtMs: nowMs() };
         return accounts;
       }
-      const fallback = Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : [];
+      const fallback = normalizeAccountsList(Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : []);
+      if (fallback.length > 0) {
+        this.accountsCache = { accounts: fallback, fetchedAtMs: this.accountsCache?.fetchedAtMs || nowMs() };
+      }
       if (fallback.length > 0) return fallback;
       return accounts;
     } catch (e) {
       const msg = redactErrorMessage(e?.message || String(e));
       this.lastError = msg;
-      const fallback = Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : [];
+      const fallback = normalizeAccountsList(Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : []);
+      if (fallback.length > 0) {
+        this.accountsCache = { accounts: fallback, fetchedAtMs: this.accountsCache?.fetchedAtMs || nowMs() };
+      }
       if (fallback.length > 0) return fallback;
       return [];
     }
@@ -4617,49 +5011,120 @@ class TradeLockerClient {
   async ensureAccountContext() {
     const accountId = parseAccountIdentifier(this.state.accountId);
     const accNum = parseAccountIdentifier(this.state.accNum);
-    const hasAccountId = accountId != null;
-    const hasAccNum = accNum != null;
-    if (hasAccountId && hasAccNum) return { ok: true, accountId, accNum };
-
     const accounts = await this.ensureAllAccountsCache(60_000);
     if (!Array.isArray(accounts) || accounts.length === 0) {
-      if (hasAccountId && hasAccNum) return { ok: true, accountId, accNum, stale: true };
+      if (accountId != null && accNum != null) {
+        return { ok: true, accountId, accNum, stale: true };
+      }
       const upstreamBlocked = this.getUpstreamBackoff();
+      this.noteAccountRouteFailure('account_not_ready', upstreamBlocked ? 'TradeLocker upstream unavailable.' : 'TradeLocker account not selected.');
       return {
         ok: false,
         error: upstreamBlocked ? 'TradeLocker upstream unavailable.' : 'TradeLocker account not selected.',
         code: upstreamBlocked ? 'UPSTREAM_UNAVAILABLE' : 'ACCOUNT_NOT_READY'
       };
     }
-    const selected = this.findSelectedAccount(accounts);
-    if (selected && parseAccountIdentifier(selected.id) != null && parseAccountIdentifier(selected.accNum) != null) {
-      this.state.accountId = parseAccountIdentifier(selected.id);
-      this.state.accNum = parseAccountIdentifier(selected.accNum);
+
+    const resolved = resolveTradeLockerAccountPair(accounts, {
+      accountId,
+      accNum,
+      allowSingleAccountFallback: true
+    });
+    if (resolved?.ok) {
+      this.state.accountId = resolved.accountId;
+      this.state.accNum = resolved.accNum;
       persistState(this.state);
       return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum };
     }
 
-    return { ok: false, error: 'TradeLocker account not selected.' };
+    const reason = resolved?.code === 'account_not_ready' ? 'account_not_ready' : 'account_context_mismatch';
+    this.noteAccountRouteFailure(reason, resolved?.error || 'TradeLocker account not selected.');
+    return {
+      ok: false,
+      error: resolved?.error || 'TradeLocker account not selected.',
+      code: resolved?.code || 'ACCOUNT_NOT_READY'
+    };
   }
 
   findSelectedAccount(accounts) {
     const safeAccounts = Array.isArray(accounts) ? accounts : [];
-    const accountId = parseAccountIdentifier(this.state.accountId);
-    const accNum = parseAccountIdentifier(this.state.accNum);
-    const hasAccountId = accountId != null;
-    const hasAccNum = accNum != null;
-
-    const match = safeAccounts.find((a) => {
-      const aId = parseAccountIdentifier(a?.id);
-      const aAccNum = parseAccountIdentifier(a?.accNum);
-      if (hasAccountId && aId != null && aId === accountId) return true;
-      if (hasAccNum && aAccNum != null && aAccNum === accNum) return true;
-      return false;
+    const resolved = resolveTradeLockerAccountPair(safeAccounts, {
+      accountId: this.state.accountId,
+      accNum: this.state.accNum,
+      allowSingleAccountFallback: true
     });
+    if (!resolved?.ok) return null;
+    return safeAccounts.find((entry) => {
+      const entryAccountId = readAccountIdFromEntry(entry);
+      const entryAccNum = readAccNumFromEntry(entry);
+      return entryAccountId === resolved.accountId && entryAccNum === resolved.accNum;
+    }) || null;
+  }
 
-    if (match) return match;
-    if ((!hasAccountId || !hasAccNum) && safeAccounts.length === 1) return safeAccounts[0];
-    return null;
+  async verifyActiveAccountContext({ allowRepair = true } = {}) {
+    const context = await this.ensureAccountContext();
+    if (!context?.ok) {
+      const reason = context?.code === 'ACCOUNT_NOT_READY' || context?.code === 'account_not_ready'
+        ? 'account_not_ready'
+        : 'account_context_mismatch';
+      this.noteAccountRouteFailure(reason, context?.error || 'TradeLocker account not selected.');
+      return {
+        ok: false,
+        error: context?.error || 'TradeLocker account not selected.',
+        code: context?.code || 'ACCOUNT_NOT_READY',
+        stage: 'verify'
+      };
+    }
+
+    const probe = await this.apiRequestMeta('/trade/config', { includeAccNum: true });
+    if (probe?.ok) {
+      this.noteAccountRouteHealthy();
+      return { ok: true, accountId: context.accountId, accNum: context.accNum, stage: 'verify' };
+    }
+
+    if (allowRepair) {
+      const accounts = await this.ensureAllAccountsCache(0);
+      const repaired = resolveTradeLockerAccountPair(accounts, {
+        accountId: this.state.accountId,
+        accNum: this.state.accNum,
+        allowSingleAccountFallback: true
+      });
+      if (repaired?.ok) {
+        this.state.accountId = repaired.accountId;
+        this.state.accNum = repaired.accNum;
+        persistState(this.state);
+        const retryProbe = await this.apiRequestMeta('/trade/config', { includeAccNum: true });
+        if (retryProbe?.ok) {
+          this.noteAccountRouteHealthy();
+          return { ok: true, accountId: repaired.accountId, accNum: repaired.accNum, stage: 'verify', resolvedBy: 'reconnect_retry' };
+        }
+        const retryReason = classifyAccountRouteFailureReason({
+          status: retryProbe?.status,
+          message: retryProbe?.error,
+          code: retryProbe?.code
+        }) || 'account_auth_invalid';
+        this.noteAccountRouteFailure(retryReason, retryProbe?.error || 'TradeLocker account verification failed.');
+        return {
+          ok: false,
+          error: retryProbe?.error || 'TradeLocker account verification failed.',
+          code: retryReason,
+          stage: 'verify'
+        };
+      }
+    }
+
+    const reason = classifyAccountRouteFailureReason({
+      status: probe?.status,
+      message: probe?.error,
+      code: probe?.code
+    }) || 'account_auth_invalid';
+    this.noteAccountRouteFailure(reason, probe?.error || 'TradeLocker account verification failed.');
+    return {
+      ok: false,
+      error: probe?.error || 'TradeLocker account verification failed.',
+      code: reason,
+      stage: 'verify'
+    };
   }
 
   async getBalanceFromAllAccounts(maxAgeMs = 30_000) {
@@ -4924,8 +5389,8 @@ class TradeLockerClient {
       const activeAccountId = parseAccountIdentifier(this.state.accountId);
       const activeAccNum = parseAccountIdentifier(this.state.accNum);
       const selected = accounts.find((a) => {
-        const aId = parseAccountIdentifier(a?.id);
-        const aAccNum = parseAccountIdentifier(a?.accNum);
+        const aId = readAccountIdFromEntry(a);
+        const aAccNum = readAccNumFromEntry(a);
         if (activeAccountId != null && aId != null && aId === activeAccountId) return true;
         if (activeAccNum != null && aAccNum != null && aAccNum === activeAccNum) return true;
         return false;

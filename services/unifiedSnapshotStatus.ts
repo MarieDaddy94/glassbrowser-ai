@@ -4,6 +4,10 @@ const asText = (value: any) => String(value || '').trim();
 
 const normalizeTimeframe = (value: any) => asText(value).toLowerCase();
 
+export const UNIFIED_SNAPSHOT_READY_LABEL = 'NATIVE SNAPSHOT READY';
+export const UNIFIED_SNAPSHOT_MISSING_LABEL = 'No snapshot yet.';
+export const UNIFIED_SNAPSHOT_WARMING_LABEL = 'Warming up...';
+
 export const buildSnapshotScopeKey = (symbol: any, timeframes: any): string | null => {
   const symbolKey = asText(symbol).toUpperCase();
   if (!symbolKey) return null;
@@ -62,14 +66,13 @@ export const formatUnifiedSnapshotStatusLabel = (
     warmingLabel?: string;
   }
 ) => {
-  if (!status) return options?.missingLabel || 'No snapshot yet.';
+  if (!status) return options?.missingLabel || UNIFIED_SNAPSHOT_MISSING_LABEL;
   const normalized = classifyUnifiedSnapshotStatus(status);
-  if (!normalized) return options?.missingLabel || 'No snapshot yet.';
-  if (normalized.state === 'warming') return options?.warmingLabel || 'Warming up...';
+  if (!normalized) return options?.missingLabel || UNIFIED_SNAPSHOT_MISSING_LABEL;
+  if (normalized.state === 'warming') return options?.warmingLabel || UNIFIED_SNAPSHOT_WARMING_LABEL;
   if (normalized.state === 'coverage_delayed') {
     return `Snapshot coverage delayed${normalized.reasonCode ? ` (${normalized.reasonCode})` : ''}`;
   }
-  if (normalized.state === 'ready') return options?.readyLabel || 'Native chart snapshot ready';
+  if (normalized.state === 'ready') return options?.readyLabel || UNIFIED_SNAPSHOT_READY_LABEL;
   return options?.failureLabel || `Snapshot capture failed${normalized.reasonCode ? ` (${normalized.reasonCode})` : ''}`;
 };
-

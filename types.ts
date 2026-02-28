@@ -788,6 +788,15 @@ export interface TradeLockerAccountMetrics {
   updatedAtMs?: number;
 }
 
+export interface TradeLockerAccountNormalized {
+  accountId: number;
+  accNum: number | null;
+  env: string | null;
+  server: string | null;
+  accountKey: string | null;
+  aliases: string[];
+}
+
 export interface Memory {
   id: string;
   text: string;
@@ -2098,6 +2107,22 @@ export interface HealthSnapshot {
   academyGraphCaseActions?: number | null;
   academyGraphLifecycleActions?: number | null;
   academyGraphExportCount?: number | null;
+  runtimeOpsStreamDrops?: number | null;
+  runtimeOpsExternalCommandSubscribeCount?: number | null;
+  runtimeOpsExternalCommandUnsubscribeCount?: number | null;
+  runtimeOpsExternalCommandReplyFailures?: number | null;
+  runtimeOpsExternalCommandTimeouts?: number | null;
+  runtimeOpsRendererErrorForwarded?: number | null;
+  runtimeOpsStreamReconnects?: number | null;
+  runtimeOpsDecisions?: number | null;
+  runtimeOpsActions?: number | null;
+  runtimeOpsActionFailures?: number | null;
+  runtimeOpsGuardrailTrips?: number | null;
+  runtimeOpsMode?: string | null;
+  runtimeOpsLockedAttempts?: number | null;
+  academyCompanionRowsRead?: number | null;
+  intentHydrationRowsRead?: number | null;
+  incrementalCursorFallbackCount?: number | null;
   ledgerArchiveMoves?: number | null;
   ledgerArchiveRows?: number | null;
   signalIdCollisionPreventedCount?: number | null;
@@ -3312,4 +3337,246 @@ export interface ChartSession {
   views: Record<ChartTimeframe, string | null>; // timeframe -> tabId
   roiProfileId?: string | null;
   notes?: string | null;
+}
+
+export type RuntimeOpsEventLevel = 'info' | 'warn' | 'error';
+
+export type RuntimeOpsEventSource =
+  | 'renderer_error'
+  | 'main_log'
+  | 'main_error'
+  | 'audit'
+  | 'action'
+  | 'runtime'
+  | 'system';
+
+export interface RuntimeOpsEvent {
+  id: string;
+  ts: number;
+  seq?: number | null;
+  source: RuntimeOpsEventSource | string;
+  level: RuntimeOpsEventLevel;
+  message: string;
+  code?: string | null;
+  streamId?: string | null;
+  droppedCount?: number | null;
+  payload?: Record<string, any> | null;
+}
+
+export interface RuntimeOpsStreamOptions {
+  includeMainLog?: boolean;
+  includeMainErrors?: boolean;
+  includeAudit?: boolean;
+  replayLast?: number;
+  maxBytesPerChunk?: number;
+}
+
+export interface RuntimeOpsExternalAuthState {
+  tokenPresent: boolean;
+  authorized?: boolean;
+  lastAuthAtMs?: number | null;
+}
+
+export interface RuntimeOpsExternalBridgeState {
+  version: 'v1';
+  port?: number | null;
+  startedAtMs?: number | null;
+  connectedClients?: number;
+  mode?: RuntimeOpsMode | string | null;
+  streamStatus?: RuntimeOpsControllerState['streamStatus'] | string | null;
+}
+
+export interface RuntimeOpsExternalTargetState {
+  selectedWebContentsId: number | null;
+  selectedSource: string | null;
+  selectedIsSubscribed?: boolean;
+  selectedIsStreamSubscriber?: boolean;
+  commandSubscribers: Array<{
+    webContentsId: number;
+    subscribedAtMs?: number | null;
+    lastSeenAtMs?: number | null;
+  }>;
+  streamSubscribers: Array<{
+    webContentsId: number;
+    streamId?: string | null;
+    subscribedAtMs?: number | null;
+  }>;
+  lastResponderWebContentsId?: number | null;
+  preferredWebContentsId?: number | null;
+}
+
+export interface RuntimeOpsExternalActionsSnapshot {
+  actions: Array<{
+    id: string;
+    domain?: string | null;
+    summary?: string | null;
+    requiresBroker?: boolean;
+    requiresVision?: boolean;
+    safety?: {
+      gates?: string[];
+      requiresConfirmation?: boolean;
+    } | null;
+  }>;
+}
+
+export interface RuntimeOpsControllerStateUpdate {
+  mode?: RuntimeOpsMode | string | null;
+  streamStatus?: RuntimeOpsControllerState['streamStatus'] | string | null;
+  activeStreamId?: string | null;
+  streamConnectedAtMs?: number | null;
+  streamLastError?: string | null;
+  commandSubscriberHealthy?: boolean | null;
+  externalRelayHealthy?: boolean;
+  lastExternalCommandAtMs?: number | null;
+  lastExternalCommandError?: string | null;
+  updatedAtMs?: number | null;
+}
+
+export interface RuntimeOpsExternalCommand {
+  requestId: string;
+  command:
+    | 'health.get'
+    | 'state.get'
+    | 'actions.list'
+    | 'targets.get'
+    | 'tradelocker.switch'
+    | 'mode.set'
+    | 'emergency.stop'
+    | 'action.run'
+    | string;
+  payload?: Record<string, any> | null;
+  issuedAtMs?: number | null;
+  timeoutMs?: number | null;
+}
+
+export interface RuntimeOpsTradeLockerSwitchPayload {
+  profileKey?: string | null;
+  profileId?: string | null;
+  accountKey?: string | null;
+  accountId?: number | null;
+  accNum?: number | null;
+  env?: 'demo' | 'live' | string | null;
+  server?: string | null;
+  email?: string | null;
+  password?: string | null;
+  developerApiKey?: string | null;
+  rememberPassword?: boolean | null;
+  rememberDeveloperApiKey?: boolean | null;
+}
+
+export type TradeLockerProfileSecretKey = string;
+
+export type TradeLockerSwitchStage =
+  | 'resolve_profile'
+  | 'resolve_target'
+  | 'connect'
+  | 'refresh_accounts'
+  | 'set_active_account'
+  | 'verify'
+  | string;
+
+export interface RuntimeOpsTradeLockerSwitchResult {
+  ok: boolean;
+  stage?: TradeLockerSwitchStage;
+  resolvedBy?: 'exact' | 'accountId_fallback' | 'reconnect_retry' | null;
+  accountId?: number | null;
+  accNum?: number | null;
+  accountKey?: string | null;
+  code?: string | null;
+  error?: string | null;
+}
+
+export interface RuntimeOpsExternalCommandResult {
+  requestId: string;
+  ok: boolean;
+  mode?: RuntimeOpsMode | string | null;
+  state?: RuntimeOpsControllerState | null;
+  health?: HealthSnapshot | null;
+  result?: any;
+  error?: string | null;
+  code?: string | null;
+}
+
+export type RuntimeOpsMode = 'disarmed' | 'observe_only' | 'autonomous' | 'emergency_stop';
+
+export interface RuntimeOpsPolicy {
+  version: 'v1';
+  alwaysArmed: boolean;
+  allowLiveExecution: boolean;
+  maxActionsPerMinute: number;
+  maxActionsPerDomain: number;
+  consecutiveFailureCircuit: number;
+  actionCooldownMs: number;
+  liveActionCooldownMs: number;
+  duplicateSuppressionMs: number;
+  reconnectBackoffMs?: number;
+}
+
+export interface RuntimeOpsGuardrailState {
+  pass: boolean;
+  blockedReasons: string[];
+  canRunLive: boolean;
+  cooldownUntilMs?: number | null;
+  failureStreak?: number;
+  actionsLastMinute?: number;
+  domainActionsLastMinute?: Record<string, number> | null;
+  duplicateBlocked?: boolean;
+}
+
+export interface RuntimeOpsDecision {
+  id: string;
+  atMs: number;
+  mode: RuntimeOpsMode;
+  reason: string;
+  confidence: number;
+  actionId?: string | null;
+  domain?: ActionDomain | string | null;
+  blocked?: boolean;
+  guardrail?: RuntimeOpsGuardrailState | null;
+  payload?: Record<string, any> | null;
+  sourceEventIds?: string[];
+}
+
+export interface RuntimeOpsActionRecord {
+  id: string;
+  atMs: number;
+  completedAtMs?: number | null;
+  latencyMs?: number | null;
+  actionId: string;
+  domain?: ActionDomain | string | null;
+  ok: boolean;
+  blocked?: boolean;
+  error?: string | null;
+  resultCode?: string | null;
+  source: 'controller' | 'monitor' | 'manual' | 'system' | 'external_codex';
+  liveExecution?: boolean;
+  payload?: Record<string, any> | null;
+  decisionId?: string | null;
+}
+
+export interface RuntimeOpsControllerState {
+  mode: RuntimeOpsMode;
+  armed: boolean;
+  streamStatus: 'disconnected' | 'connected' | 'reconnecting' | 'fallback_polling';
+  activeStreamId?: string | null;
+  streamConnectedAtMs?: number | null;
+  streamLastError?: string | null;
+  commandSubscriberHealthy?: boolean | null;
+  externalRelayHealthy?: boolean;
+  lastExternalCommandAtMs?: number | null;
+  lastExternalCommandError?: string | null;
+  lastEventAtMs?: number | null;
+  lastDecisionAtMs?: number | null;
+  guardrail: RuntimeOpsGuardrailState;
+  recentActions: RuntimeOpsActionRecord[];
+  recentDecisions: RuntimeOpsDecision[];
+  queueDepth: number;
+  cooldownUntilMs?: number | null;
+  failureStreak: number;
+  droppedCount: number;
+  reconnectCount: number;
+  actionRuns: number;
+  actionFailures: number;
+  guardrailTrips: number;
+  lockedAttempts: number;
 }

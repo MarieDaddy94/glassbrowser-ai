@@ -2,7 +2,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Search, Zap } from 'lucide-react';
 import { requireBridge } from '../services/bridgeGuard';
 import type { UnifiedSnapshotStatus } from '../types';
-import { classifyUnifiedSnapshotStatus, formatUnifiedSnapshotStatusLabel } from '../services/unifiedSnapshotStatus';
+import {
+  classifyUnifiedSnapshotStatus,
+  formatUnifiedSnapshotStatusLabel,
+  UNIFIED_SNAPSHOT_MISSING_LABEL,
+  UNIFIED_SNAPSHOT_READY_LABEL,
+  UNIFIED_SNAPSHOT_WARMING_LABEL
+} from '../services/unifiedSnapshotStatus';
 
 type SymbolSuggestion = {
   symbol: string;
@@ -237,9 +243,9 @@ const SnapshotInterface: React.FC<SnapshotInterfaceProps> = ({
 
   const statusLabel = useMemo(() => {
     return formatUnifiedSnapshotStatusLabel(status, {
-      readyLabel: 'NATIVE SNAPSHOT READY',
-      missingLabel: 'No snapshot yet.',
-      warmingLabel: 'Warming up...',
+      readyLabel: UNIFIED_SNAPSHOT_READY_LABEL,
+      missingLabel: UNIFIED_SNAPSHOT_MISSING_LABEL,
+      warmingLabel: UNIFIED_SNAPSHOT_WARMING_LABEL,
       failureLabel: status?.reasonCode ? `Snapshot issue (${status.reasonCode})` : 'Snapshot issue'
     });
   }, [status]);

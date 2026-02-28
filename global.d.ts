@@ -71,6 +71,39 @@ declare global {
           logPath?: string;
           error?: string;
         }>;
+        startRuntimeStream: (args?: {
+          includeMainLog?: boolean;
+          includeMainErrors?: boolean;
+          includeAudit?: boolean;
+          replayLast?: number;
+          maxBytesPerChunk?: number;
+        }) => Promise<{
+          ok: boolean;
+          streamId?: string;
+          replayed?: number;
+          droppedCount?: number;
+          error?: string;
+        }>;
+        stopRuntimeStream: (args?: { streamId?: string }) => Promise<{
+          ok: boolean;
+          streamId?: string;
+          stopped?: boolean;
+          error?: string;
+        }>;
+        onRuntimeEvent: (handler: (payload: {
+          streamId?: string;
+          event?: {
+            id?: string;
+            ts?: number;
+            seq?: number;
+            source?: string;
+            level?: 'info' | 'warn' | 'error';
+            message?: string;
+            code?: string | null;
+            droppedCount?: number;
+            payload?: any;
+          };
+        }) => void) => () => void;
         listReleases: (args?: { includeHashes?: boolean; maxFiles?: number }) => Promise<{
           ok: boolean;
           releases?: any[];
@@ -90,6 +123,41 @@ declare global {
           };
           error?: string;
         }>;
+      };
+      runtimeOps?: {
+        onExternalCommand: (handler: (payload: {
+          requestId?: string;
+          command?: string;
+          payload?: any;
+          issuedAtMs?: number;
+          timeoutMs?: number;
+        }) => void) => () => void;
+        subscribeExternalCommand: () => Promise<{ ok: boolean; webContentsId?: number; error?: string }>;
+        unsubscribeExternalCommand: () => Promise<{ ok: boolean; webContentsId?: number; error?: string }>;
+        updateControllerState: (payload: {
+          mode?: string | null;
+          streamStatus?: string | null;
+          activeStreamId?: string | null;
+          streamConnectedAtMs?: number | null;
+          streamLastError?: string | null;
+          commandSubscriberHealthy?: boolean | null;
+          externalRelayHealthy?: boolean;
+          lastExternalCommandAtMs?: number | null;
+          lastExternalCommandError?: string | null;
+          updatedAtMs?: number | null;
+        }) => Promise<{ ok: boolean; webContentsId?: number; error?: string }>;
+        emitRendererEvent: (payload: {
+          source?: string;
+          level?: 'info' | 'warn' | 'error';
+          code?: string | null;
+          message?: string;
+          ts?: number | null;
+          payload?: any;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        replyExternalCommand: (payload: {
+          requestId?: string;
+          result?: any;
+        }) => Promise<{ ok: boolean; requestId?: string; acknowledged?: boolean; error?: string }>;
       };
       news?: {
         getSnapshot: (args: { symbol: string; limit?: number; force?: boolean }) => Promise<{
@@ -237,6 +305,13 @@ declare global {
         getStatus: () => Promise<{
           ok: boolean;
           connected: boolean;
+          tokenConnected?: boolean;
+          accountContextReady?: boolean;
+          accountRouteHealthy?: boolean;
+          connectionState?: 'disconnected' | 'connected' | 'degraded_account_auth' | 'error';
+          degradedReason?: string | null;
+          lastAccountAuthError?: string | null;
+          lastAccountAuthAtMs?: number | null;
           env?: 'demo' | 'live';
           server?: string | null;
           email?: string | null;

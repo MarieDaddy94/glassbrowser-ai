@@ -1,0 +1,27 @@
+Runtime Ops Client (Codex external bridge)
+
+Discovery:
+  %APPDATA%\\glassbrowser-ai\\runtime-ops-bridge.json
+
+Commands:
+  node scripts/runtimeOpsClient.cjs status
+  node scripts/runtimeOpsClient.cjs state
+  node scripts/runtimeOpsClient.cjs target
+  node scripts/runtimeOpsClient.cjs actions
+  node scripts/runtimeOpsClient.cjs attach --replay 100 --retry
+  node scripts/runtimeOpsClient.cjs logs --follow --replay 100
+  node scripts/runtimeOpsClient.cjs mode --set autonomous
+  node scripts/runtimeOpsClient.cjs mode --set observe_only
+  node scripts/runtimeOpsClient.cjs mode --set disarmed
+  node scripts/runtimeOpsClient.cjs stop --reason "manual kill switch"
+  node scripts/runtimeOpsClient.cjs action --id chart.refresh --payload "{\"source\":\"cli\"}"
+  node scripts/runtimeOpsClient.cjs action --id broker.action.execute --payload "{\"actionType\":\"CLOSE_POSITION\"}" --confirm
+  node scripts/runtimeOpsClient.cjs tl-switch --profile "<saved_profile_id>"
+  node scripts/runtimeOpsClient.cjs tl-switch --account-id 1747589 --acc-num 12
+  node scripts/runtimeOpsClient.cjs tl-switch --account-key demo:fpr:1747589:12
+  node scripts/runtimeOpsClient.cjs tl-switch --env live --server GATESFX --email you@example.com --password "<secret>" --account-id 1747589 --acc-num 12
+
+Notes:
+  - Commands use loopback HTTP (127.0.0.1) with Bearer token auth.
+  - Live actions still pass through runtime guardrails and action-catalog safety gates.
+  - Safe-first default: risky/broker actions require --confirm.

@@ -1,4 +1,5 @@
 import type { ExecutionSubmissionRequest, ExecutionSubmissionResult } from '../types';
+import { areAccountKeysEquivalent, normalizeAccountKeyLoose, selectPrimaryResultByAccountKey } from './accountKeyIdentity';
 
 const normalizeAccountKey = (value: unknown) => String(value || '').trim();
 
@@ -7,10 +8,11 @@ const dedupeAccountKeys = (input: unknown): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of input) {
-    const key = normalizeAccountKey(raw);
+    const original = normalizeAccountKey(raw);
+    const key = normalizeAccountKeyLoose(original);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push(key);
+    out.push(original);
   }
   return out;
 };
@@ -96,7 +98,7 @@ export const submitTradeLockerOrderBatch = async (
 
     if (snapshotAccountKey && typeof input.getActiveAccountKey === 'function') {
       const active = normalizeAccountKey(input.getActiveAccountKey() || '');
-      if (active && active !== snapshotAccountKey) {
+      if (active && !areAccountKeysEquivalent(active, snapshotAccountKey)) {
         restoreAttempted = true;
         const restoreRes = await input.ensureAccount(snapshotAccountKey, restoreReason);
         if (restoreRes?.ok) {
@@ -108,8 +110,10 @@ export const submitTradeLockerOrderBatch = async (
     }
 
     const primaryAccountKey =
-      (snapshotAccountKey && targets.includes(snapshotAccountKey) ? snapshotAccountKey : null) || targets[0];
-    const primaryResult = results.find((entry) => entry.accountKey === primaryAccountKey) || results[0] || null;
+      (snapshotAccountKey && targets.some((target) => areAccountKeysEquivalent(target, snapshotAccountKey))
+        ? snapshotAccountKey
+        : null) || targets[0];
+    const primaryResult = selectPrimaryResultByAccountKey(results, primaryAccountKey) || results[0] || null;
 
     return {
       ok: !!primaryResult?.ok,

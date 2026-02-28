@@ -25,6 +25,7 @@ type RunActionInput = {
   timeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
+  disableCooldown?: boolean;
 };
 
 export type CreatePanelActionRunnerInput = {
@@ -47,6 +48,7 @@ export type PanelActionRunner = (
     timeoutMs?: number;
     retries?: number;
     retryDelayMs?: number;
+    disableCooldown?: boolean;
   }
 ) => Promise<PanelActionResult>;
 
@@ -117,7 +119,7 @@ class PanelConnectivityEngine {
     state.blockedUntilMs = null;
   }
 
-  private markFailure(panel: string, source: string, error: string, latencyMs: number | null) {
+  private markFailure(panel: string, source: string, error: string, latencyMs: number | null, disableCooldown?: boolean) {
     const state = this.resolveState(panel, source);
     state.ready = false;
     state.latencyMs = Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null;
@@ -126,10 +128,18 @@ class PanelConnectivityEngine {
     state.updatedAt = Date.now();
     state.failureCount += 1;
     if (state.failureCount >= 3) {
-      const exponent = Math.max(0, state.failureCount - 3);
-      const backoffMs = Math.min(MAX_BACKOFF_MS, 1000 * Math.pow(2, exponent));
-      state.blockedUntilMs = Date.now() + backoffMs;
-      state.blockedReason = 'source_cooldown_active';
+      if (!disableCooldown) {
+        const exponent = Math.max(0, state.failureCount - 3);
+        const backoffMs = Math.min(MAX_BACKOFF_MS, 1000 * Math.pow(2, exponent));
+        state.blockedUntilMs = Date.now() + backoffMs;
+        state.blockedReason = 'source_cooldown_active';
+      } else {
+        state.blockedUntilMs = null;
+        state.blockedReason = null;
+      }
+    } else {
+      state.blockedUntilMs = null;
+      state.blockedReason = null;
     }
   }
 
@@ -191,7 +201,13 @@ class PanelConnectivityEngine {
     panel: string,
     source: string,
     fn: () => Promise<any>,
-    options: { timeoutMs: number; retries: number; retryDelayMs: number; normalize: (raw: any, source: string) => PanelActionResult }
+    options: {
+      timeoutMs: number;
+      retries: number;
+      retryDelayMs: number;
+      normalize: (raw: any, source: string) => PanelActionResult;
+      disableCooldown?: boolean;
+    }
   ): Promise<PanelActionResult> {
     const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(250, Math.floor(options.timeoutMs)) : DEFAULT_TIMEOUT_MS;
     const retries = Number.isFinite(options.retries) ? Math.max(0, Math.floor(options.retries)) : DEFAULT_RETRIES;
@@ -202,24 +218,30 @@ class PanelConnectivityEngine {
       attempts += 1;
       const now = Date.now();
       if (this.isBlocked(panel, source, now)) {
-        const blocked = this.resolveState(panel, source);
-        const blockedUntilMs = Number(blocked.blockedUntilMs || 0) || now;
-        const retryAfterMs = Math.max(0, blockedUntilMs - now);
-        const blockedReason = blocked.blockedReason || 'source_cooldown_active';
-        blocked.ready = false;
-        blocked.error = blockedReason;
-        blocked.blockedReason = blockedReason;
-        blocked.updatedAt = now;
-        return {
-          ok: false,
-          source,
-          attempts,
-          error: blockedReason,
-          blocked: true,
-          retryAfterMs,
-          blockedReason,
-          blockedUntilMs
-        };
+        if (options.disableCooldown) {
+          const state = this.resolveState(panel, source);
+          state.blockedUntilMs = null;
+          state.blockedReason = null;
+        } else {
+          const blocked = this.resolveState(panel, source);
+          const blockedUntilMs = Number(blocked.blockedUntilMs || 0) || now;
+          const retryAfterMs = Math.max(0, blockedUntilMs - now);
+          const blockedReason = blocked.blockedReason || 'source_cooldown_active';
+          blocked.ready = false;
+          blocked.error = blockedReason;
+          blocked.blockedReason = blockedReason;
+          blocked.updatedAt = now;
+          return {
+            ok: false,
+            source,
+            attempts,
+            error: blockedReason,
+            blocked: true,
+            retryAfterMs,
+            blockedReason,
+            blockedUntilMs
+          };
+        }
       }
 
       const startedAt = Date.now();
@@ -234,12 +256,12 @@ class PanelConnectivityEngine {
             attempts
           };
         }
-        this.markFailure(panel, source, normalized.error || 'action_failed', latencyMs);
+        this.markFailure(panel, source, normalized.error || 'action_failed', latencyMs, options.disableCooldown === true);
         if (attempts <= retries) await sleep(retryDelayMs);
       } catch (error) {
         const latencyMs = Date.now() - startedAt;
         const message = toErrorMessage(error);
-        this.markFailure(panel, source, message, latencyMs);
+        this.markFailure(panel, source, message, latencyMs, options.disableCooldown === true);
         if (attempts > retries) {
           return {
             ok: false,
@@ -287,7 +309,8 @@ class PanelConnectivityEngine {
           timeoutMs,
           retries,
           retryDelayMs,
-          normalize: this.normalizeCatalogResult.bind(this)
+          normalize: this.normalizeCatalogResult.bind(this),
+          disableCooldown: input.disableCooldown === true
         }
       );
       if (catalogResult.ok || !input.fallback) {
@@ -304,7 +327,8 @@ class PanelConnectivityEngine {
           timeoutMs,
           retries: 0,
           retryDelayMs: 0,
-          normalize: this.normalizeFallbackResult.bind(this)
+          normalize: this.normalizeFallbackResult.bind(this),
+          disableCooldown: input.disableCooldown === true
         }
       );
       if (fallbackResult.ok) {
@@ -369,7 +393,8 @@ export const createPanelActionRunner = (input: CreatePanelActionRunnerInput): Pa
       fallbackSource: options?.fallbackSource || input.defaultFallbackSource || 'fallback',
       timeoutMs: options?.timeoutMs ?? input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       retries: options?.retries ?? input.retries ?? DEFAULT_RETRIES,
-      retryDelayMs: options?.retryDelayMs ?? input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS
+      retryDelayMs: options?.retryDelayMs ?? input.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS,
+      disableCooldown: options?.disableCooldown === true
     });
   };
 };

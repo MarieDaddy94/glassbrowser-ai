@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { createRuntimeOpsExternalBridge } = require('../services/runtimeOpsExternalBridge.cjs');
 const { TradeLockerClient } = require('./tradelocker.cjs');
 const { BrokerRegistry, createTradeLockerAdapter, createSimAdapter } = require('./brokerRegistry.cjs');
 const { NewsService } = require('./newsService.cjs');
@@ -38,6 +39,32 @@ const { app, BrowserWindow, ipcMain, shell, safeStorage, session } = electron;
 let tradeLedger = null;
 
 const MAIN_LOG_FILE = 'main.log';
+const RUNTIME_EVENT_RING_LIMIT = 800;
+const RUNTIME_EVENT_MAX_MESSAGE_CHARS = 4000;
+const RUNTIME_EVENT_MAX_CHUNK_BYTES = 64 * 1024;
+const RUNTIME_LOG_TAIL_INTERVAL_MS = 1000;
+let runtimeEventSeq = 0;
+let runtimeEventDroppedCount = 0;
+let runtimeLogCursor = 0;
+let runtimeLogTailTimer = null;
+const runtimeStreamSubscribersByWebContentsId = new Map();
+const runtimeExternalCommandSubscribersByWebContentsId = new Map();
+const runtimeEventRingBuffer = [];
+let runtimeOpsExternalBridge = null;
+const pendingRuntimeOpsExternalByRequestId = new Map();
+let runtimeOpsExternalLastMode = null;
+let runtimeOpsExternalLastStreamStatus = null;
+let runtimeOpsExternalLastResponderWebContentsId = null;
+let runtimeOpsExternalPreferredWebContentsId = null;
+let runtimeOpsExternalLastControllerState = null;
+let runtimeOpsExternalLastControllerStateAtMs = 0;
+const runtimeOpsExternalDiagnostics = {
+  externalCommandSubscribeCount: 0,
+  externalCommandUnsubscribeCount: 0,
+  externalCommandReplyFailures: 0,
+  externalCommandTimeouts: 0,
+  rendererErrorForwarded: 0
+};
 
 function getMainLogPath() {
   try {
@@ -55,6 +82,739 @@ function appendMainLog(line) {
     fs.appendFileSync(getMainLogPath(), line);
   } catch {
     // ignore logging failures
+  }
+}
+
+function sanitizeRuntimeMessage(input) {
+  const text = String(input == null ? '' : input)
+    .replace(/\r/g, '')
+    .trim();
+  if (!text) return '';
+  if (text.length <= RUNTIME_EVENT_MAX_MESSAGE_CHARS) return text;
+  return `${text.slice(0, RUNTIME_EVENT_MAX_MESSAGE_CHARS - 3)}...`;
+}
+
+function buildRuntimeEvent(input) {
+  runtimeEventSeq += 1;
+  const ts = Number.isFinite(Number(input?.ts)) ? Number(input.ts) : Date.now();
+  return {
+    id: `runtime_evt_${runtimeEventSeq}_${Math.random().toString(16).slice(2, 8)}`,
+    seq: runtimeEventSeq,
+    ts,
+    source: String(input?.source || 'runtime'),
+    level: String(input?.level || 'info'),
+    code: input?.code != null ? String(input.code) : null,
+    message: sanitizeRuntimeMessage(input?.message || ''),
+    payload: input?.payload && typeof input.payload === 'object' ? input.payload : null,
+    droppedCount: Number.isFinite(Number(input?.droppedCount)) ? Number(input.droppedCount) : null
+  };
+}
+
+function shouldDeliverRuntimeEvent(subscriber, event) {
+  if (!subscriber || !event) return false;
+  const source = String(event.source || '').toLowerCase();
+  if (source === 'main_log') return subscriber.options.includeMainLog !== false;
+  if (source === 'main_error' || source === 'ipc_error') return subscriber.options.includeMainErrors !== false;
+  if (source === 'audit' || source === 'action') return subscriber.options.includeAudit === true;
+  return true;
+}
+
+function sendRuntimeEventToWebContents(webContentsId, payload) {
+  try {
+    const wc = electron.webContents.fromId(Number(webContentsId));
+    if (!wc || wc.isDestroyed()) return false;
+    wc.send('diagnostics:runtime:event', payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function updateRuntimeOpsExternalSnapshotFromRuntimeEvent(event) {
+  const code = String(event?.code || '').trim().toLowerCase();
+  if (!code) return;
+  if (code === 'runtime_ops_stream_connecting' || code === 'runtime_ops_stream_error') {
+    runtimeOpsExternalLastStreamStatus = 'reconnecting';
+    return;
+  }
+  if (
+    code === 'runtime_ops_stream_connected' ||
+    code === 'runtime_ops_stream_started' ||
+    code === 'runtime_ops_stream_reused'
+  ) {
+    runtimeOpsExternalLastStreamStatus = 'connected';
+    return;
+  }
+  if (code === 'runtime_ops_stream_fallback_enabled') {
+    runtimeOpsExternalLastStreamStatus = 'fallback_polling';
+    return;
+  }
+  if (code === 'runtime_ops_stream_closed' || code === 'runtime_ops_stream_stopped') {
+    runtimeOpsExternalLastStreamStatus = 'disconnected';
+  }
+}
+
+function pushRuntimeEvent(input) {
+  const event = buildRuntimeEvent(input || {});
+  if (!event.message) return null;
+  updateRuntimeOpsExternalSnapshotFromRuntimeEvent(event);
+  runtimeEventRingBuffer.push(event);
+  if (runtimeEventRingBuffer.length > RUNTIME_EVENT_RING_LIMIT) {
+    const overflow = runtimeEventRingBuffer.length - RUNTIME_EVENT_RING_LIMIT;
+    runtimeEventDroppedCount += overflow;
+    runtimeEventRingBuffer.splice(0, overflow);
+  }
+  for (const [webContentsId, subscriber] of runtimeStreamSubscribersByWebContentsId.entries()) {
+    if (!shouldDeliverRuntimeEvent(subscriber, event)) continue;
+    const ok = sendRuntimeEventToWebContents(webContentsId, {
+      streamId: subscriber.streamId,
+      event
+    });
+    if (!ok) runtimeStreamSubscribersByWebContentsId.delete(webContentsId);
+  }
+  try {
+    runtimeOpsExternalBridge?.onRuntimeEvent?.(event);
+  } catch {
+    // ignore bridge forward failures
+  }
+  return event;
+}
+
+function hasRuntimeMainLogSubscribers() {
+  for (const subscriber of runtimeStreamSubscribersByWebContentsId.values()) {
+    if (subscriber?.options?.includeMainLog !== false) return true;
+  }
+  return false;
+}
+
+function pollRuntimeLogTail() {
+  if (!hasRuntimeMainLogSubscribers()) return;
+  const logPath = getMainLogPath();
+  try {
+    if (!fs.existsSync(logPath)) return;
+    const stats = fs.statSync(logPath);
+    const size = Number(stats?.size || 0);
+    if (!Number.isFinite(size) || size <= 0) return;
+    if (runtimeLogCursor > size) runtimeLogCursor = 0;
+    if (runtimeLogCursor === 0 && size > RUNTIME_EVENT_MAX_CHUNK_BYTES) {
+      runtimeLogCursor = size - RUNTIME_EVENT_MAX_CHUNK_BYTES;
+    }
+    if (size <= runtimeLogCursor) return;
+    const readBytes = Math.min(size - runtimeLogCursor, RUNTIME_EVENT_MAX_CHUNK_BYTES);
+    const buffer = Buffer.alloc(readBytes);
+    const fd = fs.openSync(logPath, 'r');
+    const bytesRead = fs.readSync(fd, buffer, 0, readBytes, runtimeLogCursor);
+    fs.closeSync(fd);
+    if (!Number.isFinite(bytesRead) || bytesRead <= 0) return;
+    runtimeLogCursor += bytesRead;
+    const chunk = buffer.toString('utf8', 0, bytesRead);
+    const lines = chunk.split(/\r?\n/).filter(Boolean);
+    if (lines.length === 0) return;
+    for (const line of lines) {
+      pushRuntimeEvent({
+        source: 'main_log',
+        level: 'info',
+        message: line
+      });
+    }
+  } catch (err) {
+    pushRuntimeEvent({
+      source: 'main_error',
+      level: 'warn',
+      code: 'runtime_log_tail_failed',
+      message: err?.message || String(err)
+    });
+  }
+}
+
+function ensureRuntimeLogTailTimer() {
+  if (runtimeLogTailTimer) return;
+  runtimeLogTailTimer = setInterval(() => {
+    pollRuntimeLogTail();
+  }, RUNTIME_LOG_TAIL_INTERVAL_MS);
+}
+
+function stopRuntimeLogTailTimer() {
+  if (runtimeLogTailTimer) {
+    clearInterval(runtimeLogTailTimer);
+    runtimeLogTailTimer = null;
+  }
+}
+
+function cleanupRuntimeSubscriber(webContentsId) {
+  const id = Number(webContentsId);
+  if (!Number.isFinite(id)) return;
+  runtimeStreamSubscribersByWebContentsId.delete(id);
+  if (!hasRuntimeMainLogSubscribers()) {
+    stopRuntimeLogTailTimer();
+  }
+}
+
+function cleanupRuntimeExternalCommandSubscriber(webContentsId) {
+  const id = Number(webContentsId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const existed = runtimeExternalCommandSubscribersByWebContentsId.delete(id);
+  if (existed) {
+    runtimeOpsExternalDiagnostics.externalCommandUnsubscribeCount += 1;
+  }
+  if (runtimeOpsExternalPreferredWebContentsId === id) {
+    runtimeOpsExternalPreferredWebContentsId = null;
+  }
+  if (runtimeExternalCommandSubscribersByWebContentsId.size === 0) {
+    runtimeOpsExternalLastControllerState = {
+      ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? runtimeOpsExternalLastControllerState
+        : {}),
+      commandSubscriberHealthy: false,
+      updatedAtMs: Date.now()
+    };
+    runtimeOpsExternalLastControllerStateAtMs = Date.now();
+  }
+}
+
+function sanitizeRuntimeOpsControllerStateUpdate(payload = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const out = {};
+  if (payload.mode != null) out.mode = String(payload.mode);
+  if (payload.streamStatus != null) out.streamStatus = String(payload.streamStatus);
+  if (payload.activeStreamId != null) out.activeStreamId = String(payload.activeStreamId);
+  if (payload.streamConnectedAtMs != null && Number.isFinite(Number(payload.streamConnectedAtMs))) {
+    out.streamConnectedAtMs = Number(payload.streamConnectedAtMs);
+  }
+  if (payload.streamLastError != null) out.streamLastError = String(payload.streamLastError);
+  if (payload.commandSubscriberHealthy != null) out.commandSubscriberHealthy = payload.commandSubscriberHealthy === true;
+  if (typeof payload.externalRelayHealthy === 'boolean') out.externalRelayHealthy = payload.externalRelayHealthy;
+  if (payload.lastExternalCommandAtMs != null && Number.isFinite(Number(payload.lastExternalCommandAtMs))) {
+    out.lastExternalCommandAtMs = Number(payload.lastExternalCommandAtMs);
+  }
+  if (payload.lastExternalCommandError != null) out.lastExternalCommandError = String(payload.lastExternalCommandError);
+  if (payload.updatedAtMs != null && Number.isFinite(Number(payload.updatedAtMs))) {
+    out.updatedAtMs = Number(payload.updatedAtMs);
+  }
+  if (Object.keys(out).length === 0) return null;
+  return out;
+}
+
+function sanitizeRuntimeRendererEvent(payload = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const message = sanitizeRuntimeMessage(payload.message || '');
+  if (!message) return null;
+  return {
+    source: String(payload.source || 'renderer_error'),
+    level: payload.level === 'warn' || payload.level === 'error' ? payload.level : 'info',
+    code: payload.code != null ? String(payload.code) : null,
+    message,
+    ts: Number.isFinite(Number(payload.ts)) ? Number(payload.ts) : Date.now(),
+    payload: payload.payload && typeof payload.payload === 'object' ? payload.payload : null
+  };
+}
+
+function getRuntimeExternalCommandSubscribersSnapshot() {
+  const rows = [];
+  for (const [webContentsId, meta] of runtimeExternalCommandSubscribersByWebContentsId.entries()) {
+    const id = Number(webContentsId || 0);
+    if (!Number.isFinite(id) || id <= 0) continue;
+    const alive = getAliveWebContentsById(id);
+    if (!alive) {
+      runtimeExternalCommandSubscribersByWebContentsId.delete(id);
+      continue;
+    }
+    rows.push({
+      webContentsId: id,
+      subscribedAtMs: Number(meta?.subscribedAtMs || 0) || null,
+      lastSeenAtMs: Number(meta?.lastSeenAtMs || 0) || null
+    });
+  }
+  return rows.sort((a, b) => (Number(b.lastSeenAtMs || 0) - Number(a.lastSeenAtMs || 0)));
+}
+
+function startRuntimeStreamForSender(evt, opts = {}) {
+  const webContentsId = Number(evt?.sender?.id || 0);
+  if (!Number.isFinite(webContentsId) || webContentsId <= 0) {
+    return { ok: false, error: 'Invalid renderer sender.' };
+  }
+  const forceRestart = opts?.forceRestart === true;
+  const replayLast = Number.isFinite(Number(opts?.replayLast))
+    ? Math.max(0, Math.min(500, Math.floor(Number(opts.replayLast))))
+    : 80;
+  const includeMainLog = opts?.includeMainLog !== false;
+  const includeMainErrors = opts?.includeMainErrors !== false;
+  const includeAudit = opts?.includeAudit === true;
+  const existing = runtimeStreamSubscribersByWebContentsId.get(webContentsId);
+  if (existing && !forceRestart) {
+    runtimeOpsExternalPreferredWebContentsId = webContentsId;
+    existing.options = {
+      includeMainLog,
+      includeMainErrors,
+      includeAudit
+    };
+    runtimeStreamSubscribersByWebContentsId.set(webContentsId, existing);
+    if (includeMainLog) ensureRuntimeLogTailTimer();
+    const replay = replayLast > 0 ? runtimeEventRingBuffer.slice(-replayLast) : [];
+    let replayed = 0;
+    for (const event of replay) {
+      const subscriber = runtimeStreamSubscribersByWebContentsId.get(webContentsId);
+      if (!subscriber || !shouldDeliverRuntimeEvent(subscriber, event)) continue;
+      const ok = sendRuntimeEventToWebContents(webContentsId, {
+        streamId: subscriber.streamId,
+        event
+      });
+      if (ok) replayed += 1;
+    }
+    pushRuntimeEvent({
+      source: 'runtime',
+      level: 'info',
+      code: 'runtime_ops_stream_reused',
+      message: `Runtime stream reused (${existing.streamId})`,
+      payload: {
+        streamId: existing.streamId,
+        webContentsId,
+        includeMainLog,
+        includeMainErrors,
+        includeAudit,
+        replayed
+      }
+    });
+    return {
+      ok: true,
+      streamId: existing.streamId,
+      replayed,
+      droppedCount: runtimeEventDroppedCount,
+      reused: true
+    };
+  }
+  if (existing && forceRestart) {
+    cleanupRuntimeSubscriber(webContentsId);
+    pushRuntimeEvent({
+      source: 'runtime',
+      level: 'info',
+      code: 'runtime_ops_stream_closed',
+      message: `Runtime stream closed (${existing.streamId})`,
+      payload: {
+        streamId: existing.streamId,
+        webContentsId,
+        reason: 'force_restart'
+      }
+    });
+  }
+  const streamId = `runtime_stream_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  runtimeOpsExternalPreferredWebContentsId = webContentsId;
+  runtimeStreamSubscribersByWebContentsId.set(webContentsId, {
+    streamId,
+    options: {
+      includeMainLog,
+      includeMainErrors,
+      includeAudit
+    },
+    subscribedAtMs: Date.now()
+  });
+  if (includeMainLog) ensureRuntimeLogTailTimer();
+  const replay = replayLast > 0 ? runtimeEventRingBuffer.slice(-replayLast) : [];
+  let replayed = 0;
+  for (const event of replay) {
+    const subscriber = runtimeStreamSubscribersByWebContentsId.get(webContentsId);
+    if (!subscriber || !shouldDeliverRuntimeEvent(subscriber, event)) continue;
+    const ok = sendRuntimeEventToWebContents(webContentsId, { streamId, event });
+    if (ok) replayed += 1;
+  }
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: 'info',
+    code: 'runtime_ops_stream_started',
+    message: `Runtime stream started (${streamId})`,
+    payload: {
+      streamId,
+      webContentsId,
+      includeMainLog,
+      includeMainErrors,
+      includeAudit,
+      replayed
+    }
+  });
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: 'info',
+    code: 'runtime_ops_stream_connected',
+    message: `Runtime stream connected (${streamId})`,
+    payload: {
+      streamId,
+      webContentsId
+    }
+  });
+  return {
+    ok: true,
+    streamId,
+    replayed,
+    droppedCount: runtimeEventDroppedCount,
+    reused: false
+  };
+}
+
+function stopRuntimeStreamForSender(evt, opts = {}) {
+  const webContentsId = Number(evt?.sender?.id || 0);
+  if (!Number.isFinite(webContentsId) || webContentsId <= 0) {
+    return { ok: false, error: 'Invalid renderer sender.' };
+  }
+  const existing = runtimeStreamSubscribersByWebContentsId.get(webContentsId);
+  const requestedId = String(opts?.streamId || '').trim();
+  if (requestedId && existing?.streamId && existing.streamId !== requestedId) {
+    return { ok: true, streamId: existing.streamId, stopped: false };
+  }
+  cleanupRuntimeSubscriber(webContentsId);
+  if (runtimeOpsExternalPreferredWebContentsId === webContentsId) {
+    runtimeOpsExternalPreferredWebContentsId = null;
+  }
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: 'info',
+    code: 'runtime_ops_stream_closed',
+    message: `Runtime stream closed (${existing?.streamId || 'unknown'})`,
+    payload: {
+      streamId: existing?.streamId || null,
+      webContentsId,
+      reason: 'stop'
+    }
+  });
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: 'info',
+    code: 'runtime_ops_stream_stopped',
+    message: `Runtime stream stopped (${existing?.streamId || 'unknown'})`,
+    payload: {
+      streamId: existing?.streamId || null,
+      webContentsId
+    }
+  });
+  return { ok: true, streamId: existing?.streamId || null, stopped: true };
+}
+
+function getAliveWebContentsById(webContentsId) {
+  const id = Number(webContentsId || 0);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  try {
+    const wc = electron.webContents.fromId(id);
+    if (!wc || wc.isDestroyed()) return null;
+    return wc;
+  } catch {
+    return null;
+  }
+}
+
+function getPreferredRuntimeOpsWebContents() {
+  const windows = BrowserWindow.getAllWindows().filter((win) => win && !win.isDestroyed());
+  if (windows.length === 0) return null;
+  const focused = BrowserWindow.getFocusedWindow();
+  const focusedWebContents = focused && !focused.isDestroyed() && focused.webContents && !focused.webContents.isDestroyed()
+    ? focused.webContents
+    : null;
+  const commandSubscribers = getRuntimeExternalCommandSubscribersSnapshot();
+  const activeSubscribers = Array.from(runtimeStreamSubscribersByWebContentsId.entries())
+    .map(([webContentsId, subscriber]) => ({
+      webContentsId: Number(webContentsId || 0),
+      subscribedAtMs: Number(subscriber?.subscribedAtMs || 0)
+    }))
+    .filter((item) => Number.isFinite(item.webContentsId) && item.webContentsId > 0)
+    .sort((a, b) => b.subscribedAtMs - a.subscribedAtMs);
+
+  if (commandSubscribers.length > 0) {
+    if (runtimeOpsExternalPreferredWebContentsId != null) {
+      const preferredCommand = getAliveWebContentsById(runtimeOpsExternalPreferredWebContentsId);
+      if (preferredCommand && runtimeExternalCommandSubscribersByWebContentsId.has(Number(preferredCommand.id || 0))) {
+        return { wc: preferredCommand, source: 'external_command_subscriber_preferred' };
+      }
+    }
+    const newestCommand = getAliveWebContentsById(commandSubscribers[0].webContentsId);
+    if (newestCommand) {
+      return { wc: newestCommand, source: 'external_command_subscriber' };
+    }
+  }
+
+  if (activeSubscribers.length > 0) {
+    if (runtimeOpsExternalPreferredWebContentsId != null) {
+      const preferredActive = getAliveWebContentsById(runtimeOpsExternalPreferredWebContentsId);
+      if (preferredActive && runtimeStreamSubscribersByWebContentsId.has(Number(preferredActive.id || 0))) {
+        return { wc: preferredActive, source: 'active_subscriber_preferred' };
+      }
+    }
+    const newestActive = getAliveWebContentsById(activeSubscribers[0].webContentsId);
+    if (newestActive) {
+      return { wc: newestActive, source: 'active_subscriber' };
+    }
+  }
+
+  if (runtimeOpsExternalLastResponderWebContentsId != null) {
+    const lastResponder = getAliveWebContentsById(runtimeOpsExternalLastResponderWebContentsId);
+    if (lastResponder) {
+      return { wc: lastResponder, source: 'last_responder' };
+    }
+  }
+
+  if (focusedWebContents) {
+    return { wc: focusedWebContents, source: 'focused_window' };
+  }
+
+  for (const win of windows) {
+    const wc = win?.webContents;
+    if (wc && !wc.isDestroyed()) return { wc, source: 'first_alive_window' };
+  }
+  return null;
+}
+
+function getRuntimeOpsExternalTargetState() {
+  const target = getPreferredRuntimeOpsWebContents();
+  const selectedId = Number(target?.wc?.id || 0);
+  const commandSubscribers = getRuntimeExternalCommandSubscribersSnapshot();
+  const streamSubscribers = Array.from(runtimeStreamSubscribersByWebContentsId.entries())
+    .map(([webContentsId, subscriber]) => ({
+      webContentsId: Number(webContentsId || 0),
+      streamId: subscriber?.streamId ? String(subscriber.streamId) : null,
+      subscribedAtMs: Number(subscriber?.subscribedAtMs || 0) || null
+    }))
+    .filter((row) => Number.isFinite(row.webContentsId) && row.webContentsId > 0)
+    .sort((a, b) => (Number(b.subscribedAtMs || 0) - Number(a.subscribedAtMs || 0)));
+  const selectedIsSubscribed = Number.isFinite(selectedId) && selectedId > 0
+    ? commandSubscribers.some((row) => Number(row.webContentsId) === selectedId)
+    : false;
+  const selectedIsStreamSubscriber = Number.isFinite(selectedId) && selectedId > 0
+    ? streamSubscribers.some((row) => Number(row.webContentsId) === selectedId)
+    : false;
+  return {
+    selectedWebContentsId: Number.isFinite(selectedId) && selectedId > 0 ? selectedId : null,
+    selectedSource: target?.source || null,
+    selectedIsSubscribed,
+    selectedIsStreamSubscriber,
+    commandSubscribers,
+    streamSubscribers,
+    lastResponderWebContentsId: Number.isFinite(Number(runtimeOpsExternalLastResponderWebContentsId || 0))
+      ? Number(runtimeOpsExternalLastResponderWebContentsId)
+      : null,
+    preferredWebContentsId: Number.isFinite(Number(runtimeOpsExternalPreferredWebContentsId || 0))
+      ? Number(runtimeOpsExternalPreferredWebContentsId)
+      : null
+  };
+}
+
+function resolvePendingRuntimeOpsExternalRequest(args = {}, evt = null) {
+  const requestId = String(args?.requestId || '').trim();
+  if (!requestId) return { ok: false, error: 'requestId required.' };
+  const pending = pendingRuntimeOpsExternalByRequestId.get(requestId);
+  if (!pending) return { ok: false, error: 'Unknown requestId.' };
+  const senderId = Number(evt?.sender?.id || 0);
+  if (Number.isFinite(senderId) && senderId > 0 && Number(pending.webContentsId || 0) !== senderId) {
+    return { ok: false, error: 'requestId sender mismatch.' };
+  }
+  if (Number.isFinite(senderId) && senderId > 0) {
+    runtimeOpsExternalLastResponderWebContentsId = senderId;
+    runtimeOpsExternalPreferredWebContentsId = senderId;
+    if (runtimeExternalCommandSubscribersByWebContentsId.has(senderId)) {
+      const meta = runtimeExternalCommandSubscribersByWebContentsId.get(senderId) || {};
+      runtimeExternalCommandSubscribersByWebContentsId.set(senderId, {
+        ...meta,
+        subscribedAtMs: Number(meta?.subscribedAtMs || Date.now()),
+        lastSeenAtMs: Date.now()
+      });
+    }
+  }
+  try {
+    clearTimeout(pending.timer);
+  } catch {
+    // ignore
+  }
+  pendingRuntimeOpsExternalByRequestId.delete(requestId);
+  const result = args?.result && typeof args.result === 'object' ? args.result : {};
+  const resultState =
+    result?.state && typeof result.state === 'object' && !Array.isArray(result.state)
+      ? result.state
+      : null;
+  if (resultState) {
+    const senderSubscribed = Number.isFinite(senderId) && senderId > 0
+      ? runtimeExternalCommandSubscribersByWebContentsId.has(senderId)
+      : null;
+    runtimeOpsExternalLastControllerState = {
+      ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? runtimeOpsExternalLastControllerState
+        : {}),
+      ...resultState,
+      commandSubscriberHealthy:
+        resultState.commandSubscriberHealthy !== undefined
+          ? resultState.commandSubscriberHealthy === true
+          : (senderSubscribed == null ? undefined : senderSubscribed),
+      externalRelayHealthy: result?.ok !== false,
+      lastExternalCommandAtMs: Date.now(),
+      lastExternalCommandError: result?.ok === false ? String(result?.error || result?.code || 'command_failed') : null,
+      updatedAtMs: Date.now()
+    };
+    runtimeOpsExternalLastControllerStateAtMs = Date.now();
+  }
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: result?.ok === false ? 'warn' : 'info',
+    code: result?.ok === false ? 'runtime_ops_external_command_failed' : 'runtime_ops_external_command_result',
+    message: `External runtime command completed: ${pending.command}`,
+    payload: {
+      requestId,
+      command: pending.command,
+      webContentsId: pending.webContentsId,
+      ok: result?.ok !== false,
+      error: result?.error || null
+    }
+  });
+  pending.resolve({
+    ok: true,
+    requestId,
+    result
+  });
+  return { ok: true, requestId, acknowledged: true };
+}
+
+async function relayRuntimeOpsExternalCommand(command, payload = {}, opts = {}) {
+  const commandName = String(command || '').trim();
+  if (!commandName) {
+    return { ok: false, error: 'Command required.', code: 'command_required' };
+  }
+  const target = getPreferredRuntimeOpsWebContents();
+  const wc = target?.wc || null;
+  const targetSource = target?.source || 'none';
+  const targetState = getRuntimeOpsExternalTargetState();
+  if (!wc || wc.isDestroyed()) {
+    return {
+      ok: false,
+      error: 'No renderer available.',
+      code: 'renderer_unavailable',
+      target: targetState
+    };
+  }
+  const timeoutMs = Number.isFinite(Number(opts?.timeoutMs))
+    ? Math.max(1000, Math.min(60_000, Math.floor(Number(opts.timeoutMs))))
+    : 15_000;
+  const requestId = `runtime_ext_cmd_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const webContentsId = Number(wc.id || 0);
+  if (runtimeExternalCommandSubscribersByWebContentsId.has(webContentsId)) {
+    const meta = runtimeExternalCommandSubscribersByWebContentsId.get(webContentsId) || {};
+    runtimeExternalCommandSubscribersByWebContentsId.set(webContentsId, {
+      ...meta,
+      subscribedAtMs: Number(meta?.subscribedAtMs || Date.now()),
+      lastSeenAtMs: Date.now()
+    });
+  }
+
+  pushRuntimeEvent({
+    source: 'runtime',
+    level: 'info',
+    code: 'runtime_ops_external_command',
+    message: `External runtime command requested: ${commandName}`,
+    payload: {
+      command: commandName,
+      requestId,
+      webContentsId,
+      targetSource
+    }
+  });
+
+  return await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingRuntimeOpsExternalByRequestId.delete(requestId);
+      runtimeOpsExternalDiagnostics.externalCommandTimeouts += 1;
+      runtimeOpsExternalLastControllerState = {
+        ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+          ? runtimeOpsExternalLastControllerState
+          : {}),
+        externalRelayHealthy: false,
+        lastExternalCommandAtMs: Date.now(),
+        lastExternalCommandError: `timeout:${commandName}`,
+        updatedAtMs: Date.now()
+      };
+      runtimeOpsExternalLastControllerStateAtMs = Date.now();
+      pushRuntimeEvent({
+        source: 'runtime',
+        level: 'warn',
+        code: 'runtime_ops_external_command_timeout',
+        message: `External runtime command timeout: ${commandName}`,
+        payload: {
+          requestId,
+          command: commandName,
+          timeoutMs,
+          webContentsId,
+          targetSource
+        }
+      });
+      resolve({
+        ok: false,
+        error: `Command timeout after ${timeoutMs}ms.`,
+        code: 'timeout',
+        requestId,
+        target: {
+          webContentsId,
+          source: targetSource,
+          targetState
+        }
+      });
+    }, timeoutMs);
+
+    pendingRuntimeOpsExternalByRequestId.set(requestId, {
+      resolve,
+      timer,
+      command: commandName,
+      webContentsId,
+      issuedAtMs: Date.now()
+    });
+
+    try {
+      wc.send('runtime_ops:external_command', {
+        requestId,
+        command: commandName,
+        payload: payload && typeof payload === 'object' ? payload : {},
+        issuedAtMs: Date.now(),
+        timeoutMs
+      });
+    } catch (err) {
+      pendingRuntimeOpsExternalByRequestId.delete(requestId);
+      try {
+        clearTimeout(timer);
+      } catch {
+        // ignore
+      }
+      const error = err?.message || String(err);
+      pushRuntimeEvent({
+        source: 'runtime',
+        level: 'warn',
+        code: 'runtime_ops_external_command_send_failed',
+        message: `External runtime command send failed: ${commandName}`,
+        payload: { requestId, command: commandName, error, webContentsId, targetSource }
+      });
+      resolve({
+        ok: false,
+        error,
+        code: 'send_failed',
+        requestId,
+        target: {
+          webContentsId,
+          source: targetSource,
+          targetState
+        }
+      });
+    }
+  });
+}
+
+function clearPendingRuntimeOpsExternalRequests(reason = 'shutdown') {
+  for (const [requestId, pending] of pendingRuntimeOpsExternalByRequestId.entries()) {
+    try {
+      clearTimeout(pending.timer);
+    } catch {
+      // ignore
+    }
+    try {
+      pending.resolve({
+        ok: false,
+        requestId,
+        code: 'bridge_shutdown',
+        error: `Runtime external bridge unavailable (${reason}).`
+      });
+    } catch {
+      // ignore
+    }
+    pendingRuntimeOpsExternalByRequestId.delete(requestId);
   }
 }
 
@@ -178,6 +938,16 @@ function healWindowsShortcutsToInstalledBinary() {
 function recordCrash(kind, err) {
   const message = err?.stack || String(err);
   appendMainLog(`[${new Date().toISOString()}] ${kind}: ${message}\n`);
+  pushRuntimeEvent({
+    source: 'main_error',
+    level: 'error',
+    code: kind,
+    message: err?.message || String(err),
+    payload: {
+      kind,
+      stack: err?.stack || null
+    }
+  });
   try {
     if (tradeLedger?.append) {
       tradeLedger.append({
@@ -1757,6 +2527,8 @@ function createWindow() {
   const clearShutdownWaiters = () => {
     shutdownCloseInFlightByWindow.delete(windowId);
     shutdownCloseBypassByWindow.delete(windowId);
+    cleanupRuntimeSubscriber(webContentsId);
+    cleanupRuntimeExternalCommandSubscriber(webContentsId);
     if (!Number.isFinite(Number(webContentsId))) return;
     const prefix = `${Number(webContentsId)}:`;
     for (const [key, pending] of pendingShutdownReadyByRequest.entries()) {
@@ -1776,6 +2548,29 @@ function createWindow() {
         // ignore
       }
       pendingShutdownReadyByRequest.delete(key);
+    }
+
+    if (Number.isFinite(Number(webContentsId))) {
+      const targetId = Number(webContentsId);
+      for (const [requestId, pending] of pendingRuntimeOpsExternalByRequestId.entries()) {
+        if (Number(pending?.webContentsId || 0) !== targetId) continue;
+        try {
+          clearTimeout(pending?.timer);
+        } catch {
+          // ignore
+        }
+        try {
+          pending?.resolve?.({
+            ok: false,
+            requestId,
+            code: 'renderer_closed',
+            error: 'Renderer closed before external command completed.'
+          });
+        } catch {
+          // ignore
+        }
+        pendingRuntimeOpsExternalByRequestId.delete(requestId);
+      }
     }
   };
 
@@ -1940,6 +2735,150 @@ app.whenReady().then(async () => {
   ipcMain.handle('diagnostics:getMainLog', async (_evt, opts) => readMainLogTail(opts || {}));
   ipcMain.handle('diagnostics:listReleases', async (_evt, opts) => listReleaseArtifacts(opts || {}));
   ipcMain.handle('diagnostics:getBundleStats', async () => getBundleStats());
+  ipcMain.handle('diagnostics:runtimeStream:start', async (evt, opts) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    return startRuntimeStreamForSender(evt, opts || {});
+  });
+  ipcMain.handle('diagnostics:runtimeStream:stop', async (evt, opts) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    return stopRuntimeStreamForSender(evt, opts || {});
+  });
+  ipcMain.handle('runtime_ops:external_command:subscribe', async (evt) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const webContentsId = Number(evt?.sender?.id || 0);
+    if (!Number.isFinite(webContentsId) || webContentsId <= 0) {
+      return { ok: false, error: 'Invalid renderer sender.' };
+    }
+    const now = Date.now();
+    const existing = runtimeExternalCommandSubscribersByWebContentsId.get(webContentsId);
+    runtimeExternalCommandSubscribersByWebContentsId.set(webContentsId, {
+      subscribedAtMs: Number(existing?.subscribedAtMs || now),
+      lastSeenAtMs: now
+    });
+    runtimeOpsExternalPreferredWebContentsId = webContentsId;
+    runtimeOpsExternalLastControllerState = {
+      ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? runtimeOpsExternalLastControllerState
+        : {}),
+      commandSubscriberHealthy: true,
+      updatedAtMs: now
+    };
+    runtimeOpsExternalLastControllerStateAtMs = now;
+    if (!existing) {
+      runtimeOpsExternalDiagnostics.externalCommandSubscribeCount += 1;
+      pushRuntimeEvent({
+        source: 'runtime',
+        level: 'info',
+        code: 'runtime_ops_external_command_subscribed',
+        message: `Runtime external command subscriber registered (${webContentsId})`,
+        payload: { webContentsId }
+      });
+      return { ok: true, webContentsId, reused: false };
+    }
+    pushRuntimeEvent({
+      source: 'runtime',
+      level: 'info',
+      code: 'runtime_ops_external_command_subscriber_reused',
+      message: `Runtime external command subscriber reused (${webContentsId})`,
+      payload: { webContentsId }
+    });
+    return { ok: true, webContentsId, reused: true };
+  });
+  ipcMain.handle('runtime_ops:external_command:unsubscribe', async (evt) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const webContentsId = Number(evt?.sender?.id || 0);
+    if (!Number.isFinite(webContentsId) || webContentsId <= 0) {
+      return { ok: false, error: 'Invalid renderer sender.' };
+    }
+    const existed = runtimeExternalCommandSubscribersByWebContentsId.delete(webContentsId);
+    if (runtimeOpsExternalPreferredWebContentsId === webContentsId) {
+      runtimeOpsExternalPreferredWebContentsId = null;
+    }
+    const now = Date.now();
+    runtimeOpsExternalLastControllerState = {
+      ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? runtimeOpsExternalLastControllerState
+        : {}),
+      commandSubscriberHealthy: false,
+      updatedAtMs: now
+    };
+    runtimeOpsExternalLastControllerStateAtMs = now;
+    if (existed) {
+      runtimeOpsExternalDiagnostics.externalCommandUnsubscribeCount += 1;
+    }
+    pushRuntimeEvent({
+      source: 'runtime',
+      level: 'info',
+      code: 'runtime_ops_external_command_unsubscribed',
+      message: `Runtime external command subscriber removed (${webContentsId})`,
+      payload: { webContentsId, existed: existed === true }
+    });
+    return { ok: true, webContentsId, existed: existed === true };
+  });
+  ipcMain.handle('runtime_ops:controller_state:update', async (evt, payload) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const webContentsId = Number(evt?.sender?.id || 0);
+    if (!Number.isFinite(webContentsId) || webContentsId <= 0) {
+      return { ok: false, error: 'Invalid renderer sender.' };
+    }
+    const sanitized = sanitizeRuntimeOpsControllerStateUpdate(payload || {});
+    if (!sanitized) return { ok: true, webContentsId };
+    runtimeOpsExternalLastControllerState = {
+      ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? runtimeOpsExternalLastControllerState
+        : {}),
+      ...sanitized
+    };
+    runtimeOpsExternalLastControllerStateAtMs = Number(sanitized.updatedAtMs || Date.now());
+    if (sanitized.mode != null) runtimeOpsExternalLastMode = String(sanitized.mode);
+    if (sanitized.streamStatus != null) runtimeOpsExternalLastStreamStatus = String(sanitized.streamStatus);
+    return { ok: true, webContentsId };
+  });
+  ipcMain.handle('runtime_ops:renderer_event', async (evt, payload) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const normalized = sanitizeRuntimeRendererEvent(payload || {});
+    if (!normalized) return { ok: false, error: 'Invalid renderer event payload.' };
+    if (String(normalized.source || '').toLowerCase() === 'renderer_error') {
+      runtimeOpsExternalDiagnostics.rendererErrorForwarded += 1;
+    }
+    pushRuntimeEvent(normalized);
+    return { ok: true };
+  });
+  ipcMain.handle('runtime_ops:external_command:result', async (evt, args) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    const response = resolvePendingRuntimeOpsExternalRequest(args || {}, evt);
+    if (response?.ok !== true) {
+      runtimeOpsExternalDiagnostics.externalCommandReplyFailures += 1;
+      pushRuntimeEvent({
+        source: 'runtime',
+        level: 'warn',
+        code: 'runtime_ops_external_command_reply_failed',
+        message: 'Runtime external command reply failed.',
+        payload: {
+          error: response?.error || 'unknown',
+          requestId: args?.requestId ? String(args.requestId) : null
+        }
+      });
+    }
+    const result = args?.result && typeof args.result === 'object' ? args.result : null;
+    if (result?.mode) runtimeOpsExternalLastMode = String(result.mode);
+    if (result?.state?.mode) runtimeOpsExternalLastMode = String(result.state.mode);
+    if (result?.state?.streamStatus) runtimeOpsExternalLastStreamStatus = String(result.state.streamStatus);
+    if (result?.state && typeof result.state === 'object' && !Array.isArray(result.state)) {
+      runtimeOpsExternalLastControllerState = {
+        ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+          ? runtimeOpsExternalLastControllerState
+          : {}),
+        ...result.state,
+        externalRelayHealthy: result?.ok !== false,
+        lastExternalCommandAtMs: Date.now(),
+        lastExternalCommandError: result?.ok === false ? String(result?.error || result?.code || 'command_failed') : null,
+        updatedAtMs: Date.now()
+      };
+      runtimeOpsExternalLastControllerStateAtMs = Date.now();
+    }
+    return response;
+  });
 
   // --- TradeLocker ---
   ipcMain.handle('tradelocker:getSavedConfig', async () => tradeLockerClient.getSavedConfig());
@@ -2997,6 +3936,70 @@ app.whenReady().then(async () => {
     }
   });
 
+  runtimeOpsExternalBridge = createRuntimeOpsExternalBridge({
+    app,
+    appendMainLog,
+    pushRuntimeEvent,
+    getRuntimeEvents: () => runtimeEventRingBuffer.slice(),
+    getRuntimeDroppedCount: () => runtimeEventDroppedCount,
+    relayExternalCommand: async (command, payload, opts) => {
+      const requestedTimeoutMs = Number.isFinite(Number(opts?.timeoutMs))
+        ? Math.max(1_000, Math.min(60_000, Math.floor(Number(opts.timeoutMs))))
+        : 15_000;
+      const result = await relayRuntimeOpsExternalCommand(command, payload || {}, { timeoutMs: requestedTimeoutMs });
+      if (result?.mode) runtimeOpsExternalLastMode = String(result.mode);
+      if (result?.state?.mode) runtimeOpsExternalLastMode = String(result.state.mode);
+      if (result?.state?.streamStatus) runtimeOpsExternalLastStreamStatus = String(result.state.streamStatus);
+      const state =
+        result?.state && typeof result.state === 'object' && !Array.isArray(result.state)
+          ? result.state
+          : null;
+      if (state) {
+        runtimeOpsExternalLastControllerState = {
+          ...(runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+            ? runtimeOpsExternalLastControllerState
+            : {}),
+          ...state,
+          externalRelayHealthy: result?.ok !== false,
+          lastExternalCommandAtMs: Date.now(),
+          lastExternalCommandError: result?.ok === false ? String(result?.error || result?.code || 'command_failed') : null,
+          updatedAtMs: Date.now()
+        };
+        runtimeOpsExternalLastControllerStateAtMs = Date.now();
+      }
+      return result;
+    },
+    getBridgeSnapshot: () => ({
+      mode: runtimeOpsExternalLastMode || null,
+      streamStatus: runtimeOpsExternalLastStreamStatus || null,
+      externalCommandSubscribeCount: Number(runtimeOpsExternalDiagnostics.externalCommandSubscribeCount || 0),
+      externalCommandUnsubscribeCount: Number(runtimeOpsExternalDiagnostics.externalCommandUnsubscribeCount || 0),
+      externalCommandReplyFailures: Number(runtimeOpsExternalDiagnostics.externalCommandReplyFailures || 0),
+      externalCommandTimeouts: Number(runtimeOpsExternalDiagnostics.externalCommandTimeouts || 0),
+      rendererErrorForwarded: Number(runtimeOpsExternalDiagnostics.rendererErrorForwarded || 0)
+    }),
+    getControllerStateSnapshot: () => ({
+      state: runtimeOpsExternalLastControllerState && typeof runtimeOpsExternalLastControllerState === 'object'
+        ? { ...runtimeOpsExternalLastControllerState }
+        : null,
+      updatedAtMs: runtimeOpsExternalLastControllerStateAtMs || null
+    }),
+    getTargetState: () => getRuntimeOpsExternalTargetState()
+  });
+  try {
+    await runtimeOpsExternalBridge.start();
+  } catch (err) {
+    appendMainLog(
+      `[${new Date().toISOString()}] runtime_ops_bridge_start_failed error=${err?.message || String(err)}\n`
+    );
+    pushRuntimeEvent({
+      source: 'runtime',
+      level: 'warn',
+      code: 'runtime_ops_bridge_start_failed',
+      message: err?.message || String(err)
+    });
+  }
+
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -3009,6 +4012,16 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  stopRuntimeLogTailTimer();
+  runtimeStreamSubscribersByWebContentsId.clear();
+  runtimeExternalCommandSubscribersByWebContentsId.clear();
+  clearPendingRuntimeOpsExternalRequests('before_quit');
+  try {
+    runtimeOpsExternalBridge?.stop?.();
+  } catch {
+    // ignore bridge shutdown errors
+  }
+  runtimeOpsExternalBridge = null;
   try {
     tradeLedger?.flushSync?.();
   } catch {

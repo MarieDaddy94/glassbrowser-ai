@@ -15,7 +15,7 @@ test('TradeLocker panel profiles include persisted account identity and restore 
   assert.equal(source.includes('normalizeTradeLockerProfileId'), true);
   assert.equal(source.includes('const accountId = parseTradeLockerAccountId(entry?.accountId);'), true);
   assert.equal(source.includes('const accNum = parseTradeLockerAccountId(entry?.accNum);'), true);
-  assert.equal(source.includes("runPanelAction('tradelocker.set_active_account'"), true);
+  assert.equal(source.includes("runImmediateTradeLockerAction(\n        'tradelocker.set_active_account'"), true);
   assert.equal(source.includes('const savedCfg = await tlApi?.getSavedConfig?.();'), true);
 });
 
@@ -27,7 +27,7 @@ test('Settings modal saves/restores account identity with TradeLocker login prof
   assert.equal(source.includes('parseTradeLockerProfileId'), true);
   assert.equal(source.includes('setTlSelectedAccountId(accountId != null ? String(accountId) : "");'), true);
   assert.equal(source.includes('setTlSelectedAccNum(accNum != null ? String(accNum) : "");'), true);
-  assert.equal(source.includes('void applyTradeLockerActiveAccount(accountId, accNum);'), true);
+  assert.equal(source.includes('const result = await applyTradeLockerActiveAccount(accountId, accNum, { resolvedBy: "exact" });'), true);
   assert.equal(source.includes('profile.id === tlActiveProfileId'), true);
 });
 

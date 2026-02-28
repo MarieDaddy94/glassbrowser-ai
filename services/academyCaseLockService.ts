@@ -94,13 +94,26 @@ export const lockCase = async (input: {
   return { ok: true, record };
 };
 
-export const listLocks = async (limit: number = 5000): Promise<Map<string, AcademyCaseLockRecord>> => {
+export const listLocks = async (
+  input: number | { limit?: number; updatedAfterMs?: number | null; includeArchived?: boolean } = 5000
+): Promise<Map<string, AcademyCaseLockRecord>> => {
   const out = new Map<string, AcademyCaseLockRecord>();
   const ledger = (window as any)?.glass?.tradeLedger;
   if (!ledger?.listAgentMemory) return out;
+  const limit = typeof input === 'number' ? input : input?.limit;
+  const updatedAfterMs =
+    typeof input === 'number'
+      ? null
+      : (Number.isFinite(Number(input?.updatedAfterMs)) ? Number(input?.updatedAfterMs) : null);
+  const includeArchived =
+    typeof input === 'number'
+      ? false
+      : input?.includeArchived === true;
   const res = await ledger.listAgentMemory({
     kind: LOCK_KIND,
-    limit: Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 5000
+    limit: Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 5000,
+    updatedAfterMs: updatedAfterMs != null ? updatedAfterMs : undefined,
+    includeArchived
   });
   if (!res?.ok || !Array.isArray(res.memories)) return out;
   for (const memory of res.memories) {
@@ -123,4 +136,3 @@ export const isLocked = async (signalId: string): Promise<boolean> => {
   if (!res?.ok || !res.memory) return false;
   return !!normalizeLockMemory(res.memory);
 };
-

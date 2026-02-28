@@ -2784,6 +2784,36 @@ export const ACTION_ID_BY_BROKER: Partial<Record<BrokerActionType, string>> = {
   MODIFY_ORDER: 'broker.modify_order'
 };
 
+const isDevCatalogRuntime = () => {
+  try {
+    return Boolean(typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV);
+  } catch {
+    return false;
+  }
+};
+
+const emitActionCatalogDiagnostic = (payload: {
+  level: 'info' | 'warn' | 'error';
+  warnings: string[];
+  missingPrereqCount: number;
+  errors: string[];
+}) => {
+  try {
+    const target = typeof window !== 'undefined' && window && typeof window.dispatchEvent === 'function'
+      ? window
+      : null;
+    if (!target || typeof CustomEvent === 'undefined') return;
+    target.dispatchEvent(new CustomEvent('glass:action-catalog-diagnostic', {
+      detail: {
+        source: 'action_catalog_validate',
+        ...payload
+      }
+    }));
+  } catch {
+    // ignore diagnostics transport failures
+  }
+};
+
 const validateActionCatalog = (catalog: Record<string, ActionDefinition>) => {
   const seen = new Set<string>();
   const errors: string[] = [];
@@ -2834,21 +2864,32 @@ const validateActionCatalog = (catalog: Record<string, ActionDefinition>) => {
   }
 
   if (errors.length === 0 && warnings.length === 0) return;
+  const isDev = isDevCatalogRuntime();
+  emitActionCatalogDiagnostic({
+    level: errors.length > 0 ? 'error' : (warnings.length > 0 || missingPrereqCount > 0 ? 'info' : 'info'),
+    warnings,
+    missingPrereqCount,
+    errors
+  });
   if (warnings.length > 0) {
     const message = `Action catalog validation warnings:\n${warnings.join('\n')}`;
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) {
+    if (isDev) {
       console.warn(message);
     } else {
-      console.warn(message);
+      console.info(message);
     }
   }
   if (missingPrereqCount > 0) {
     const message = `Action catalog validation warnings:\n${missingPrereqCount} actions missing prerequisites metadata (add prerequisites: []).`;
-    console.warn(message);
+    if (isDev) {
+      console.warn(message);
+    } else {
+      console.info(message);
+    }
   }
   if (errors.length === 0) return;
   const message = `Action catalog validation failed:\n${errors.join('\n')}`;
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) {
+  if (isDev) {
     throw new Error(message);
   }
   // In production, log but avoid crashing the app.

@@ -1,5 +1,6 @@
 export const GLASS_EVENT = {
   TRADELOCKER_ACCOUNT_CHANGED: 'glass_tradelocker_account_changed',
+  TRADELOCKER_SWITCH_SHIELD: 'glass_tradelocker_switch_shield',
   TRADELOCKER_TICKET: 'glass_tradelocker_ticket',
   MT5_TICKET: 'glass_mt5_ticket',
   MT5_CONTROLS: 'glass_mt5_controls',
@@ -24,6 +25,7 @@ export const GLASS_EVENT = {
 
 export type GlassEventName =
   | typeof GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED
+  | typeof GLASS_EVENT.TRADELOCKER_SWITCH_SHIELD
   | typeof GLASS_EVENT.TRADELOCKER_TICKET
   | typeof GLASS_EVENT.MT5_TICKET
   | typeof GLASS_EVENT.MT5_CONTROLS

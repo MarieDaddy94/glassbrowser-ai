@@ -1,14 +1,55 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
-import type { ExperimentRegistryEntry, HealthSnapshot, PromotionDecision, SystemStateSnapshot } from '../types';
+import type {
+  ActionDefinition,
+  AgentToolAction,
+  ExperimentRegistryEntry,
+  HealthSnapshot,
+  PromotionDecision,
+  RuntimeOpsControllerState,
+  RuntimeOpsEvent,
+  RuntimeOpsMode,
+  SystemStateSnapshot
+} from '../types';
 import { getRuntimeScheduler } from '../services/runtimeScheduler';
 import { getLivePolicyService } from '../services/livePolicyService';
 import { evaluateAutoDemotionPolicy, evaluatePromotionPolicy } from '../services/promotionPolicyService';
+import { listActionDefinitions } from '../services/actionCatalog';
 
 type MonitorInterfaceProps = {
   health?: HealthSnapshot | null;
   onRequestSnapshot?: (input: { detail?: 'summary' | 'full'; maxItems?: number }) => Promise<any> | any;
   onClearSnapshotFrameCache?: (input?: { dropSessionBars?: boolean }) => Promise<any> | any;
+  onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
+  onExecuteAgentTool?: (action: AgentToolAction) => Promise<any> | any;
+  liveErrors?: Array<{
+    id: string;
+    ts: number;
+    level: 'error' | 'warn' | 'info';
+    source: string;
+    message: string;
+    stack?: string | null;
+    detail?: any;
+    count?: number;
+  }>;
+  onClearLiveErrors?: () => void;
+  runtimeOpsEvents?: RuntimeOpsEvent[];
+  onClearRuntimeOpsEvents?: () => void;
+  runtimeOpsState?: RuntimeOpsControllerState | null;
+  runtimeOpsEnabled?: boolean;
+  onSetRuntimeOpsEnabled?: (next: boolean) => Promise<any> | any;
+  onSetRuntimeOpsMode?: (mode: RuntimeOpsMode) => Promise<any> | any;
+  onEmergencyStopRuntimeOps?: () => Promise<any> | any;
+  onRunRuntimeOpsAction?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
+  runtimeOpsFeatureFlags?: {
+    runtimeOpsLogsV1?: boolean;
+    runtimeOpsControllerV1?: boolean;
+    runtimeOpsControlV1?: boolean;
+    runtimeOpsLiveExecutionV1?: boolean;
+    runtimeOpsBridgeStabilityV1?: boolean;
+    runtimeOpsBridgeIntrospectionV1?: boolean;
+    runtimeOpsControlSafetyV1?: boolean;
+  };
 };
 
 type SoakCheckpoint = {
@@ -170,9 +211,27 @@ const MetricRow: React.FC<{ label: string; value: React.ReactNode; tone?: string
   </div>
 );
 
-const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSnapshot, onClearSnapshotFrameCache }) => {
+const MonitorInterface: React.FC<MonitorInterfaceProps> = ({
+  health,
+  onRequestSnapshot,
+  onClearSnapshotFrameCache,
+  onRunActionCatalog,
+  onExecuteAgentTool,
+  liveErrors,
+  onClearLiveErrors,
+  runtimeOpsEvents,
+  onClearRuntimeOpsEvents,
+  runtimeOpsState,
+  runtimeOpsEnabled,
+  onSetRuntimeOpsEnabled,
+  onSetRuntimeOpsMode,
+  onEmergencyStopRuntimeOps,
+  onRunRuntimeOpsAction,
+  runtimeOpsFeatureFlags
+}) => {
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
   const livePolicyService = useMemo(() => getLivePolicyService(), []);
+  const [opsTab, setOpsTab] = useState<'overview' | 'logs' | 'control'>('overview');
   const [snapshot, setSnapshot] = useState<SystemStateSnapshot | null>(null);
   const [detail, setDetail] = useState<'summary' | 'full'>('summary');
   const [maxItems, setMaxItems] = useState(6);
@@ -197,7 +256,32 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
   const [soakError, setSoakError] = useState<string | null>(null);
   const [livePolicy, setLivePolicy] = useState(livePolicyService.getSnapshot());
   const [livePolicyHistory, setLivePolicyHistory] = useState(livePolicyService.getHistory(6));
+  const [logSourceFilter, setLogSourceFilter] = useState('all');
+  const [logLevelFilter, setLogLevelFilter] = useState<'all' | 'info' | 'warn' | 'error'>('all');
+  const [logSearch, setLogSearch] = useState('');
+  const [followTail, setFollowTail] = useState(true);
+  const [actionInputId, setActionInputId] = useState('system.snapshot');
+  const [actionPayloadText, setActionPayloadText] = useState('{\n  \"source\": \"monitor\"\n}');
+  const [controlBusy, setControlBusy] = useState(false);
+  const [controlStatus, setControlStatus] = useState<string | null>(null);
+  const [controlError, setControlError] = useState<string | null>(null);
+  const logsTailRef = useRef<HTMLDivElement | null>(null);
   const inFlightRef = useRef(false);
+  const actionDefinitions = useMemo(() => {
+    const defs = listActionDefinitions();
+    return defs
+      .map((def) => ({
+        id: String(def?.id || ''),
+        def
+      }))
+      .filter((row) => !!row.id)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }, []);
+  const selectedActionDef = useMemo<ActionDefinition | null>(() => {
+    const id = String(actionInputId || '').trim();
+    if (!id) return null;
+    return actionDefinitions.find((row) => row.id === id)?.def || null;
+  }, [actionDefinitions, actionInputId]);
 
   const refreshSnapshot = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -286,6 +370,134 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
       return '';
     }
   }, [snapshot]);
+
+  const mergedRuntimeLogs = useMemo(() => {
+    const runtimeRows = Array.isArray(runtimeOpsEvents) ? runtimeOpsEvents.slice() : [];
+    const rendererRows: RuntimeOpsEvent[] = Array.isArray(liveErrors)
+      ? liveErrors.map((row) => ({
+          id: String(row.id || `renderer_${row.ts || Date.now()}`),
+          ts: Number(row.ts || Date.now()),
+          source: 'renderer_error',
+          level: row.level === 'warn' || row.level === 'error' ? row.level : 'info',
+          message: String(row.message || ''),
+          code: String(row.source || ''),
+          payload: row.detail && typeof row.detail === 'object' ? row.detail : null
+        }))
+      : [];
+    const merged = [...runtimeRows, ...rendererRows];
+    merged.sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+    return merged;
+  }, [liveErrors, runtimeOpsEvents]);
+
+  const filteredRuntimeLogs = useMemo(() => {
+    const sourceNeedle = String(logSourceFilter || '').trim().toLowerCase();
+    const levelNeedle = String(logLevelFilter || '').trim().toLowerCase();
+    const searchNeedle = String(logSearch || '').trim().toLowerCase();
+    return mergedRuntimeLogs.filter((row) => {
+      const source = String(row.source || '').toLowerCase();
+      const level = String(row.level || '').toLowerCase();
+      if (sourceNeedle && sourceNeedle !== 'all' && source !== sourceNeedle) return false;
+      if (levelNeedle && levelNeedle !== 'all' && level !== levelNeedle) return false;
+      if (!searchNeedle) return true;
+      const hay = `${row.message || ''} ${row.code || ''} ${JSON.stringify(row.payload || {})}`.toLowerCase();
+      return hay.includes(searchNeedle);
+    });
+  }, [logLevelFilter, logSearch, logSourceFilter, mergedRuntimeLogs]);
+
+  useEffect(() => {
+    if (!followTail || opsTab !== 'logs') return;
+    logsTailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [filteredRuntimeLogs.length, followTail, opsTab]);
+
+  const runtimeLogSourceOptions = useMemo(() => {
+    const out = new Set<string>(['all']);
+    for (const row of mergedRuntimeLogs) {
+      const source = String(row?.source || '').trim().toLowerCase();
+      if (source) out.add(source);
+    }
+    return Array.from(out.values());
+  }, [mergedRuntimeLogs]);
+
+  const setRuntimeOpsEnabled = useCallback(async (next: boolean) => {
+    if (!onSetRuntimeOpsEnabled) return;
+    setControlBusy(true);
+    setControlError(null);
+    try {
+      await onSetRuntimeOpsEnabled(next);
+      setControlStatus(next ? 'Runtime ops enabled.' : 'Runtime ops disabled.');
+    } catch (err: any) {
+      setControlError(err?.message ? String(err.message) : 'Failed to update runtime ops enabled state.');
+    } finally {
+      setControlBusy(false);
+    }
+  }, [onSetRuntimeOpsEnabled]);
+
+  const setRuntimeOpsMode = useCallback(async (mode: RuntimeOpsMode) => {
+    if (!onSetRuntimeOpsMode) return;
+    setControlBusy(true);
+    setControlError(null);
+    try {
+      await onSetRuntimeOpsMode(mode);
+      setControlStatus(`Runtime ops mode set to ${mode}.`);
+    } catch (err: any) {
+      setControlError(err?.message ? String(err.message) : 'Failed to set runtime ops mode.');
+    } finally {
+      setControlBusy(false);
+    }
+  }, [onSetRuntimeOpsMode]);
+
+  const triggerEmergencyStop = useCallback(async () => {
+    if (!onEmergencyStopRuntimeOps) return;
+    setControlBusy(true);
+    setControlError(null);
+    try {
+      await onEmergencyStopRuntimeOps();
+      setControlStatus('Emergency stop applied.');
+    } catch (err: any) {
+      setControlError(err?.message ? String(err.message) : 'Failed to apply emergency stop.');
+    } finally {
+      setControlBusy(false);
+    }
+  }, [onEmergencyStopRuntimeOps]);
+
+  const runRuntimeAction = useCallback(async () => {
+    if (!onRunRuntimeOpsAction) return;
+    const actionId = String(actionInputId || '').trim();
+    if (!actionId) {
+      setControlError('Action ID is required.');
+      return;
+    }
+    let payload: Record<string, any> = {};
+    const rawPayload = String(actionPayloadText || '').trim();
+    if (rawPayload) {
+      try {
+        const parsed = JSON.parse(rawPayload);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, any>;
+        } else {
+          setControlError('Action payload must be a JSON object.');
+          return;
+        }
+      } catch (err: any) {
+        setControlError(err?.message ? `Invalid JSON payload: ${String(err.message)}` : 'Invalid JSON payload.');
+        return;
+      }
+    }
+    setControlBusy(true);
+    setControlError(null);
+    try {
+      const res = await onRunRuntimeOpsAction({ actionId, payload });
+      if (res?.ok === false) {
+        setControlError(String(res?.error || res?.text || 'Runtime action failed.'));
+        return;
+      }
+      setControlStatus(`Action executed: ${actionId}`);
+    } catch (err: any) {
+      setControlError(err?.message ? String(err.message) : 'Runtime action failed.');
+    } finally {
+      setControlBusy(false);
+    }
+  }, [actionInputId, actionPayloadText, onRunRuntimeOpsAction]);
 
   const refreshLivePolicy = useCallback(() => {
     setLivePolicy(livePolicyService.getSnapshot());
@@ -588,9 +800,51 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
           {status && <span>{status}</span>}
           {error && <span className="text-red-400">{error}</span>}
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <button
+            type="button"
+            onClick={() => setOpsTab('overview')}
+            className={`px-2 py-1 rounded border ${
+              opsTab === 'overview'
+                ? 'border-cyan-300/50 text-cyan-200 bg-cyan-500/10'
+                : 'border-white/10 text-gray-300 hover:bg-white/5'
+            }`}
+          >
+            Overview
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpsTab('logs')}
+            className={`px-2 py-1 rounded border ${
+              opsTab === 'logs'
+                ? 'border-cyan-300/50 text-cyan-200 bg-cyan-500/10'
+                : 'border-white/10 text-gray-300 hover:bg-white/5'
+            }`}
+          >
+            Live Logs
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpsTab('control')}
+            className={`px-2 py-1 rounded border ${
+              opsTab === 'control'
+                ? 'border-cyan-300/50 text-cyan-200 bg-cyan-500/10'
+                : 'border-white/10 text-gray-300 hover:bg-white/5'
+            }`}
+          >
+            Codex Control
+          </button>
+          {runtimeOpsState ? (
+            <span className="ml-auto text-[10px] text-gray-500">
+              Mode {runtimeOpsState.mode} • Stream {runtimeOpsState.streamStatus}
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+        {opsTab === 'overview' ? (
+          <>
         {liveHealth ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -1298,6 +1552,249 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({ health, onRequestSn
             {rawJson || 'No snapshot payload yet.'}
           </div>
         )}
+          </>
+        ) : null}
+
+        {opsTab === 'logs' ? (
+          <MetricCard title="Live Runtime Logs">
+            {!runtimeOpsFeatureFlags?.runtimeOpsLogsV1 ? (
+              <div className="text-[11px] text-gray-500">Runtime log stream is disabled by feature flag.</div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-2 mb-2">
+                  <select
+                    value={logSourceFilter}
+                    onChange={(e) => setLogSourceFilter(e.target.value)}
+                    className="bg-black/40 border border-white/10 rounded-md px-2 py-1 text-[11px] text-gray-200"
+                  >
+                    {runtimeLogSourceOptions.map((source) => (
+                      <option key={source} value={source}>
+                        {source}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={logLevelFilter}
+                    onChange={(e) => setLogLevelFilter((e.target.value as 'all' | 'info' | 'warn' | 'error') || 'all')}
+                    className="bg-black/40 border border-white/10 rounded-md px-2 py-1 text-[11px] text-gray-200"
+                  >
+                    <option value="all">all levels</option>
+                    <option value="info">info</option>
+                    <option value="warn">warn</option>
+                    <option value="error">error</option>
+                  </select>
+                  <input
+                    value={logSearch}
+                    onChange={(e) => setLogSearch(e.target.value)}
+                    placeholder="Search logs..."
+                    className="md:col-span-2 bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200"
+                  />
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1 text-gray-400 text-[11px]">
+                      <input
+                        type="checkbox"
+                        checked={followTail}
+                        onChange={(e) => setFollowTail(e.target.checked)}
+                        className="accent-cyan-500"
+                      />
+                      Follow
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClearRuntimeOpsEvents?.();
+                        onClearLiveErrors?.();
+                      }}
+                      className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[10px] text-gray-500 mb-2">
+                  Stream {runtimeOpsState?.streamStatus || 'disconnected'} • Events {filteredRuntimeLogs.length}
+                </div>
+                <div className="max-h-[62vh] overflow-y-auto custom-scrollbar border border-white/10 rounded-md bg-black/30 p-2 space-y-1">
+                  {filteredRuntimeLogs.length === 0 ? (
+                    <div className="text-[11px] text-gray-500">No runtime logs captured yet.</div>
+                  ) : (
+                    filteredRuntimeLogs.map((row) => (
+                      <div key={row.id} className="text-[11px] border-b border-white/5 pb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-gray-500">{formatTime(row.ts)}</span>
+                          <span className={row.level === 'error' ? 'text-red-400' : row.level === 'warn' ? 'text-amber-300' : 'text-cyan-300'}>
+                            {String(row.level || 'info').toUpperCase()}
+                          </span>
+                          <span className="text-gray-400">{row.source}</span>
+                          {row.code ? <span className="text-gray-500">{row.code}</span> : null}
+                        </div>
+                        <div className="text-gray-200 break-words">{row.message}</div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={logsTailRef} />
+                </div>
+              </>
+            )}
+          </MetricCard>
+        ) : null}
+
+        {opsTab === 'control' ? (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            <MetricCard title="Controller State">
+              {!runtimeOpsFeatureFlags?.runtimeOpsControllerV1 ? (
+                <div className="text-[11px] text-gray-500">Runtime controller is disabled by feature flag.</div>
+              ) : (
+                <>
+                  <MetricRow label="Mode" value={runtimeOpsState?.mode || '--'} tone={toneForStatus(runtimeOpsState?.mode || null)} />
+                  <MetricRow label="Armed" value={formatBool(runtimeOpsState?.armed ?? null)} />
+                  <MetricRow label="Stream" value={runtimeOpsState?.streamStatus || '--'} tone={toneForStatus(runtimeOpsState?.streamStatus || null)} />
+                  <MetricRow label="Queue Depth" value={runtimeOpsState?.queueDepth ?? 0} />
+                  <MetricRow label="Failures" value={runtimeOpsState?.failureStreak ?? 0} />
+                  <MetricRow label="Guardrail Trips" value={runtimeOpsState?.guardrailTrips ?? 0} />
+                  <MetricRow label="Action Failures" value={runtimeOpsState?.actionFailures ?? 0} />
+                  <MetricRow label="Dropped Events" value={runtimeOpsState?.droppedCount ?? 0} />
+                  <MetricRow label="Reconnects" value={runtimeOpsState?.reconnectCount ?? 0} />
+                  <MetricRow label="Cooldown Until" value={formatTime(runtimeOpsState?.cooldownUntilMs)} />
+                  <MetricRow
+                    label="Cmd Subscriber"
+                    value={formatBool(runtimeOpsState?.commandSubscriberHealthy ?? null)}
+                    tone={runtimeOpsState?.commandSubscriberHealthy === false ? 'text-red-400' : 'text-emerald-300'}
+                  />
+                  <MetricRow
+                    label="External Relay"
+                    value={formatBool(runtimeOpsState?.externalRelayHealthy ?? null)}
+                    tone={runtimeOpsState?.externalRelayHealthy === false ? 'text-red-400' : 'text-emerald-300'}
+                  />
+                  <MetricRow label="Last External Command" value={formatTime(runtimeOpsState?.lastExternalCommandAtMs)} />
+                  <MetricRow
+                    label="Last External Error"
+                    value={runtimeOpsState?.lastExternalCommandError || '--'}
+                    tone={runtimeOpsState?.lastExternalCommandError ? 'text-amber-300' : 'text-gray-300'}
+                  />
+                  <MetricRow label="Cmd Subscribes" value={health?.runtimeOpsExternalCommandSubscribeCount ?? 0} />
+                  <MetricRow label="Cmd Unsubscribes" value={health?.runtimeOpsExternalCommandUnsubscribeCount ?? 0} />
+                  <MetricRow label="Cmd Timeouts" value={health?.runtimeOpsExternalCommandTimeouts ?? 0} />
+                  <MetricRow label="Cmd Reply Failures" value={health?.runtimeOpsExternalCommandReplyFailures ?? 0} />
+                  <MetricRow label="Renderer Errors Fwd" value={health?.runtimeOpsRendererErrorForwarded ?? 0} />
+                </>
+              )}
+            </MetricCard>
+            <MetricCard title="Controller Actions">
+              {!runtimeOpsFeatureFlags?.runtimeOpsControlV1 ? (
+                <div className="text-[11px] text-gray-500">Runtime control actions are disabled by feature flag.</div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <label className="flex items-center gap-1 text-[11px] text-gray-400">
+                      <input
+                        type="checkbox"
+                        checked={runtimeOpsEnabled !== false}
+                        onChange={(e) => { void setRuntimeOpsEnabled(e.target.checked); }}
+                        disabled={controlBusy}
+                        className="accent-cyan-500"
+                      />
+                      Enabled
+                    </label>
+                    <button type="button" onClick={() => { void setRuntimeOpsMode('observe_only'); }} disabled={controlBusy} className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]">
+                      Observe
+                    </button>
+                    <button type="button" onClick={() => { void setRuntimeOpsMode('autonomous'); }} disabled={controlBusy} className="px-2 py-1 rounded border border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/10 text-[11px]">
+                      Autonomous
+                    </button>
+                    <button type="button" onClick={() => { void setRuntimeOpsMode('disarmed'); }} disabled={controlBusy} className="px-2 py-1 rounded border border-white/10 text-gray-300 hover:bg-white/5 text-[11px]">
+                      Disarm
+                    </button>
+                    <button type="button" onClick={() => { void triggerEmergencyStop(); }} disabled={controlBusy} className="px-2 py-1 rounded border border-red-400/50 text-red-200 hover:bg-red-500/10 text-[11px]">
+                      Emergency Stop
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    <select
+                      value={actionInputId}
+                      onChange={(e) => setActionInputId(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200"
+                    >
+                      {actionDefinitions.map((row) => (
+                        <option key={row.id} value={row.id}>
+                          {row.id}
+                        </option>
+                      ))}
+                    </select>
+                    {selectedActionDef ? (
+                      <div className="rounded border border-white/10 bg-black/30 p-2 text-[11px] text-gray-300">
+                        <div className="text-gray-200">{selectedActionDef.summary || selectedActionDef.id}</div>
+                        <div className="text-gray-500">
+                          domain {selectedActionDef.domain} • broker {selectedActionDef.requiresBroker ? 'yes' : 'no'} • vision {selectedActionDef.requiresVision ? 'yes' : 'no'}
+                        </div>
+                        <div className="text-gray-500">
+                          gates {(Array.isArray(selectedActionDef.safety?.gates) && selectedActionDef.safety.gates.length > 0)
+                            ? selectedActionDef.safety.gates.join(', ')
+                            : 'none'}
+                          {selectedActionDef.safety?.requiresConfirmation ? ' • confirmation required' : ''}
+                        </div>
+                      </div>
+                    ) : null}
+                    <input
+                      value={actionInputId}
+                      onChange={(e) => setActionInputId(e.target.value)}
+                      placeholder="Action ID"
+                      className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200"
+                    />
+                    <textarea
+                      value={actionPayloadText}
+                      onChange={(e) => setActionPayloadText(e.target.value)}
+                      rows={6}
+                      className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[11px] text-gray-200 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => { void runRuntimeAction(); }}
+                      disabled={controlBusy}
+                      className="px-2 py-1 rounded border border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/10 text-[11px] disabled:opacity-40"
+                    >
+                      {controlBusy ? 'Running...' : 'Run Action'}
+                    </button>
+                  </div>
+                  {controlStatus ? <div className="mt-2 text-[11px] text-emerald-300">{controlStatus}</div> : null}
+                  {controlError ? <div className="mt-2 text-[11px] text-red-400">{controlError}</div> : null}
+                </>
+              )}
+            </MetricCard>
+            <MetricCard title="Recent Decisions">
+              {Array.isArray(runtimeOpsState?.recentDecisions) && runtimeOpsState.recentDecisions.length > 0 ? (
+                <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                  {runtimeOpsState.recentDecisions.slice(-20).reverse().map((row) => (
+                    <div key={row.id} className="text-[11px] border-b border-white/5 pb-1">
+                      <div className="text-gray-400">{formatTime(row.atMs)} • {row.mode} • {row.actionId || 'none'}</div>
+                      <div className={row.blocked ? 'text-amber-300' : 'text-gray-200'}>{row.reason}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] text-gray-500">No recent decisions.</div>
+              )}
+            </MetricCard>
+            <MetricCard title="Recent Actions">
+              {Array.isArray(runtimeOpsState?.recentActions) && runtimeOpsState.recentActions.length > 0 ? (
+                <div className="max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                  {runtimeOpsState.recentActions.slice(-20).reverse().map((row) => (
+                    <div key={row.id} className="text-[11px] border-b border-white/5 pb-1">
+                      <div className="text-gray-400">
+                        {formatTime(row.atMs)} • {row.actionId} • {row.domain || 'system'} • {row.liveExecution ? 'LIVE' : 'safe'}
+                      </div>
+                      <div className={row.ok ? 'text-emerald-300' : 'text-red-400'}>
+                        {row.ok ? `ok (${formatMs(row.latencyMs)})` : row.error || row.resultCode || 'failed'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[11px] text-gray-500">No recent actions.</div>
+              )}
+            </MetricCard>
+          </div>
+        ) : null}
       </div>
     </div>
   );

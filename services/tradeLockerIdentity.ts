@@ -6,6 +6,15 @@ export type TradeLockerAccountIdentity = {
   accountKey?: string | null;
 };
 
+export type TradeLockerAccountNormalized = {
+  accountId: number;
+  accNum: number | null;
+  env: string | null;
+  server: string | null;
+  accountKey: string | null;
+  aliases: string[];
+};
+
 export type TradeLockerProfileIdParts = {
   baseId: string;
   accountId: number | null;
@@ -22,7 +31,61 @@ const parsePositiveInt = (value: any): number | null => {
   return Math.trunc(raw);
 };
 
+const pickFirstPositiveInt = (input: any, keys: string[]): number | null => {
+  if (!input || typeof input !== 'object') return null;
+  for (const key of keys) {
+    const parsed = parsePositiveInt((input as any)[key]);
+    if (parsed != null) return parsed;
+  }
+  return null;
+};
+
 export const parseTradeLockerAccountNumber = (value: any): number | null => parsePositiveInt(value);
+
+export const buildTradeLockerAccountFallbackKey = (input?: TradeLockerAccountIdentity | null) => {
+  if (!input) return '';
+  const env = normalizeLower(input.env);
+  const server = normalizeLower(input.server);
+  const accountId = parsePositiveInt(input.accountId);
+  if (!env || !server || accountId == null) return '';
+  return [env, server, String(accountId), '0'].join(':');
+};
+
+export const normalizeTradeLockerAccountRecord = (
+  input: any,
+  context?: { env?: string | null; server?: string | null }
+): TradeLockerAccountNormalized | null => {
+  const accountId = pickFirstPositiveInt(input, ['accountId', 'accountID', 'id']);
+  if (accountId == null) return null;
+
+  const accNum = pickFirstPositiveInt(input, ['accNum', 'accountNum', 'accountNumber']);
+  const env = normalizeLower(context?.env ?? input?.env ?? input?.environment);
+  const server = normalizeLower(context?.server ?? input?.server);
+  const fallbackKey = buildTradeLockerAccountFallbackKey({
+    env,
+    server,
+    accountId
+  });
+  const accountKey = accNum != null
+    ? buildTradeLockerAccountKey({
+        env,
+        server,
+        accountId,
+        accNum
+      })
+    : fallbackKey;
+  const aliases = Array.from(
+    new Set([accountKey, fallbackKey].filter((value): value is string => !!value))
+  );
+  return {
+    accountId,
+    accNum,
+    env: env || null,
+    server: server || null,
+    accountKey: accountKey || null,
+    aliases
+  };
+};
 
 export const buildTradeLockerAccountKey = (input?: TradeLockerAccountIdentity | null) => {
   if (!input) return '';
@@ -39,6 +102,18 @@ const parseAccountIdentityFromFlexibleKey = (key: string) => {
   if (!raw) return null;
   const parts = raw.split(':').map((part) => part.trim()).filter(Boolean);
   if (parts.length < 3) return null;
+  if (parts.length === 3) {
+    const env = normalizeText(parts[0] || '');
+    const server = normalizeText(parts[1] || '');
+    const accountId = parsePositiveInt(parts[2]);
+    if (!env || !server || accountId == null) return null;
+    return {
+      env,
+      server,
+      accountId,
+      accNum: null
+    };
+  }
   const accNum = parsePositiveInt(parts[parts.length - 1]);
   const accountId = parsePositiveInt(parts[parts.length - 2]);
   const server = normalizeText(parts[parts.length - 3] || '');

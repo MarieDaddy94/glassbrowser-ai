@@ -28,6 +28,7 @@ interface SettingsModalProps {
   onClose: () => void;
   onSave?: () => void;
   onRunActionCatalog?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
+  onRunActionCatalogImmediate?: (input: { actionId: string; payload?: Record<string, any> }) => Promise<any> | any;
   onExecuteAgentTool?: (
     action: AgentToolAction,
     onProgress?: (update: Partial<AgentToolAction>) => void
@@ -191,6 +192,28 @@ const persistTradeLockerProfiles = (profiles: TradeLockerProfile[]) => {
 };
 
 const parseTradeLockerId = (value: any): number | null => parseTradeLockerAccountNumber(value);
+const TRADELOCKER_IMMEDIATE_ACTION_IDS = new Set([
+  "tradelocker.connect",
+  "tradelocker.refresh_accounts",
+  "tradelocker.set_active_account",
+  "tradelocker.disconnect"
+]);
+
+const parseTradeLockerAccountSelection = (value: string): { accountId: number | null; accNum: number | null } => {
+  const raw = String(value || "").trim();
+  if (!raw) return { accountId: null, accNum: null };
+  if (raw.includes(":")) {
+    const [accountIdRaw, accNumRaw] = raw.split(":");
+    return {
+      accountId: parseTradeLockerId(accountIdRaw),
+      accNum: parseTradeLockerId(accNumRaw)
+    };
+  }
+  return {
+    accountId: parseTradeLockerId(raw),
+    accNum: null
+  };
+};
 
 const DEFAULT_SIGNAL_TELEGRAM_STATUS_OPTIONS: SignalEntryStatus[] = [
   "PROPOSED",
@@ -263,6 +286,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   onSave,
   onRunActionCatalog,
+  onRunActionCatalogImmediate,
   onExecuteAgentTool,
   liveErrors,
   onClearLiveErrors,
@@ -866,6 +890,78 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return { dot: "bg-gray-600", label: "DISCONNECTED" };
   }, [tlConnected, tlConnecting, tlLastError]);
 
+  const tlSelectedAccountValue = useMemo(() => {
+    const accountId = parseTradeLockerId(tlSelectedAccountId);
+    const accNum = parseTradeLockerId(tlSelectedAccNum);
+    if (accountId == null) return "";
+    return accNum != null ? `${accountId}:${accNum}` : String(accountId);
+  }, [tlSelectedAccountId, tlSelectedAccNum]);
+
+  const runTradeLockerImmediateAction = useCallback(
+    async (
+      actionId: string,
+      payload: Record<string, any>,
+      fallback?: () => Promise<any>
+    ): Promise<{ ok: boolean; error?: string; data?: any }> => {
+      const runner = onRunActionCatalogImmediate || onRunActionCatalog;
+      if (runner && TRADELOCKER_IMMEDIATE_ACTION_IDS.has(actionId)) {
+        try {
+          const res = await runner({ actionId, payload });
+          if (res?.ok === false) {
+            return {
+              ok: false,
+              error: res?.error ? String(res.error) : `Failed action: ${actionId}`
+            };
+          }
+          return { ok: true, data: res?.data ?? res ?? null };
+        } catch (err: any) {
+          return {
+            ok: false,
+            error: err?.message ? String(err.message) : `Failed action: ${actionId}`
+          };
+        }
+      }
+      if (fallback) {
+        try {
+          const res = await fallback();
+          if (res?.ok === false) {
+            return {
+              ok: false,
+              error: res?.error ? String(res.error) : `Failed action: ${actionId}`
+            };
+          }
+          return { ok: true, data: res?.data ?? res ?? null };
+        } catch (err: any) {
+          return {
+            ok: false,
+            error: err?.message ? String(err.message) : `Failed action: ${actionId}`
+          };
+        }
+      }
+      return { ok: false, error: "TradeLocker bridge is not available." };
+    },
+    [onRunActionCatalog, onRunActionCatalogImmediate]
+  );
+
+  const emitTradeLockerSwitchShield = useCallback((input: {
+    active: boolean;
+    stage?: string | null;
+    reason?: string | null;
+  }) => {
+    try {
+      dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_SWITCH_SHIELD, {
+        active: input?.active === true,
+        holdMs: input?.active === true ? 45_000 : 0,
+        source: 'settings_modal_select_direct',
+        stage: String(input?.stage || (input?.active ? 'switch_start' : 'switch_end')).trim(),
+        reason: input?.reason ? String(input.reason) : null,
+        atMs: Date.now()
+      });
+    } catch {
+      // ignore renderer event dispatch failures
+    }
+  }, []);
+
   useEffect(() => {
     persistTradeLockerProfiles(tlProfiles);
   }, [tlProfiles]);
@@ -1024,7 +1120,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         }
         if (stat?.ok) {
           setTlConnected(!!stat.connected);
-          setTlLastError(stat.lastError ? String(stat.lastError) : null);
+          setTlLastError(
+            stat.lastAccountAuthError
+              ? String(stat.lastAccountAuthError)
+              : stat.lastError
+                ? String(stat.lastError)
+                : null
+          );
         }
         if (stat?.ok && stat.connected && tl.getAccounts) {
           const accountsRes = await tl.getAccounts();
@@ -1115,45 +1217,118 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return true;
   }, [buildTradeLockerProfileId, buildTradeLockerProfileLabel, tlEmail, tlEnv, tlProfiles, tlRememberDeveloperKey, tlRememberPassword, tlSelectedAccNum, tlSelectedAccountId, tlServer]);
 
-  const applyTradeLockerActiveAccount = useCallback(async (accountId: number | null, accNum: number | null) => {
-    if (accountId == null || accNum == null) return;
+  const applyTradeLockerActiveAccount = useCallback(async (
+    accountId: number | null,
+    accNum: number | null,
+    opts?: { resolvedBy?: "exact" | "accountId_fallback" | "reconnect_retry" }
+  ) => {
     const tl = window.glass?.tradelocker;
-    try {
-      if (onRunActionCatalog) {
-        await onRunActionCatalog({
-          actionId: "tradelocker.set_active_account",
-          payload: { accountId, accNum }
-        });
-        return;
-      }
-      if (tl?.setActiveAccount) {
-        await tl.setActiveAccount({ accountId, accNum });
-        try {
-          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-            accountId,
-            accNum,
-            source: "settings_modal_direct",
-            atMs: Date.now()
-          });
-        } catch {
-          // ignore renderer event dispatch failures
+    const parsedAccountId = parseTradeLockerId(accountId);
+    let parsedAccNum = parseTradeLockerId(accNum);
+    let resolvedBy: "exact" | "accountId_fallback" | "reconnect_retry" = opts?.resolvedBy || "exact";
+
+    if (parsedAccountId == null) {
+      return { ok: false as const, error: "TradeLocker accountId is required.", stage: "set_active_account" as const, resolvedBy };
+    }
+
+    if (parsedAccNum == null) {
+      const fallbackMatch = tlAccounts.find((entry) => parseTradeLockerId(entry?.id ?? entry?.accountId) === parsedAccountId);
+      const fallbackAccNum = parseTradeLockerId(
+        fallbackMatch?.accNum ?? fallbackMatch?.accountNum ?? fallbackMatch?.accountNumber
+      );
+      if (fallbackAccNum != null) {
+        parsedAccNum = fallbackAccNum;
+        if (resolvedBy !== "reconnect_retry") {
+          resolvedBy = "accountId_fallback";
         }
       }
-    } catch {
-      // keep profile switch resilient even if active account apply fails
     }
-  }, [onRunActionCatalog]);
+
+    if (parsedAccNum == null) {
+      return {
+        ok: false as const,
+        error: "TradeLocker accNum could not be resolved for the selected account.",
+        stage: "set_active_account" as const,
+        resolvedBy
+      };
+    }
+
+    const switchRes = await runTradeLockerImmediateAction(
+      "tradelocker.set_active_account",
+      { accountId: parsedAccountId, accNum: parsedAccNum },
+      async () => {
+        if (!tl?.setActiveAccount) return { ok: false, error: "TradeLocker account switching unavailable." };
+        return await tl.setActiveAccount({ accountId: parsedAccountId, accNum: parsedAccNum });
+      }
+    );
+
+    if (!switchRes.ok) {
+      return {
+        ok: false as const,
+        error: switchRes.error || "Failed to switch TradeLocker account.",
+        stage: "set_active_account" as const,
+        resolvedBy
+      };
+    }
+
+    const cfg = await tl?.getSavedConfig?.();
+    const cfgAccountId = parseTradeLockerId(cfg?.accountId);
+    const cfgAccNum = parseTradeLockerId(cfg?.accNum);
+    const verifiedAccountId = cfgAccountId ?? parsedAccountId;
+    const verifiedAccNum = cfgAccNum ?? parsedAccNum;
+
+    if (verifiedAccountId !== parsedAccountId || verifiedAccNum !== parsedAccNum) {
+      return {
+        ok: false as const,
+        error: "TradeLocker switch verification failed.",
+        stage: "verify" as const,
+        resolvedBy
+      };
+    }
+
+    setTlSelectedAccountId(String(verifiedAccountId));
+    setTlSelectedAccNum(String(verifiedAccNum));
+
+    try {
+      dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+        accountId: verifiedAccountId,
+        accNum: verifiedAccNum,
+        source: "settings_modal_select_direct",
+        makePrimary: true,
+        atMs: Date.now(),
+        resolvedBy
+      });
+    } catch {
+      // ignore renderer event dispatch failures
+    }
+
+    return {
+      ok: true as const,
+      stage: "verify" as const,
+      resolvedBy,
+      accountId: verifiedAccountId,
+      accNum: verifiedAccNum
+    };
+  }, [runTradeLockerImmediateAction, tlAccounts]);
 
   const reconnectTradeLockerProfile = useCallback(async (
     profile: TradeLockerProfile,
     accountId: number | null,
     accNum: number | null
   ) => {
+    emitTradeLockerSwitchShield({
+      active: true,
+      stage: "connect"
+    });
+    let finalStage = "connect";
+    let finalError: string | null = null;
     const tl = window.glass?.tradelocker;
+    const profileKey = buildTradeLockerProfileBaseId(profile.env, profile.server, profile.email);
     const payload = {
       env: profile.env === "live" ? "live" : "demo",
       server: String(profile.server || "").trim(),
       email: String(profile.email || "").trim(),
+      profileKey,
       password: "",
       developerApiKey: "",
       rememberPassword: profile.rememberPassword !== false,
@@ -1165,29 +1340,57 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       return { ok: false as const, error: "Saved login is missing server/email." };
     }
     try {
-      let res: any = null;
-      if (onRunActionCatalog) {
-        res = await onRunActionCatalog({
-          actionId: "tradelocker.connect",
-          payload
-        });
-      } else if (tl?.connect) {
-        res = await tl.connect(payload);
-      } else {
-        return { ok: false as const, error: "TradeLocker bridge is not available." };
-      }
-      if (res?.ok === false) {
+      const connectRes = await runTradeLockerImmediateAction(
+        "tradelocker.connect",
+        payload,
+        async () => {
+          if (!tl?.connect) return { ok: false, error: "TradeLocker bridge is not available." };
+          return await tl.connect(payload);
+        }
+      );
+      if (!connectRes.ok) {
+        finalStage = "connect";
+        finalError = connectRes.error || "Failed to connect saved TradeLocker login.";
         return {
           ok: false as const,
-          error: res?.error ? String(res.error) : "Failed to connect saved TradeLocker login."
+          error: connectRes.error || "Failed to connect saved TradeLocker login.",
+          stage: "connect" as const
         };
       }
-      const accountsRes = await tl?.getAccounts?.();
-      if (accountsRes?.ok && Array.isArray(accountsRes.accounts)) {
-        setTlAccounts(accountsRes.accounts);
+      const accountsRes = await runTradeLockerImmediateAction(
+        "tradelocker.refresh_accounts",
+        {},
+        async () => {
+          if (!tl?.getAccounts) return { ok: false, error: "TradeLocker accounts API unavailable." };
+          return await tl.getAccounts();
+        }
+      );
+      const accountRows = accountsRes?.data?.accounts;
+      const refreshedAccounts = Array.isArray(accountRows) ? accountRows : [];
+      if (Array.isArray(accountRows)) {
+        setTlAccounts(accountRows);
       }
-      if (accountId != null && accNum != null) {
-        await applyTradeLockerActiveAccount(accountId, accNum);
+      if (!accountsRes.ok) {
+        finalStage = "refresh_accounts";
+        finalError = accountsRes.error || "Failed to refresh TradeLocker accounts.";
+        return {
+          ok: false as const,
+          error: accountsRes.error || "Failed to refresh TradeLocker accounts.",
+          stage: "refresh_accounts" as const
+        };
+      }
+      if (accountId != null) {
+        const applyRes = await applyTradeLockerActiveAccount(accountId, accNum, { resolvedBy: "reconnect_retry" });
+        if (!applyRes?.ok) {
+          finalStage = applyRes?.stage || "set_active_account";
+          finalError = applyRes?.error || "Failed to apply TradeLocker account.";
+          return {
+            ok: false as const,
+            error: applyRes?.error || "Failed to apply TradeLocker account.",
+            stage: applyRes?.stage || ("set_active_account" as const),
+            resolvedBy: applyRes?.resolvedBy || "reconnect_retry"
+          };
+        }
       }
       const cfg = await tl?.getSavedConfig?.();
       if (cfg?.ok) {
@@ -1196,14 +1399,28 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setTlSelectedAccountId(cfgAccountId != null ? String(cfgAccountId) : "");
         setTlSelectedAccNum(cfgAccNum != null ? String(cfgAccNum) : "");
       }
-      return { ok: true as const };
+      finalStage = "verify";
+      return {
+        ok: true as const,
+        stage: "verify" as const,
+        accounts: refreshedAccounts
+      };
     } catch (err: any) {
+      finalStage = "connect";
+      finalError = err?.message ? String(err.message) : "Failed to reconnect TradeLocker profile.";
       return {
         ok: false as const,
-        error: err?.message ? String(err.message) : "Failed to reconnect TradeLocker profile."
+        error: err?.message ? String(err.message) : "Failed to reconnect TradeLocker profile.",
+        stage: "connect" as const
       };
+    } finally {
+      emitTradeLockerSwitchShield({
+        active: false,
+        stage: finalStage,
+        reason: finalError
+      });
     }
-  }, [applyTradeLockerActiveAccount, onRunActionCatalog]);
+  }, [applyTradeLockerActiveAccount, emitTradeLockerSwitchShield, runTradeLockerImmediateAction]);
 
   const handleTradeLockerProfileSelect = useCallback((profileId: string) => {
     if (!profileId) {
@@ -1212,11 +1429,32 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
     const profile = tlProfiles.find((entry) => entry.id === profileId);
     if (!profile) return;
+    const previous = {
+      profileId: tlActiveProfileId,
+      env: tlEnv,
+      server: tlServer,
+      email: tlEmail,
+      accountId: tlSelectedAccountId,
+      accNum: tlSelectedAccNum,
+      accounts: Array.isArray(tlAccounts) ? [...tlAccounts] : [],
+      connected: tlConnected,
+      lastError: tlLastError
+    };
+    const restorePrevious = (message?: string | null) => {
+      setTlActiveProfileId(previous.profileId || "");
+      setTlEnv(previous.env === "live" ? "live" : "demo");
+      setTlServer(previous.server);
+      setTlEmail(previous.email);
+      setTlSelectedAccountId(previous.accountId);
+      setTlSelectedAccNum(previous.accNum);
+      setTlAccounts(previous.accounts);
+      setTlConnected(previous.connected);
+      setTlLastError(message != null ? String(message) : previous.lastError);
+    };
     setTlActiveProfileId(profileId);
     setTlEnv(profile.env);
     setTlServer(profile.server);
     setTlEmail(profile.email);
-    setTlAccounts([]);
     setTlRememberPassword(profile.rememberPassword !== false);
     setTlRememberDeveloperKey(profile.rememberDeveloperKey === true);
     const accountId = parseTradeLockerId(profile.accountId);
@@ -1227,16 +1465,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const currentServer = String(tlServer || "").trim().toLowerCase();
     const profileEnv = String(profile.env || "").trim().toLowerCase();
     const profileServer = String(profile.server || "").trim().toLowerCase();
-    const shouldApplyAccount = tlConnected && currentEnv === profileEnv && currentServer === profileServer;
-    const shouldReconnectProfile = tlConnected && !shouldApplyAccount;
+    const sameEnvironment = currentEnv === profileEnv && currentServer === profileServer;
+    const shouldApplyAccount = tlConnected && sameEnvironment;
+    const shouldReconnectProfile = !tlConnected || !sameEnvironment;
     if (shouldReconnectProfile) {
       setTlConnecting(true);
+      setTlLastError(null);
       void reconnectTradeLockerProfile(profile, accountId, accNum)
         .then((result) => {
           if (!result?.ok) {
-            setTlConnected(false);
-            setTlLastError(result?.error || "Failed to switch saved TradeLocker login.");
+            restorePrevious(
+              result?.error
+                ? `Failed to switch saved TradeLocker login at ${String(result?.stage || "connect")}: ${String(result.error)}`
+                : "Failed to switch saved TradeLocker login."
+            );
             return;
+          }
+          if (Array.isArray(result?.accounts)) {
+            setTlAccounts(result.accounts);
           }
           setTlConnected(true);
           setTlLastError(null);
@@ -1245,10 +1491,65 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
     if (shouldApplyAccount) {
-      void applyTradeLockerActiveAccount(accountId, accNum);
+      emitTradeLockerSwitchShield({
+        active: true,
+        stage: "refresh_accounts"
+      });
+      setTlConnecting(true);
+      setTlLastError(null);
+      void (async () => {
+        const tl = window.glass?.tradelocker;
+        const accountsRes = await runTradeLockerImmediateAction(
+          "tradelocker.refresh_accounts",
+          {},
+          async () => {
+            if (!tl?.getAccounts) return { ok: false, error: "TradeLocker accounts API unavailable." };
+            return await tl.getAccounts();
+          }
+        );
+        if (accountsRes?.ok && Array.isArray(accountsRes?.data?.accounts)) {
+          setTlAccounts(accountsRes.data.accounts);
+        } else if (!accountsRes?.ok) {
+          restorePrevious(
+            accountsRes?.error
+              ? `Failed to switch saved TradeLocker login at refresh_accounts: ${String(accountsRes.error)}`
+              : "Failed to refresh TradeLocker accounts."
+          );
+          return;
+        }
+        const result = await applyTradeLockerActiveAccount(accountId, accNum, { resolvedBy: "exact" });
+        if (!result?.ok) {
+          restorePrevious(result?.error || "Failed to switch TradeLocker account.");
+          return;
+        }
+        setTlLastError(null);
+      })()
+        .finally(() => {
+          setTlConnecting(false);
+          emitTradeLockerSwitchShield({
+            active: false,
+            stage: "verify"
+          });
+        });
+      return;
     }
     setTlLastError(null);
-  }, [applyTradeLockerActiveAccount, reconnectTradeLockerProfile, tlConnected, tlEnv, tlProfiles, tlServer]);
+  }, [
+    applyTradeLockerActiveAccount,
+    emitTradeLockerSwitchShield,
+    reconnectTradeLockerProfile,
+    runTradeLockerImmediateAction,
+    tlAccounts,
+    tlActiveProfileId,
+    tlConnected,
+    tlEmail,
+    tlEnv,
+    tlLastError,
+    tlProfiles,
+    tlSelectedAccNum,
+    tlSelectedAccountId,
+    tlServer
+  ]);
 
   const handleTradeLockerProfileRemove = useCallback((profileId: string) => {
     if (!profileId) return;
@@ -1434,17 +1735,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       } else {
         await onRunActionCatalog({ actionId: "tradelocker.stream.stop", payload: {} });
       }
-      const selectedAccountId = parseTradeLockerId(tlSelectedAccountId);
-      const selectedAccNum = parseTradeLockerId(tlSelectedAccNum);
-      if (selectedAccountId != null && selectedAccNum != null) {
-        await onRunActionCatalog({
-          actionId: "tradelocker.set_active_account",
-          payload: {
-            accountId: selectedAccountId,
-            accNum: selectedAccNum
-          }
-        });
-      }
     } else {
       if (tl?.updateSavedConfig) {
         try {
@@ -1473,27 +1763,18 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           // ignore
         }
       }
-      const selectedAccountId = parseTradeLockerId(tlSelectedAccountId);
-      const selectedAccNum = parseTradeLockerId(tlSelectedAccNum);
-      if (tl?.setActiveAccount && selectedAccountId != null && selectedAccNum != null) {
-        try {
-          await tl.setActiveAccount({
-            accountId: selectedAccountId,
-            accNum: selectedAccNum
-          });
-          try {
-            dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-              accountId: selectedAccountId,
-              accNum: selectedAccNum,
-              source: "settings_modal_save_direct",
-              atMs: Date.now()
-            });
-          } catch {
-            // ignore renderer event dispatch failures
-          }
-        } catch {
-          // ignore
-        }
+    }
+
+    const selected = parseTradeLockerAccountSelection(tlSelectedAccountValue);
+    if (selected.accountId != null) {
+      const applyRes = await applyTradeLockerActiveAccount(selected.accountId, selected.accNum, { resolvedBy: "exact" });
+      if (!applyRes?.ok) {
+        setTlLastError(
+          applyRes?.error
+            ? `TradeLocker switch failed at ${String(applyRes?.stage || "set_active_account")}: ${String(applyRes.error)}`
+            : "TradeLocker switch failed while saving settings."
+        );
+        return;
       }
     }
 
@@ -1513,40 +1794,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const tl = window.glass?.tradelocker;
     setTlConnecting(true);
     setTlLastError(null);
-    if (!tl?.connect && !onRunActionCatalog) {
+    if (!tl?.connect && !onRunActionCatalog && !onRunActionCatalogImmediate) {
       setTlConnecting(false);
       setTlLastError("TradeLocker bridge is not available. Please fully restart the app (or reinstall the latest build).");
       return;
     }
     try {
-      let res: any = null;
-      if (onRunActionCatalog) {
-        res = await onRunActionCatalog({
-          actionId: "tradelocker.connect",
-          payload: {
-            env: tlEnv,
-            server: tlServer.trim(),
-            email: tlEmail.trim(),
-            password: tlPassword,
-            developerApiKey: tlDeveloperKey,
-            rememberPassword: tlRememberPassword,
-            rememberDeveloperApiKey: tlRememberDeveloperKey
-          }
-        });
-      } else if (tl?.connect) {
-        res = await tl.connect({
-          env: tlEnv,
-          server: tlServer.trim(),
-          email: tlEmail.trim(),
-          password: tlPassword,
-          developerApiKey: tlDeveloperKey,
-          rememberPassword: tlRememberPassword,
-          rememberDeveloperApiKey: tlRememberDeveloperKey
-        });
-      }
-      if (res && !res.ok) {
+      const selected = parseTradeLockerAccountSelection(tlSelectedAccountValue);
+      const payload = {
+        env: tlEnv,
+        server: tlServer.trim(),
+        email: tlEmail.trim(),
+        profileKey: buildTradeLockerProfileBaseId(tlEnv, tlServer.trim(), tlEmail.trim()),
+        password: tlPassword,
+        developerApiKey: tlDeveloperKey,
+        rememberPassword: tlRememberPassword,
+        rememberDeveloperApiKey: tlRememberDeveloperKey,
+        accountId: selected.accountId ?? undefined,
+        accNum: selected.accNum ?? undefined
+      };
+
+      const connectRes = await runTradeLockerImmediateAction(
+        "tradelocker.connect",
+        payload,
+        async () => {
+          if (!tl?.connect) return { ok: false, error: "TradeLocker bridge is not available." };
+          return await tl.connect(payload);
+        }
+      );
+      if (!connectRes.ok) {
         setTlConnected(false);
-        setTlLastError(res?.error ? String(res.error) : "Failed to connect");
+        setTlLastError(connectRes.error ? String(connectRes.error) : "Failed to connect");
         return;
       }
       setTlConnected(true);
@@ -1567,8 +1845,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setTlSelectedAccNum(accNum != null ? String(accNum) : "");
       }
 
-      const accountsRes = await tl?.getAccounts?.();
-      if (accountsRes?.ok && Array.isArray(accountsRes.accounts)) setTlAccounts(accountsRes.accounts);
+      const accountsRes = await runTradeLockerImmediateAction(
+        "tradelocker.refresh_accounts",
+        {},
+        async () => {
+          if (!tl?.getAccounts) return { ok: false, error: "TradeLocker accounts API unavailable." };
+          return await tl.getAccounts();
+        }
+      );
+      if (accountsRes?.ok && Array.isArray(accountsRes?.data?.accounts)) {
+        setTlAccounts(accountsRes.data.accounts);
+      } else if (!accountsRes?.ok) {
+        setTlLastError(accountsRes?.error ? String(accountsRes.error) : "Failed to fetch accounts");
+      }
 
       upsertTradeLockerProfile({ setActive: true });
     } catch (e: any) {
@@ -1581,40 +1870,45 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleTradeLockerDisconnect = async () => {
     const tl = window.glass?.tradelocker;
-    if (!tl?.disconnect && !onRunActionCatalog) return;
+    if (!tl?.disconnect && !onRunActionCatalog && !onRunActionCatalogImmediate) return;
     try {
-      if (onRunActionCatalog) {
-        await onRunActionCatalog({ actionId: "tradelocker.disconnect", payload: {} });
-      } else {
-        await tl.disconnect();
+      const disconnectRes = await runTradeLockerImmediateAction(
+        "tradelocker.disconnect",
+        {},
+        async () => {
+          if (!tl?.disconnect) return { ok: false, error: "TradeLocker disconnect unavailable." };
+          return await tl.disconnect();
+        }
+      );
+      if (!disconnectRes.ok) {
+        setTlLastError(disconnectRes.error ? String(disconnectRes.error) : "Failed to disconnect");
+        return;
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      setTlLastError(err?.message ? String(err.message) : "Failed to disconnect");
+      return;
     }
+    setTlLastError(null);
     setTlConnected(false);
   };
 
   const handleTradeLockerRefreshAccounts = async () => {
     const tl = window.glass?.tradelocker;
-    if (!tl?.getAccounts && !onRunActionCatalog) return;
+    if (!tl?.getAccounts && !onRunActionCatalog && !onRunActionCatalogImmediate) return;
     try {
-      if (onRunActionCatalog) {
-        const actionRes = await onRunActionCatalog({ actionId: "tradelocker.refresh_accounts", payload: {} });
-        if (actionRes?.ok && Array.isArray(actionRes?.data?.accounts)) {
-          setTlAccounts(actionRes.data.accounts);
-          setTlLastError(null);
-          return;
+      const actionRes = await runTradeLockerImmediateAction(
+        "tradelocker.refresh_accounts",
+        {},
+        async () => {
+          if (!tl?.getAccounts) return { ok: false, error: "TradeLocker accounts API unavailable." };
+          return await tl.getAccounts();
         }
-        if (!actionRes?.ok) {
-          setTlLastError(actionRes?.error ? String(actionRes.error) : "Failed to fetch accounts");
-        }
-      }
-      const res = await tl?.getAccounts?.();
-      if (res?.ok && Array.isArray(res.accounts)) {
-        setTlAccounts(res.accounts);
+      );
+      if (actionRes?.ok && Array.isArray(actionRes?.data?.accounts)) {
+        setTlAccounts(actionRes.data.accounts);
         setTlLastError(null);
-      } else if (res && !res.ok) {
-        setTlLastError(res?.error ? String(res.error) : "Failed to fetch accounts");
+      } else if (!actionRes?.ok) {
+        setTlLastError(actionRes?.error ? String(actionRes.error) : "Failed to fetch accounts");
       }
     } catch (err: any) {
       setTlLastError(err?.message ? String(err.message) : "Failed to fetch accounts");
@@ -1643,73 +1937,101 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const handleTradeLockerAccountSelected = async (accountIdText: string) => {
-    setTlSelectedAccountId(accountIdText);
-    const selected = tlAccounts.find(a => String(a?.id) === String(accountIdText));
-    const accNum = selected?.accNum != null ? String(selected.accNum) : "";
-    setTlSelectedAccNum(accNum);
-    const accountIdNum = parseTradeLockerId(accountIdText);
-    const accNumNum = parseTradeLockerId(accNum);
-    if (tlActiveProfileId) {
-      let nextProfileId: string | null = null;
-      setTlProfiles((prev) => {
-        const activeProfile = prev.find((profile) => profile.id === tlActiveProfileId);
-        if (!activeProfile) return prev;
-        const nextId = buildTradeLockerProfileId(
-          activeProfile.env,
-          activeProfile.server,
-          activeProfile.email,
-          accountIdNum,
-          accNumNum
-        );
-        const nextLabel = buildTradeLockerProfileLabel(
-          activeProfile.env,
-          activeProfile.server,
-          activeProfile.email,
-          accountIdNum,
-          accNumNum
-        );
-        const nextProfile: TradeLockerProfile = {
-          ...activeProfile,
-          id: nextId,
-          label: nextLabel,
-          accountId: accountIdNum,
-          accNum: accNumNum
-        };
-        nextProfileId = nextId;
-        return [
-          ...prev.filter((profile) => profile.id !== tlActiveProfileId && profile.id !== nextId),
-          nextProfile
-        ].sort((a, b) => a.label.localeCompare(b.label));
-      });
-      if (nextProfileId) {
-        setTlActiveProfileId(nextProfileId);
-      }
-    }
-    if (accountIdNum == null || accNumNum == null) return;
-    const tl = window.glass?.tradelocker;
-    if (!tl?.setActiveAccount && !onRunActionCatalog) return;
+  const handleTradeLockerAccountSelected = async (accountSelection: string) => {
+    emitTradeLockerSwitchShield({
+      active: true,
+      stage: "set_active_account"
+    });
+    let finalStage = "set_active_account";
+    let finalReason: string | null = null;
     try {
-      if (onRunActionCatalog) {
-        await onRunActionCatalog({
-          actionId: "tradelocker.set_active_account",
-          payload: { accountId: accountIdNum, accNum: accNumNum }
+      const previousAccountId = tlSelectedAccountId;
+      const previousAccNum = tlSelectedAccNum;
+      const parsedSelection = parseTradeLockerAccountSelection(accountSelection);
+      const selected = tlAccounts.find((entry) => {
+        const entryAccountId = parseTradeLockerId(entry?.id ?? entry?.accountId);
+        const entryAccNum = parseTradeLockerId(entry?.accNum ?? entry?.accountNum ?? entry?.accountNumber);
+        if (parsedSelection.accountId == null) return false;
+        if (entryAccountId !== parsedSelection.accountId) return false;
+        if (parsedSelection.accNum == null) return true;
+        return entryAccNum === parsedSelection.accNum;
+      });
+
+      const accountIdNum = parsedSelection.accountId ?? parseTradeLockerId(selected?.id ?? selected?.accountId);
+      const accNumNum =
+        parsedSelection.accNum ??
+        parseTradeLockerId(selected?.accNum ?? selected?.accountNum ?? selected?.accountNumber);
+
+      setTlSelectedAccountId(accountIdNum != null ? String(accountIdNum) : "");
+      setTlSelectedAccNum(accNumNum != null ? String(accNumNum) : "");
+      setTlLastError(null);
+
+      if (accountIdNum == null) {
+        finalReason = "TradeLocker account selection is invalid.";
+        setTlSelectedAccountId(previousAccountId);
+        setTlSelectedAccNum(previousAccNum);
+        setTlLastError(finalReason);
+        return;
+      }
+
+      const applyRes = await applyTradeLockerActiveAccount(accountIdNum, accNumNum, { resolvedBy: "exact" });
+      if (!applyRes?.ok) {
+        finalStage = String(applyRes?.stage || "set_active_account");
+        finalReason =
+          applyRes?.error
+            ? `TradeLocker switch failed at ${String(applyRes?.stage || "set_active_account")}: ${String(applyRes.error)}`
+            : "TradeLocker switch failed.";
+        setTlSelectedAccountId(previousAccountId);
+        setTlSelectedAccNum(previousAccNum);
+        setTlLastError(finalReason);
+        return;
+      }
+
+      finalStage = "verify";
+      const nextAccountId = parseTradeLockerId(applyRes?.accountId);
+      const nextAccNum = parseTradeLockerId(applyRes?.accNum);
+      if (tlActiveProfileId) {
+        let nextProfileId: string | null = null;
+        setTlProfiles((prev) => {
+          const activeProfile = prev.find((profile) => profile.id === tlActiveProfileId);
+          if (!activeProfile) return prev;
+          const nextId = buildTradeLockerProfileId(
+            activeProfile.env,
+            activeProfile.server,
+            activeProfile.email,
+            nextAccountId,
+            nextAccNum
+          );
+          const nextLabel = buildTradeLockerProfileLabel(
+            activeProfile.env,
+            activeProfile.server,
+            activeProfile.email,
+            nextAccountId,
+            nextAccNum
+          );
+          const nextProfile: TradeLockerProfile = {
+            ...activeProfile,
+            id: nextId,
+            label: nextLabel,
+            accountId: nextAccountId,
+            accNum: nextAccNum
+          };
+          nextProfileId = nextId;
+          return [
+            ...prev.filter((profile) => profile.id !== tlActiveProfileId && profile.id !== nextId),
+            nextProfile
+          ].sort((a, b) => a.label.localeCompare(b.label));
         });
-      } else {
-        await tl.setActiveAccount({ accountId: accountIdNum, accNum: accNumNum });
-        try {
-          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-            accountId: accountIdNum,
-            accNum: accNumNum,
-            source: "settings_modal_select_direct",
-            atMs: Date.now()
-          });
-        } catch {
-          // ignore renderer event dispatch failures
+        if (nextProfileId) {
+          setTlActiveProfileId(nextProfileId);
         }
       }
-    } catch {
-      // ignore
+    } finally {
+      emitTradeLockerSwitchShield({
+        active: false,
+        stage: finalStage,
+        reason: finalReason
+      });
     }
   };
 
@@ -1911,7 +2233,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     handleTradeLockerDisconnect,
     handleTradeLockerRefreshAccounts,
     handleTradeLockerClearSecrets,
-    tlSelectedAccountId,
+    tlSelectedAccountValue,
     handleTradeLockerAccountSelected,
     tlAccounts,
     tlSelectedAccNum,

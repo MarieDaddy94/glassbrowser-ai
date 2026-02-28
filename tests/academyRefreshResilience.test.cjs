@@ -9,12 +9,14 @@ const read = (relPath) => fs.readFileSync(path.join(ROOT, relPath), 'utf8');
 test('academy refresh is merge-only with no prune/removal path', () => {
   const app = read('App.tsx');
 
-  assert.equal(app.includes("const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(50000, Math.floor(Number(opts?.limit)))) : 50000;"), true);
+  assert.equal(app.includes("const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(10_000, Math.floor(Number(opts?.limit)))) : 5_000;"), true);
   assert.equal(app.includes('const caseListOptions = {'), true);
   assert.equal(app.includes('buildIncrementalListOptions(limit, opts?.force ? null : syncCursor.casesUpdatedAfterMs, true)'), true);
-  assert.equal(app.includes("ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_history', includeArchived: true })"), true);
-  assert.equal(app.includes("ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_entry', includeArchived: true })"), true);
-  assert.equal(app.includes('listAcademyCaseLocks(Math.max(limit, 50000))'), true);
+  assert.equal(app.includes('const companionLimit = Math.max(250, Math.min(10_000, limit));'), true);
+  assert.equal(app.includes('const shouldFullCompanionReconcile ='), true);
+  assert.equal(app.includes('ledger.listAgentMemory(historyListOptions)'), true);
+  assert.equal(app.includes('ledger.listAgentMemory(signalEntryListOptions)'), true);
+  assert.equal(app.includes('listAcademyCaseLocks(lockListOptions)'), true);
 
   assert.equal(app.includes('const mergeResult = mergeAcademyCasesMergeOnly(previousCases, mergeInput, 2);'), true);
   assert.equal(app.includes('const mergedBySignalId = new Map<string, AcademyCase>();'), true);

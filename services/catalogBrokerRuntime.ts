@@ -1,5 +1,10 @@
-type ActionResult = { ok: boolean; error?: string; data?: any };
+type ActionResult = { ok: boolean; error?: string; data?: any; code?: string };
 import { GLASS_EVENT, dispatchGlassEvent } from './glassEvents';
+import {
+  buildTradeLockerProfileBaseId,
+  parseTradeLockerAccountNumber,
+  parseTradeLockerProfileId
+} from './tradeLockerIdentity';
 
 export type runCatalogBrokerRuntimeInput = {
   actionId: string;
@@ -252,19 +257,72 @@ export async function runCatalogBrokerRuntime(
     }
 
     if (actionId === 'tradelocker.set_active_account') {
-      const accountId = Number(payload.accountId ?? payload.id);
-      const accNum = Number(payload.accNum ?? payload.accountNumber);
-      if (!Number.isFinite(accountId) || !Number.isFinite(accNum)) {
-        return { ok: false, error: 'Account id and accNum are required.' };
+      const accountId = parseTradeLockerAccountNumber(payload.accountId ?? payload.id ?? payload.accountID);
+      const accNum = parseTradeLockerAccountNumber(payload.accNum ?? payload.accountNum ?? payload.accountNumber);
+      if (accountId == null && accNum == null) {
+        return { ok: false, error: 'Account id or accNum is required.', code: 'account_unresolved' };
       }
       const tl = window.glass?.tradelocker;
       if (!tl?.setActiveAccount) return { ok: false, error: 'TradeLocker bridge unavailable.' };
+      if (tl?.getStatus) {
+        try {
+          const status = await tl.getStatus();
+          if (status?.connected === false && status?.tokenConnected !== true) {
+            return { ok: false, error: 'TradeLocker is disconnected.', code: 'tradelocker_disconnected' };
+          }
+        } catch {
+          // ignore status check errors and let switch attempt decide
+        }
+      }
       const res = await tl.setActiveAccount({ accountId, accNum });
-      if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to set active account.' };
+      if (!res?.ok) {
+        const codeRaw = String(res?.code || '').trim().toUpperCase();
+        const code = codeRaw === 'ACCOUNT_UNRESOLVED' ? 'account_unresolved' : 'switch_verification_failed';
+        return {
+          ok: false,
+          error: res?.error ? String(res.error) : 'Failed to set active account.',
+          code
+        };
+      }
+      const resolvedAccountId = parseTradeLockerAccountNumber(res?.accountId ?? accountId);
+      const resolvedAccNum = parseTradeLockerAccountNumber(res?.accNum ?? accNum);
+      if (resolvedAccountId == null || resolvedAccNum == null) {
+        return {
+          ok: false,
+          error: 'TradeLocker active account verification failed.',
+          code: 'switch_verification_failed'
+        };
+      }
+      if (tl?.getAccountMetrics) {
+        try {
+          const verify = await tl.getAccountMetrics({ maxAgeMs: 0 });
+          if (verify?.ok === false) {
+            const verifyError = verify?.error ? String(verify.error) : 'TradeLocker active account verification failed.';
+            const lower = verifyError.toLowerCase();
+            const verifyCode =
+              lower.includes('accnum') || lower.includes('account context')
+                ? 'account_context_mismatch'
+                : lower.includes('authentication') || lower.includes('unauthorized') || lower.includes('forbidden')
+                  ? 'account_auth_invalid'
+                  : 'switch_verification_failed';
+            return {
+              ok: false,
+              error: verifyError,
+              code: verifyCode
+            };
+          }
+        } catch (verifyErr: any) {
+          return {
+            ok: false,
+            error: verifyErr?.message ? String(verifyErr.message) : 'TradeLocker active account verification failed.',
+            code: 'switch_verification_failed'
+          };
+        }
+      }
       try {
         dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-          accountId,
-          accNum,
+          accountId: resolvedAccountId,
+          accNum: resolvedAccNum,
           source: 'catalog',
           atMs: Date.now()
         });
@@ -277,6 +335,14 @@ export async function runCatalogBrokerRuntime(
     if (actionId === 'tradelocker.connect') {
       const tl = window.glass?.tradelocker;
       if (!tl?.connect) return { ok: false, error: 'TradeLocker bridge unavailable.' };
+      const accountId = parseTradeLockerAccountNumber(payload.accountId ?? payload.id ?? payload.accountID);
+      const accNum = parseTradeLockerAccountNumber(payload.accNum ?? payload.accountNum ?? payload.accountNumber);
+      const profileIdRaw = payload.profileId != null ? String(payload.profileId).trim() : '';
+      const parsedProfile = profileIdRaw ? parseTradeLockerProfileId(profileIdRaw) : null;
+      const profileKey =
+        (payload.profileKey != null ? String(payload.profileKey).trim() : '') ||
+        (parsedProfile?.baseId ? String(parsedProfile.baseId).trim() : '') ||
+        buildTradeLockerProfileBaseId(payload.env, payload.server, payload.email);
       const res = await tl.connect({
         env: payload.env,
         server: payload.server,
@@ -284,7 +350,10 @@ export async function runCatalogBrokerRuntime(
         password: payload.password,
         developerApiKey: payload.developerApiKey,
         rememberPassword: payload.rememberPassword,
-        rememberDeveloperApiKey: payload.rememberDeveloperApiKey
+        rememberDeveloperApiKey: payload.rememberDeveloperApiKey,
+        profileKey: profileKey || undefined,
+        accountId: accountId ?? undefined,
+        accNum: accNum ?? undefined
       });
       if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to connect.' };
       return { ok: true, data: res ?? null };

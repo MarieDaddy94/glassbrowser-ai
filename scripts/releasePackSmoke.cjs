@@ -4,7 +4,8 @@ const asar = require('@electron/asar');
 
 const REQUIRED_PATHS = [
   '/electron/preload.cjs',
-  '/electron/generated/ipcScopes.cjs'
+  '/electron/generated/ipcScopes.cjs',
+  '/services/runtimeOpsExternalBridge.cjs'
 ];
 
 function resolvePackAsar(rootDir) {

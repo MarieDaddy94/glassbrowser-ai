@@ -87,6 +87,12 @@ type Mt5TelemetryControllerModule = typeof import('./controllers/mt5TelemetryCon
 type LiveCaptureControllerModule = typeof import('./controllers/liveCaptureController');
 type CatalogOpsRuntimeModule = typeof import('./services/catalogOpsRuntime');
 type CatalogAgentRuntimeModule = typeof import('./services/catalogAgentRuntime');
+type CatalogUiRuntimeModule = typeof import('./services/catalogUiRuntime');
+type CatalogPlaybookRuntimeModule = typeof import('./services/catalogPlaybookRuntime');
+type CatalogChartRuntimeModule = typeof import('./services/catalogChartRuntime');
+type CatalogChatLiveRuntimeModule = typeof import('./services/catalogChatLiveRuntime');
+type CatalogSettingsAutopilotRuntimeModule = typeof import('./services/catalogSettingsAutopilotRuntime');
+type CatalogBrokerRuntimeModule = typeof import('./services/catalogBrokerRuntime');
 
 let openAiServicePromise: Promise<OpenAiServiceModule> | null = null;
 const loadOpenAiService = () => {
@@ -238,6 +244,44 @@ let catalogAgentRuntimePromise: Promise<CatalogAgentRuntimeModule> | null = null
 const loadCatalogAgentRuntimeModule = () => {
   if (!catalogAgentRuntimePromise) catalogAgentRuntimePromise = import('./services/catalogAgentRuntime');
   return catalogAgentRuntimePromise;
+};
+
+let catalogUiRuntimePromise: Promise<CatalogUiRuntimeModule> | null = null;
+const loadCatalogUiRuntimeModule = () => {
+  if (!catalogUiRuntimePromise) catalogUiRuntimePromise = import('./services/catalogUiRuntime');
+  return catalogUiRuntimePromise;
+};
+
+let catalogPlaybookRuntimePromise: Promise<CatalogPlaybookRuntimeModule> | null = null;
+const loadCatalogPlaybookRuntimeModule = () => {
+  if (!catalogPlaybookRuntimePromise) catalogPlaybookRuntimePromise = import('./services/catalogPlaybookRuntime');
+  return catalogPlaybookRuntimePromise;
+};
+
+let catalogChartRuntimePromise: Promise<CatalogChartRuntimeModule> | null = null;
+const loadCatalogChartRuntimeModule = () => {
+  if (!catalogChartRuntimePromise) catalogChartRuntimePromise = import('./services/catalogChartRuntime');
+  return catalogChartRuntimePromise;
+};
+
+let catalogChatLiveRuntimePromise: Promise<CatalogChatLiveRuntimeModule> | null = null;
+const loadCatalogChatLiveRuntimeModule = () => {
+  if (!catalogChatLiveRuntimePromise) catalogChatLiveRuntimePromise = import('./services/catalogChatLiveRuntime');
+  return catalogChatLiveRuntimePromise;
+};
+
+let catalogSettingsAutopilotRuntimePromise: Promise<CatalogSettingsAutopilotRuntimeModule> | null = null;
+const loadCatalogSettingsAutopilotRuntimeModule = () => {
+  if (!catalogSettingsAutopilotRuntimePromise) {
+    catalogSettingsAutopilotRuntimePromise = import('./services/catalogSettingsAutopilotRuntime');
+  }
+  return catalogSettingsAutopilotRuntimePromise;
+};
+
+let catalogBrokerRuntimePromise: Promise<CatalogBrokerRuntimeModule> | null = null;
+const loadCatalogBrokerRuntimeModule = () => {
+  if (!catalogBrokerRuntimePromise) catalogBrokerRuntimePromise = import('./services/catalogBrokerRuntime');
+  return catalogBrokerRuntimePromise;
 };
 
 const loadFeatureControllers = () => {
@@ -509,7 +553,9 @@ import { submitTradeLockerOrderBatch } from './services/executionSubmissionServi
 import { cancelTimer, deferMs, sleepMs, type TimerHandle } from './services/timerPrimitives';
 import { buildCalendarPnlSnapshot } from './services/calendarPnlEngine';
 import {
+  buildTradeLockerAccountFallbackKey,
   buildTradeLockerAccountKey as buildTradeLockerAccountKeySafe,
+  normalizeTradeLockerAccountRecord,
   parseTradeLockerAccountKey as parseTradeLockerAccountKeySafe,
   parseTradeLockerAccountNumber as parseTradeLockerAccountNumberSafe,
   resolveTradeLockerIdentityMatchState
@@ -524,9 +570,22 @@ import { normalizeAgentCapabilities } from './services/agentCapabilities';
 import { getTechAgentLogs } from './services/techAgentLog';
 import { getCacheBudgetManager } from './services/cacheBudgetManager';
 import { lockCase as lockAcademyCase, listLocks as listAcademyCaseLocks, type AcademyCaseLockRecord } from './services/academyCaseLockService';
-import { buildSnapshotScopeKey, classifyUnifiedSnapshotStatus } from './services/unifiedSnapshotStatus';
+import {
+  buildSnapshotScopeKey,
+  classifyUnifiedSnapshotStatus
+} from './services/unifiedSnapshotStatus';
+import { areAccountKeysEquivalent, selectPrimaryResultByAccountKey } from './services/accountKeyIdentity';
 import { buildSignalCanonicalIdV2, buildSignalFingerprint, resolveSignalIdentityCandidates } from './services/signalIdentity';
 import { mergeSignalEntries, resolveSignalMergeKey } from './services/signalMergeService';
+import {
+  mergeAgentScorecards,
+  mergeCalendarRules,
+  mergeSetupLibraryEntries,
+  mergeSignalHistoryEntries,
+  mergeSignalIntentChatTurns,
+  mergeSignalIntentRuns,
+  mergeSignalIntents
+} from './services/refreshMergeService';
 import {
   buildAcademyCaseDataQuality,
   mergeAcademyCasesMergeOnly,
@@ -552,7 +611,17 @@ import {
 } from './services/signalIntentService';
 import { normalizeSignalIntent } from './services/signalIntentParser';
 import { computeDueIntents, computeSignalIntentNextDueAt } from './services/signalIntentScheduler';
-import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
+import {
+  DEFAULT_RUNTIME_OPS_POLICY,
+  readRuntimeOpsPolicy,
+  readRuntimeOpsState,
+  writeRuntimeOpsLastRun,
+  writeRuntimeOpsPolicy,
+  writeRuntimeOpsState
+} from './services/runtimeOpsPolicy';
+import { RuntimeOpsController } from './services/runtimeOpsController';
+import { normalizeRuntimeOpsEvent, pushRuntimeOpsEvent } from './services/runtimeOpsEventStream';
+import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, RuntimeOpsActionRecord, RuntimeOpsControllerState, RuntimeOpsEvent, RuntimeOpsMode, RuntimeOpsPolicy, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
 import type { SignalEntry, SignalEntryStatus, SignalExecutionTarget, SignalSessionWindow, SignalSnapshotStatus, SignalStrategyMode } from './components/SignalInterface';
@@ -660,6 +729,7 @@ const TL_SNAPSHOT_FALLBACK_KEY = 'glass_tl_snapshot_fallback';
 const TL_EXECUTION_TARGETS_KEY = 'glass_tl_execution_targets';
 const TL_NORMALIZE_ENABLED_KEY = 'glass_tl_normalize_enabled';
 const TL_NORMALIZE_REF_KEY = 'glass_tl_normalize_ref';
+const TL_PROFILES_KEY = 'glass_tradelocker_profiles_v1';
 const LEGACY_TL_SUBMISSION_FLAG_KEY = 'execution.useLegacyTradeLockerSubmission';
 const TL_NORMALIZE_WINDOW = 120;
 const TL_NORMALIZE_MIN_SAMPLES = 30;
@@ -684,7 +754,12 @@ const SIGNAL_INTENT_SCHEDULER_TASK_ID = 'signal.intent.scheduler';
 const SIGNAL_INTENT_KIND = 'signal_intent';
 const SIGNAL_INTENT_RUN_KIND = 'signal_intent_run';
 const SIGNAL_INTENT_CHAT_KIND = 'signal_intent_chat';
+const SIGNAL_HISTORY_SYNC_CURSOR_KEY = 'glass_signal_history_sync_cursor_v1';
+const SIGNAL_INTENT_SYNC_CURSOR_KEY = 'glass_signal_intent_sync_cursor_v1';
+const ACADEMY_COMPANION_FULL_RECONCILE_MS = 20 * 60 * 1000;
 const PRE_TRADE_QUANT_LATENCY_BUDGET_MS = 150;
+const RUNTIME_OPS_FLAGS_KEY = 'glass_runtime_ops_flags_v1';
+const RUNTIME_OPS_EVENT_LIMIT = 800;
 
 const readLegacyTradeLockerSubmissionFlag = () => {
   try {
@@ -1326,13 +1401,84 @@ const parseJsonArray = (key: string): string[] => {
   }
 };
 
+type SignalIntentSyncCursorState = {
+  intentsUpdatedAfterMs?: number | null;
+  runsUpdatedAfterMs?: number | null;
+  chatUpdatedAfterMs?: number | null;
+};
+
+const toSafeCursorMs = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+};
+
+const readSignalHistorySyncCursor = () => {
+  try {
+    const raw = localStorage.getItem(SIGNAL_HISTORY_SYNC_CURSOR_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return toSafeCursorMs(parsed?.updatedAfterMs);
+  } catch {
+    return null;
+  }
+};
+
+const writeSignalHistorySyncCursor = (updatedAfterMs: number | null | undefined) => {
+  try {
+    localStorage.setItem(SIGNAL_HISTORY_SYNC_CURSOR_KEY, JSON.stringify({
+      updatedAfterMs: toSafeCursorMs(updatedAfterMs)
+    }));
+  } catch {
+    // ignore storage failures
+  }
+};
+
+const readSignalIntentSyncCursor = (): SignalIntentSyncCursorState => {
+  try {
+    const raw = localStorage.getItem(SIGNAL_INTENT_SYNC_CURSOR_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return {
+      intentsUpdatedAfterMs: toSafeCursorMs(parsed?.intentsUpdatedAfterMs),
+      runsUpdatedAfterMs: toSafeCursorMs(parsed?.runsUpdatedAfterMs),
+      chatUpdatedAfterMs: toSafeCursorMs(parsed?.chatUpdatedAfterMs)
+    };
+  } catch {
+    return {};
+  }
+};
+
+const writeSignalIntentSyncCursor = (state: SignalIntentSyncCursorState) => {
+  try {
+    localStorage.setItem(SIGNAL_INTENT_SYNC_CURSOR_KEY, JSON.stringify({
+      intentsUpdatedAfterMs: toSafeCursorMs(state?.intentsUpdatedAfterMs),
+      runsUpdatedAfterMs: toSafeCursorMs(state?.runsUpdatedAfterMs),
+      chatUpdatedAfterMs: toSafeCursorMs(state?.chatUpdatedAfterMs)
+    }));
+  } catch {
+    // ignore storage failures
+  }
+};
+
 const buildTradeLockerAccountKey = (input?: {
   env?: string | null;
   server?: string | null;
   accountId?: number | null;
   accNum?: number | null;
 } | null) => {
-  return buildTradeLockerAccountKeySafe(input || null);
+  const accountId = parseTradeLockerAccountNumberSafe(input?.accountId);
+  if (accountId == null) return '';
+  const accNum = parseTradeLockerAccountNumberSafe(input?.accNum);
+  if (accNum == null) {
+    return buildTradeLockerAccountFallbackKey(input || null);
+  }
+  return buildTradeLockerAccountKeySafe({
+    env: input?.env ?? null,
+    server: input?.server ?? null,
+    accountId,
+    accNum
+  });
 };
 
 const parseTradeLockerAccountKey = (key: string) => {
@@ -1341,6 +1487,15 @@ const parseTradeLockerAccountKey = (key: string) => {
 
 const parseTradeLockerAccountNumber = (value: any): number | null => {
   return parseTradeLockerAccountNumberSafe(value);
+};
+
+type TradeLockerAccountMapEntry = {
+  env: string;
+  server: string;
+  accountId: number;
+  accNum: number | null;
+  accountKey: string;
+  aliases: string[];
 };
 
 const computeMedian = (values: number[]) => {
@@ -4323,6 +4478,14 @@ const App: React.FC = () => {
   }, [signalEntries]);
 
   useEffect(() => {
+    signalHistoryRef.current = signalHistory;
+  }, [signalHistory]);
+
+  useEffect(() => {
+    agentScorecardsRef.current = agentScorecards;
+  }, [agentScorecards]);
+
+  useEffect(() => {
     signalIntentsRef.current = signalIntents;
   }, [signalIntents]);
 
@@ -4858,6 +5021,120 @@ const App: React.FC = () => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [liveErrors, setLiveErrors] = useState<LiveErrorEntry[]>([]);
   const liveErrorsRef = React.useRef<LiveErrorEntry[]>([]);
+  const runtimeOpsFeatureFlags = React.useMemo(() => {
+    const defaults = {
+      runtimeOpsLogsV1: true,
+      runtimeOpsControllerV1: true,
+      runtimeOpsControlV1: true,
+      runtimeOpsLiveExecutionV1: true,
+      runtimeOpsBridgeStabilityV1: true,
+      runtimeOpsBridgeIntrospectionV1: true,
+      runtimeOpsControlSafetyV1: true
+    };
+    try {
+      const raw = localStorage.getItem(RUNTIME_OPS_FLAGS_KEY);
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      return {
+        runtimeOpsLogsV1: parsed?.runtimeOpsLogsV1 !== false,
+        runtimeOpsControllerV1: parsed?.runtimeOpsControllerV1 !== false,
+        runtimeOpsControlV1: parsed?.runtimeOpsControlV1 !== false,
+        runtimeOpsLiveExecutionV1: parsed?.runtimeOpsLiveExecutionV1 !== false,
+        runtimeOpsBridgeStabilityV1: parsed?.runtimeOpsBridgeStabilityV1 !== false,
+        runtimeOpsBridgeIntrospectionV1: parsed?.runtimeOpsBridgeIntrospectionV1 !== false,
+        runtimeOpsControlSafetyV1: parsed?.runtimeOpsControlSafetyV1 !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
+  const runtimeOpsPersistedState = React.useMemo(() => readRuntimeOpsState(), []);
+  const runtimeOpsPolicyRef = React.useRef<RuntimeOpsPolicy>(readRuntimeOpsPolicy());
+  const runtimeOpsControllerRef = React.useRef<RuntimeOpsController | null>(null);
+  const runtimeOpsEventsRef = React.useRef<RuntimeOpsEvent[]>([]);
+  const [runtimeOpsEvents, setRuntimeOpsEvents] = useState<RuntimeOpsEvent[]>([]);
+  const [runtimeOpsControllerState, setRuntimeOpsControllerState] = useState<RuntimeOpsControllerState>(() => ({
+    mode: runtimeOpsPersistedState.mode || (runtimeOpsPolicyRef.current.alwaysArmed ? 'autonomous' : 'observe_only'),
+    armed: runtimeOpsPersistedState.armed == null ? runtimeOpsPolicyRef.current.alwaysArmed : !!runtimeOpsPersistedState.armed,
+    streamStatus: 'disconnected',
+    activeStreamId: null,
+    streamConnectedAtMs: null,
+    streamLastError: null,
+    commandSubscriberHealthy: false,
+    externalRelayHealthy: true,
+    lastExternalCommandAtMs: null,
+    lastExternalCommandError: null,
+    lastEventAtMs: null,
+    lastDecisionAtMs: null,
+    guardrail: {
+      pass: true,
+      blockedReasons: [],
+      canRunLive: runtimeOpsPolicyRef.current.allowLiveExecution !== false,
+      cooldownUntilMs: null,
+      failureStreak: 0,
+      actionsLastMinute: 0,
+      domainActionsLastMinute: {},
+      duplicateBlocked: false
+    },
+    recentActions: [],
+    recentDecisions: [],
+    queueDepth: 0,
+    cooldownUntilMs: null,
+    failureStreak: 0,
+    droppedCount: 0,
+    reconnectCount: 0,
+    actionRuns: 0,
+    actionFailures: 0,
+    guardrailTrips: 0,
+    lockedAttempts: 0
+  }));
+  const runtimeOpsControllerStateRef = React.useRef<RuntimeOpsControllerState>(runtimeOpsControllerState);
+  const runtimeOpsLastControllerStatePushAtRef = React.useRef<number>(0);
+  const runtimeOpsLastControllerStatePushKeyRef = React.useRef<string>('');
+  const runtimeOpsAutoPromotedRef = React.useRef<boolean>(false);
+  const runtimeOpsActiveStreamIdRef = React.useRef<string | null>(null);
+  const runtimeOpsStreamConnectedRef = React.useRef<boolean>(false);
+  const runtimeOpsStreamConnectingRef = React.useRef<boolean>(false);
+  const runtimeOpsStreamConnectedAtMsRef = React.useRef<number | null>(null);
+  const runtimeOpsStreamLastErrorRef = React.useRef<string | null>(null);
+  const runtimeOpsStreamStatsRef = React.useRef({
+    startAttempts: 0,
+    starts: 0,
+    reuses: 0,
+    disconnects: 0,
+    reconnects: 0
+  });
+  const runtimeOpsExternalStatsRef = React.useRef({
+    externalCommandSubscribeCount: 0,
+    externalCommandUnsubscribeCount: 0,
+    externalCommandReplyFailures: 0,
+    externalCommandTimeouts: 0,
+    rendererErrorForwarded: 0
+  });
+  const tradeLockerSwitchStatsRef = React.useRef({
+    switchAttempts: 0,
+    switchFailures: 0,
+    switchReverts: 0,
+    switchReconnectRetries: 0,
+    switchShieldActivations: 0
+  });
+  const setRuntimeOpsModeRef = React.useRef<((mode: RuntimeOpsMode) => Promise<{ ok: boolean; mode?: string; error?: string }>) | null>(null);
+  const emergencyStopRuntimeOpsRef = React.useRef<(() => Promise<{ ok: boolean; mode?: string; error?: string }>) | null>(null);
+  const runRuntimeOpsActionRef = React.useRef<((input: {
+    actionId: string;
+    payload?: Record<string, any>;
+    source?: RuntimeOpsActionRecord['source'];
+  }) => Promise<any>) | null>(null);
+  const promoteTradeLockerPrimaryRoutingRef = React.useRef<((input: {
+    accountKey?: string | null;
+    accountId?: number | null;
+    accNum?: number | null;
+    source?: string | null;
+    stage?: string | null;
+    resolvedBy?: 'exact' | 'accountId_fallback' | 'reconnect_retry' | null;
+    retryRefresh?: boolean;
+  }) => Promise<any>) | null>(null);
+  const runtimeOpsExternalCommandHandlerRef = React.useRef<((incoming: any) => void) | null>(null);
   const [brokerLinkConfig, setBrokerLinkConfig] = useState(() => loadBrokerLinkConfig());
   const brokerLinkConfigRef = React.useRef(brokerLinkConfig);
   const [tlSnapshotSourceKey, setTlSnapshotSourceKey] = useState(() => {
@@ -5115,6 +5392,158 @@ const App: React.FC = () => {
   } = usePortfolio();
   
   // --- Notification Helpers ---
+  const appendRuntimeOpsEvent = useCallback((input: {
+    source: string;
+    message: string;
+    level?: 'error' | 'warn' | 'info';
+    ts?: number;
+    code?: string | null;
+    payload?: Record<string, any> | null;
+    streamId?: string | null;
+    droppedCount?: number | null;
+  }) => {
+    const ts = Number.isFinite(Number(input.ts)) ? Number(input.ts) : Date.now();
+    const event: RuntimeOpsEvent = {
+      id: `runtime_evt_${ts}_${Math.random().toString(16).slice(2, 8)}`,
+      ts,
+      source: String(input.source || 'runtime'),
+      level: input.level === 'warn' || input.level === 'error' ? input.level : 'info',
+      message: String(input.message || '').trim() || 'Runtime event',
+      code: input.code != null ? String(input.code) : null,
+      streamId: input.streamId != null ? String(input.streamId) : null,
+      droppedCount: Number.isFinite(Number(input.droppedCount)) ? Number(input.droppedCount) : null,
+      payload: input.payload && typeof input.payload === 'object' ? input.payload : null
+    };
+    const next = pushRuntimeOpsEvent(runtimeOpsEventsRef.current, event, RUNTIME_OPS_EVENT_LIMIT);
+    runtimeOpsEventsRef.current = next;
+    setRuntimeOpsEvents(next);
+    runtimeOpsControllerRef.current?.ingestEvent(event);
+  }, []);
+
+  const clearRuntimeOpsEvents = useCallback(() => {
+    runtimeOpsEventsRef.current = [];
+    setRuntimeOpsEvents([]);
+  }, []);
+
+  useEffect(() => {
+    runtimeOpsControllerStateRef.current = runtimeOpsControllerState;
+  }, [runtimeOpsControllerState]);
+
+  const pushRuntimeOpsControllerState = useCallback((opts?: { force?: boolean }) => {
+    if (!runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1) return;
+    const runtimeOpsApi = window.glass?.runtimeOps;
+    if (!runtimeOpsApi?.updateControllerState) return;
+    const snapshot = runtimeOpsControllerStateRef.current;
+    if (!snapshot) return;
+    const now = Date.now();
+    const key = [
+      snapshot.mode,
+      snapshot.streamStatus,
+      snapshot.activeStreamId || '',
+      snapshot.streamConnectedAtMs || 0,
+      snapshot.streamLastError || '',
+      snapshot.commandSubscriberHealthy === true ? '1' : '0',
+      snapshot.externalRelayHealthy === false ? '0' : '1',
+      snapshot.lastExternalCommandAtMs || 0,
+      snapshot.lastExternalCommandError || ''
+    ].join('|');
+    if (
+      !opts?.force &&
+      key === runtimeOpsLastControllerStatePushKeyRef.current &&
+      now - runtimeOpsLastControllerStatePushAtRef.current < 500
+    ) {
+      return;
+    }
+    runtimeOpsLastControllerStatePushKeyRef.current = key;
+    runtimeOpsLastControllerStatePushAtRef.current = now;
+    void runtimeOpsApi.updateControllerState({
+      mode: snapshot.mode,
+      streamStatus: snapshot.streamStatus,
+      activeStreamId: snapshot.activeStreamId || null,
+      streamConnectedAtMs: snapshot.streamConnectedAtMs ?? null,
+      streamLastError: snapshot.streamLastError || null,
+      commandSubscriberHealthy: snapshot.commandSubscriberHealthy === true,
+      externalRelayHealthy: snapshot.externalRelayHealthy !== false,
+      lastExternalCommandAtMs: snapshot.lastExternalCommandAtMs ?? null,
+      lastExternalCommandError: snapshot.lastExternalCommandError || null,
+      updatedAtMs: now
+    }).catch(() => {
+      // ignore external state sync failures
+    });
+  }, [runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1]);
+
+  useEffect(() => {
+    pushRuntimeOpsControllerState({ force: false });
+  }, [pushRuntimeOpsControllerState, runtimeOpsControllerState]);
+
+  useEffect(() => {
+    if (!runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1) return;
+    const taskId = 'runtime.ops.controller_state.heartbeat';
+    const dispose = runtimeScheduler.registerTask({
+      id: taskId,
+      groupId: 'runtime_ops',
+      intervalMs: 5000,
+      jitterPct: 0,
+      visibilityMode: 'always',
+      priority: 'low',
+      run: async () => {
+        pushRuntimeOpsControllerState({ force: true });
+      }
+    });
+    return () => {
+      try {
+        dispose?.();
+      } catch {
+        // ignore heartbeat cleanup errors
+      }
+    };
+  }, [pushRuntimeOpsControllerState, runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1]);
+
+  const setRuntimeOpsStreamStatus = useCallback((
+    status: RuntimeOpsControllerState['streamStatus'],
+    meta?: {
+      streamId?: string | null;
+      connectedAtMs?: number | null;
+      error?: string | null;
+    }
+  ) => {
+    const streamId =
+      meta?.streamId !== undefined
+        ? (meta.streamId ? String(meta.streamId) : null)
+        : runtimeOpsActiveStreamIdRef.current;
+    const connectedAtMs =
+      meta?.connectedAtMs !== undefined
+        ? (Number.isFinite(Number(meta.connectedAtMs)) ? Number(meta.connectedAtMs) : null)
+        : runtimeOpsStreamConnectedAtMsRef.current;
+    const error =
+      meta?.error !== undefined
+        ? (meta.error ? String(meta.error) : null)
+        : runtimeOpsStreamLastErrorRef.current;
+
+    runtimeOpsControllerRef.current?.setStreamStatus(status, {
+      streamId,
+      connectedAtMs,
+      error
+    });
+
+    setRuntimeOpsControllerState((prev) => {
+      if (!prev) return prev;
+      const next: RuntimeOpsControllerState = {
+        ...prev,
+        streamStatus: status,
+        activeStreamId: streamId,
+        streamConnectedAtMs: connectedAtMs,
+        streamLastError: error
+      };
+      const unchanged =
+        prev.streamStatus === next.streamStatus &&
+        (prev.activeStreamId ?? null) === (next.activeStreamId ?? null) &&
+        (prev.streamConnectedAtMs ?? null) === (next.streamConnectedAtMs ?? null) &&
+        (prev.streamLastError ?? null) === (next.streamLastError ?? null);
+      return unchanged ? prev : next;
+    });
+  }, []);
+
   const appendLiveError = useCallback((input: {
     message: string;
     source?: string;
@@ -5194,6 +5623,53 @@ const App: React.FC = () => {
       liveErrorsRef.current = list;
       setLiveErrors(list);
 
+      appendRuntimeOpsEvent({
+        source: 'renderer_error',
+        level: entry.level,
+        message: entry.message,
+        ts: entry.ts,
+        payload: {
+          source: entry.source,
+          stack: entry.stack || null,
+          detail: entry.detail ?? null,
+          count: entry.count || 1
+        }
+      });
+      const runtimeOpsApi = window.glass?.runtimeOps;
+      if (runtimeOpsApi?.emitRendererEvent) {
+        void runtimeOpsApi.emitRendererEvent({
+          source: 'renderer_error',
+          level: entry.level,
+          code: 'renderer_live_error',
+          message: entry.message,
+          ts: entry.ts,
+          payload: {
+            source: entry.source,
+            stack: entry.stack || null,
+            detail: entry.detail ?? null,
+            count: entry.count || 1
+          }
+        }).then((res: any) => {
+          if (res?.ok === false) {
+            appendRuntimeOpsEvent({
+              source: 'runtime',
+              level: 'warn',
+              code: 'runtime_ops_renderer_event_forward_failed',
+              message: res?.error ? String(res.error) : 'Failed to forward renderer error to runtime stream.'
+            });
+            return;
+          }
+          runtimeOpsExternalStatsRef.current.rendererErrorForwarded += 1;
+        }).catch(() => {
+          appendRuntimeOpsEvent({
+            source: 'runtime',
+            level: 'warn',
+            code: 'runtime_ops_renderer_event_forward_failed',
+            message: 'Failed to forward renderer error to runtime stream.'
+          });
+        });
+      }
+
       appendTechAgentLog({
         ts,
         level: entry.level,
@@ -5221,7 +5697,7 @@ const App: React.FC = () => {
     } catch {
       // ignore logging failures
     }
-  }, []);
+  }, [appendRuntimeOpsEvent]);
 
   const clearLiveErrors = useCallback(() => {
     liveErrorsRef.current = [];
@@ -5447,6 +5923,328 @@ const App: React.FC = () => {
       window.removeEventListener('unhandledrejection', handleRejection);
     };
   }, [appendLiveError]);
+
+  useEffect(() => {
+    if (!runtimeOpsFeatureFlags.runtimeOpsLogsV1) return;
+    const diagnostics = window.glass?.diagnostics;
+    if (!diagnostics?.onRuntimeEvent || !diagnostics?.startRuntimeStream || !diagnostics?.stopRuntimeStream) {
+      return;
+    }
+    let disposed = false;
+    let fallbackPollingEnabled = false;
+    let reconnectBackoffMs = Number(runtimeOpsPolicyRef.current?.reconnectBackoffMs || 5000) || 5000;
+    let nextReconnectAtMs = 0;
+    let lastFallbackRaw = '';
+
+    const ingestEvent = (event: RuntimeOpsEvent) => {
+      const next = pushRuntimeOpsEvent(runtimeOpsEventsRef.current, event, RUNTIME_OPS_EVENT_LIMIT);
+      runtimeOpsEventsRef.current = next;
+      setRuntimeOpsEvents(next);
+      runtimeOpsControllerRef.current?.ingestEvent(event);
+    };
+
+    const scheduleReconnect = () => {
+      const waitMs = Math.max(1000, Math.min(30000, reconnectBackoffMs));
+      nextReconnectAtMs = Date.now() + waitMs;
+      reconnectBackoffMs = Math.min(30_000, Math.floor(reconnectBackoffMs * 1.5));
+    };
+
+    const setFallbackPollingEnabled = (enabled: boolean, reason?: string | null) => {
+      const wasEnabled = fallbackPollingEnabled;
+      fallbackPollingEnabled = enabled && typeof diagnostics.getMainLog === 'function';
+      if (fallbackPollingEnabled) {
+        runtimeOpsStreamConnectedRef.current = false;
+        runtimeOpsStreamConnectingRef.current = false;
+        runtimeOpsStreamLastErrorRef.current = reason ? String(reason) : runtimeOpsStreamLastErrorRef.current;
+        if (!wasEnabled) {
+          appendRuntimeOpsEvent({
+            source: 'runtime',
+            level: 'warn',
+            code: 'runtime_ops_stream_fallback_enabled',
+            message: 'Runtime stream fallback polling enabled.',
+            payload: {
+              reason: runtimeOpsStreamLastErrorRef.current || null,
+              streamId: runtimeOpsActiveStreamIdRef.current || null
+            }
+          });
+        }
+        setRuntimeOpsStreamStatus('fallback_polling', {
+          streamId: runtimeOpsActiveStreamIdRef.current,
+          connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+          error: runtimeOpsStreamLastErrorRef.current
+        });
+      }
+    };
+
+    const runFallbackPoll = async () => {
+      if (disposed || !fallbackPollingEnabled || typeof diagnostics.getMainLog !== 'function') return;
+      try {
+        const res: any = await diagnostics.getMainLog({ maxLines: 120, maxBytes: 100_000 });
+        if (disposed || !res?.ok) return;
+        const raw = String(res.text || '').trim();
+        if (!raw || raw === lastFallbackRaw) return;
+        lastFallbackRaw = raw;
+        const lines = raw.split(/\r?\n/).filter(Boolean).slice(-30);
+        for (const line of lines) {
+          ingestEvent({
+            id: `runtime_poll_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+            ts: Date.now(),
+            source: 'main_log',
+            level: 'info',
+            message: line,
+            code: 'fallback_poll',
+            payload: null
+          });
+        }
+      } catch {
+        // ignore fallback poll errors
+      }
+    };
+
+    const connectRuntimeStream = async (reason = 'reconnect') => {
+      if (disposed) return;
+      if (runtimeOpsStreamConnectedRef.current && runtimeOpsActiveStreamIdRef.current) return;
+      if (runtimeOpsStreamConnectingRef.current) return;
+      runtimeOpsStreamConnectingRef.current = true;
+      runtimeOpsStreamStatsRef.current.startAttempts += 1;
+      appendRuntimeOpsEvent({
+        source: 'runtime',
+        level: 'info',
+        code: 'runtime_ops_stream_connecting',
+        message: `Runtime stream connecting (${reason})`,
+        payload: {
+          reason,
+          activeStreamId: runtimeOpsActiveStreamIdRef.current || null
+        }
+      });
+      setRuntimeOpsStreamStatus('reconnecting', {
+        streamId: runtimeOpsActiveStreamIdRef.current,
+        connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+        error: runtimeOpsStreamLastErrorRef.current
+      });
+      try {
+        const res: any = await diagnostics.startRuntimeStream({
+          includeMainLog: true,
+          includeMainErrors: true,
+          includeAudit: true,
+          replayLast: 120
+        });
+        if (disposed) return;
+        if (!res?.ok) {
+          runtimeOpsStreamLastErrorRef.current = res?.error ? String(res.error) : 'Runtime stream start failed.';
+          setFallbackPollingEnabled(true, runtimeOpsStreamLastErrorRef.current);
+          appendRuntimeOpsEvent({
+            source: 'runtime',
+            level: 'warn',
+            code: 'runtime_ops_stream_error',
+            message: runtimeOpsStreamLastErrorRef.current,
+            payload: {
+              reason,
+              streamId: runtimeOpsActiveStreamIdRef.current || null
+            }
+          });
+          scheduleReconnect();
+          return;
+        }
+        const incomingStreamId = String(res.streamId || '').trim() || null;
+        const previousStreamId = runtimeOpsActiveStreamIdRef.current;
+        const reused = !!res.reused || (!!incomingStreamId && !!previousStreamId && incomingStreamId === previousStreamId);
+        runtimeOpsActiveStreamIdRef.current = incomingStreamId || previousStreamId || null;
+        runtimeOpsStreamConnectedRef.current = true;
+        runtimeOpsStreamConnectedAtMsRef.current = Date.now();
+        runtimeOpsStreamLastErrorRef.current = null;
+        reconnectBackoffMs = Number(runtimeOpsPolicyRef.current?.reconnectBackoffMs || 5000) || 5000;
+        nextReconnectAtMs = 0;
+        setFallbackPollingEnabled(false);
+        if (reused) {
+          runtimeOpsStreamStatsRef.current.reuses += 1;
+        } else {
+          runtimeOpsStreamStatsRef.current.starts += 1;
+        }
+        appendRuntimeOpsEvent({
+          source: 'runtime',
+          level: 'info',
+          code: reused ? 'runtime_ops_stream_reused' : 'runtime_ops_stream_connected',
+          message: reused
+            ? `Runtime stream reused (${runtimeOpsActiveStreamIdRef.current || 'unknown'})`
+            : `Runtime stream connected (${runtimeOpsActiveStreamIdRef.current || 'unknown'})`,
+          payload: {
+            reason,
+            streamId: runtimeOpsActiveStreamIdRef.current || null,
+            replayed: Number(res.replayed || 0),
+            droppedCount: Number(res.droppedCount || 0)
+          }
+        });
+        setRuntimeOpsStreamStatus('connected', {
+          streamId: runtimeOpsActiveStreamIdRef.current,
+          connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+          error: null
+        });
+      } catch {
+        runtimeOpsStreamLastErrorRef.current = 'Runtime stream connect exception.';
+        appendRuntimeOpsEvent({
+          source: 'runtime',
+          level: 'warn',
+          code: 'runtime_ops_stream_error',
+          message: runtimeOpsStreamLastErrorRef.current,
+          payload: {
+            reason,
+            streamId: runtimeOpsActiveStreamIdRef.current || null
+          }
+        });
+        setFallbackPollingEnabled(true, runtimeOpsStreamLastErrorRef.current);
+        scheduleReconnect();
+      } finally {
+        runtimeOpsStreamConnectingRef.current = false;
+      }
+    };
+
+    const reconnectTaskId = 'runtime.ops.stream.reconnect';
+    const fallbackTaskId = 'runtime.ops.stream.fallback_poll';
+
+    const disposeReconnectTask = runtimeScheduler.registerTask({
+      id: reconnectTaskId,
+      groupId: 'runtime_ops',
+      intervalMs: 1000,
+      jitterPct: 0,
+      visibilityMode: 'always',
+      priority: 'normal',
+      run: async () => {
+        if (disposed || runtimeOpsStreamConnectingRef.current) return;
+        if (runtimeOpsStreamConnectedRef.current && runtimeOpsActiveStreamIdRef.current) return;
+        if (Date.now() < nextReconnectAtMs) return;
+        runtimeOpsStreamStatsRef.current.reconnects += 1;
+        await connectRuntimeStream('scheduler');
+      }
+    });
+
+    const disposeFallbackTask = runtimeScheduler.registerTask({
+      id: fallbackTaskId,
+      groupId: 'runtime_ops',
+      intervalMs: 4000,
+      jitterPct: 0,
+      visibilityMode: 'always',
+      priority: 'low',
+      run: async () => {
+        await runFallbackPoll();
+      }
+    });
+
+    const unsubscribe = diagnostics.onRuntimeEvent((payload: any) => {
+      const event = normalizeRuntimeOpsEvent(payload);
+      if (!event) return;
+      const incomingStreamId = payload?.streamId ? String(payload.streamId) : null;
+      if (incomingStreamId && !runtimeOpsActiveStreamIdRef.current) {
+        runtimeOpsActiveStreamIdRef.current = incomingStreamId;
+      }
+      ingestEvent(event);
+      const code = String(event.code || '').trim();
+      if (code === 'runtime_ops_external_command_subscribed') {
+        runtimeOpsExternalStatsRef.current.externalCommandSubscribeCount += 1;
+      } else if (code === 'runtime_ops_external_command_unsubscribed') {
+        runtimeOpsExternalStatsRef.current.externalCommandUnsubscribeCount += 1;
+      } else if (code === 'runtime_ops_external_command_timeout') {
+        runtimeOpsExternalStatsRef.current.externalCommandTimeouts += 1;
+      } else if (code === 'runtime_ops_external_command_reply_failed') {
+        runtimeOpsExternalStatsRef.current.externalCommandReplyFailures += 1;
+      }
+      const eventBelongsToActiveStream =
+        !incomingStreamId ||
+        !runtimeOpsActiveStreamIdRef.current ||
+        incomingStreamId === runtimeOpsActiveStreamIdRef.current;
+      if (!eventBelongsToActiveStream) return;
+      if (code === 'runtime_ops_stream_closed' || code === 'runtime_ops_stream_stopped') {
+        runtimeOpsStreamConnectedRef.current = false;
+        runtimeOpsStreamConnectingRef.current = false;
+        runtimeOpsStreamStatsRef.current.disconnects += 1;
+        setRuntimeOpsStreamStatus('disconnected', {
+          streamId: null,
+          connectedAtMs: null,
+          error: null
+        });
+        scheduleReconnect();
+        return;
+      }
+      if (code === 'runtime_ops_stream_error') {
+        runtimeOpsStreamConnectedRef.current = false;
+        runtimeOpsStreamConnectingRef.current = false;
+        runtimeOpsStreamLastErrorRef.current = event.message || 'Runtime stream error.';
+        setRuntimeOpsStreamStatus('reconnecting', {
+          streamId: runtimeOpsActiveStreamIdRef.current,
+          connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+          error: runtimeOpsStreamLastErrorRef.current
+        });
+        scheduleReconnect();
+        return;
+      }
+      if (code === 'runtime_ops_stream_fallback_enabled') {
+        runtimeOpsStreamConnectedRef.current = false;
+        runtimeOpsStreamConnectingRef.current = false;
+        runtimeOpsStreamLastErrorRef.current = event.message || null;
+        setFallbackPollingEnabled(true, runtimeOpsStreamLastErrorRef.current);
+        return;
+      }
+      if (
+        code === 'runtime_ops_stream_connected' ||
+        code === 'runtime_ops_stream_started' ||
+        code === 'runtime_ops_stream_reused'
+      ) {
+        if (incomingStreamId) {
+          runtimeOpsActiveStreamIdRef.current = incomingStreamId;
+        }
+        runtimeOpsStreamConnectedRef.current = true;
+        runtimeOpsStreamConnectingRef.current = false;
+        runtimeOpsStreamConnectedAtMsRef.current = Date.now();
+        runtimeOpsStreamLastErrorRef.current = null;
+        setFallbackPollingEnabled(false);
+        setRuntimeOpsStreamStatus('connected', {
+          streamId: runtimeOpsActiveStreamIdRef.current,
+          connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+          error: null
+        });
+        return;
+      }
+      runtimeOpsStreamConnectedRef.current = true;
+      runtimeOpsStreamConnectingRef.current = false;
+      runtimeOpsStreamConnectedAtMsRef.current = Date.now();
+      runtimeOpsStreamLastErrorRef.current = null;
+      setFallbackPollingEnabled(false);
+      setRuntimeOpsStreamStatus('connected', {
+        streamId: runtimeOpsActiveStreamIdRef.current,
+        connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current,
+        error: null
+      });
+    });
+
+    nextReconnectAtMs = 0;
+    void connectRuntimeStream('initial');
+
+    return () => {
+      disposed = true;
+      setFallbackPollingEnabled(false);
+      try { disposeReconnectTask?.(); } catch { /* ignore */ }
+      try { disposeFallbackTask?.(); } catch { /* ignore */ }
+      try { unsubscribe?.(); } catch { /* ignore */ }
+      try {
+        void diagnostics.stopRuntimeStream({ streamId: runtimeOpsActiveStreamIdRef.current || undefined });
+      } catch {
+        // ignore stream stop errors
+      }
+      if (runtimeOpsStreamConnectedRef.current || runtimeOpsActiveStreamIdRef.current) {
+        runtimeOpsStreamStatsRef.current.disconnects += 1;
+      }
+      runtimeOpsStreamConnectedRef.current = false;
+      runtimeOpsStreamConnectingRef.current = false;
+      runtimeOpsActiveStreamIdRef.current = null;
+      runtimeOpsStreamConnectedAtMsRef.current = null;
+      runtimeOpsStreamLastErrorRef.current = null;
+      setRuntimeOpsStreamStatus('disconnected', {
+        streamId: null,
+        connectedAtMs: null,
+        error: null
+      });
+    };
+  }, [appendRuntimeOpsEvent, runtimeOpsFeatureFlags.runtimeOpsLogsV1, setRuntimeOpsStreamStatus]);
   
   const AGENT_TOOL_DEDUPE_WINDOW_MS = 30_000;
   const autoPilotConfigRef = React.useRef<any>(null); // Quick hack to access config inside callback
@@ -5544,11 +6342,20 @@ const App: React.FC = () => {
   const telegramPollingActiveRef = React.useRef(false);
   const signalEntryPersistTimerRef = React.useRef<number | null>(null);
   const signalHistoryFetchAtRef = React.useRef(0);
+  const signalHistoryRef = React.useRef<SignalHistoryEntry[]>([]);
+  const agentScorecardsRef = React.useRef<AgentScorecardSnapshot[]>([]);
+  const signalHistorySyncCursorRef = React.useRef<number | null>(readSignalHistorySyncCursor());
+  const signalHistoryIncrementalFallbackNotBeforeRef = React.useRef(0);
+  const signalIntentSyncCursorRef = React.useRef<SignalIntentSyncCursorState>(readSignalIntentSyncCursor());
+  const signalIntentHydrateFallbackNotBeforeRef = React.useRef(0);
   const scorecardPersistedRef = React.useRef<Map<string, string>>(new Map());
   const academyCasesRef = React.useRef<AcademyCase[]>([]);
   const academyLessonsRef = React.useRef<AcademyLesson[]>([]);
   const academySymbolLearningsRef = React.useRef<AcademySymbolLearning[]>([]);
   const academySyncCursorRef = React.useRef(readAcademySyncCursor());
+  const academyCompanionRowsReadRef = React.useRef(0);
+  const intentHydrationRowsReadRef = React.useRef(0);
+  const incrementalCursorFallbackCountRef = React.useRef(0);
   const academyCaseLocksRef = React.useRef<Map<string, AcademyCaseLockRecord>>(new Map());
   const academyCaseRepairPersistedRef = React.useRef<Map<string, string>>(new Map());
   const academyLessonContextRef = React.useRef<string>('');
@@ -5667,7 +6474,11 @@ const App: React.FC = () => {
   const tlConnectInFlightRef = React.useRef(false);
   const ensureTradeLockerConnectedRef = React.useRef<((reason?: string) => Promise<any>) | null>(null);
   const ensureActionTaskTreeRef = React.useRef<(() => TaskTreeOrchestrator) | null>(null);
+  const tlRefreshSavedConfigRef = React.useRef<(() => Promise<any>) | null>(null);
+  const tlRefreshAccountsRef = React.useRef<(() => Promise<any>) | null>(null);
   const refreshSnapshotRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
+  const refreshOrdersRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
+  const refreshAccountMetricsRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const refreshQuotesRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const tlCancelOrderRef = React.useRef<((id: string) => Promise<any>) | null>(null);
   const tlClosePositionRef = React.useRef<((id: string, qty?: number) => Promise<any>) | null>(null);
@@ -5678,7 +6489,7 @@ const App: React.FC = () => {
   const quotesBySymbolRef = React.useRef<Record<string, any> | null>(null);
   const tradeLockerAccountLockRef = React.useRef<Promise<void>>(Promise.resolve());
   const tradeLockerAccountBusyRef = React.useRef(false);
-  const tlAccountMapRef = React.useRef<Map<string, { env: string; server: string; accountId: number; accNum: number }>>(new Map());
+  const tlAccountMapRef = React.useRef<Map<string, TradeLockerAccountMapEntry>>(new Map());
   const resolveSnapshotSourceKeyRef = React.useRef<(() => string | null) | null>(null);
   const resolveSnapshotFallbackOrderRef = React.useRef<((currentKey: string | null) => string[]) | null>(null);
   const ensureTradeLockerAccountRef = React.useRef<((accountKey: string | null, reason?: string) => Promise<any>) | null>(null);
@@ -7238,6 +8049,20 @@ const App: React.FC = () => {
     } catch {
       // ignore audit failures
     }
+    appendRuntimeOpsEvent({
+      source: eventType.startsWith('action_') ? 'action' : 'audit',
+      level: event.level || 'info',
+      message: eventType,
+      ts: Date.now(),
+      payload: {
+        symbol: event.symbol || null,
+        runId: event.runId || null,
+        toolId: event.toolId || null,
+        decisionId: event.decisionId || null,
+        correlationId: event.correlationId || null,
+        payload: event.payload || null
+      }
+    });
     const mirrorPrefixes = [
       'trade_',
       'broker_',
@@ -7288,7 +8113,7 @@ const App: React.FC = () => {
         source: event.payload?.source || 'audit'
       });
     }
-  }, [appendTruthEvent, recordPerf, shouldThrottleAudit]);
+  }, [appendRuntimeOpsEvent, appendTruthEvent, recordPerf, shouldThrottleAudit]);
 
   useEffect(() => {
     appendAuditEventRef.current = appendAuditEvent;
@@ -10334,23 +11159,25 @@ const App: React.FC = () => {
       }
 
       const memories = Array.isArray(res.memories) ? res.memories : [];
-      const map = new Map<string, SetupLibraryEntry>();
+      const incomingMap = new Map<string, SetupLibraryEntry>();
       for (const memory of memories) {
         const payload = memory?.payload as SetupLibraryEntry | undefined | null;
         if (!payload || typeof payload !== 'object') continue;
         const key = String(payload.key || memory?.key || '').trim();
         if (!key) continue;
-        const existing = map.get(key);
+        const existing = incomingMap.get(key);
         if (!existing || (payload.score ?? 0) > (existing.score ?? 0)) {
-          map.set(key, payload);
+          incomingMap.set(key, payload);
         }
       }
 
-      const entries = Array.from(map.values()).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      const incomingEntries = Array.from(incomingMap.values()).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      const mergeResult = mergeSetupLibraryEntries(setupLibraryRef.current || [], incomingEntries);
+      const entries = mergeResult.merged;
       setSetupLibraryEntries(entries);
       setSetupLibraryUpdatedAtMs(Date.now());
       setSetupLibraryError(null);
-      return { ok: true, count: entries.length };
+      return { ok: true, count: entries.length, ...mergeResult.stats };
     } catch (err: any) {
       const message = err?.message ? String(err.message) : 'Failed to load setup library.';
       setSetupLibraryError(message);
@@ -12709,6 +13536,38 @@ const App: React.FC = () => {
 
   getTradeLockerAccountKeyRef.current = getTradeLockerAccountKey;
 
+  const listTradeLockerCanonicalAccountKeys = useCallback(() => {
+    const seen = new Set<string>();
+    const keys: string[] = [];
+    for (const entry of tlAccountMapRef.current.values()) {
+      const key = String(entry?.accountKey || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  }, []);
+
+  const resolveTradeLockerAccountEntry = useCallback((accountKey: string | null) => {
+    const raw = String(accountKey || '').trim();
+    if (!raw) return null;
+    const accountMap = tlAccountMapRef.current;
+    const direct = accountMap.get(raw);
+    if (direct) return direct;
+    const parsed = parseTradeLockerAccountKey(raw);
+    if (!parsed) return null;
+    const fallbackKey = buildTradeLockerAccountKey({
+      env: parsed.env,
+      server: parsed.server,
+      accountId: parsed.accountId,
+      accNum: null
+    });
+    if (fallbackKey && accountMap.has(fallbackKey)) {
+      return accountMap.get(fallbackKey) || null;
+    }
+    return null;
+  }, []);
+
   const getMt5AccountKey = useCallback(() => {
     const spec = mt5AccountSpecRef.current;
     const key = spec?.accountKey;
@@ -12733,80 +13592,360 @@ const App: React.FC = () => {
 
   const ensureTradeLockerAccount = useCallback(async (accountKey: string | null, reason?: string) => {
     if (!accountKey) return { ok: false as const, error: 'TradeLocker account missing.' };
-    const activeKey = getTradeLockerAccountKey();
-    if (activeKey && activeKey === accountKey) return { ok: true as const, changed: false };
-    const accountMap = tlAccountMapRef.current;
-    const acct = accountMap.get(accountKey);
+    const acct = resolveTradeLockerAccountEntry(accountKey);
     if (!acct) return { ok: false as const, error: 'TradeLocker account not found.' };
+    const activeKey = getTradeLockerAccountKey();
+    if (activeKey && areAccountKeysEquivalent(activeKey, acct.accountKey)) {
+      return { ok: true as const, changed: false, resolvedBy: 'exact' as const };
+    }
     const setActiveAccount = tlSetActiveAccountRef.current;
     if (!setActiveAccount) return { ok: false as const, error: 'TradeLocker account switching unavailable.' };
-    const res = await setActiveAccount(acct.accountId, acct.accNum);
+    let resolvedBy: 'exact' | 'accountId_fallback' | 'reconnect_retry' =
+      acct.accNum != null ? 'exact' : 'accountId_fallback';
+    const ensureConnected = ensureTradeLockerConnectedRef.current;
+    const connected = tradeLockerExecRef.current?.connected === true;
+    if (!connected && ensureConnected) {
+      const connectRes = await ensureConnected(reason ? `${reason}:switch` : 'account_switch');
+      if (connectRes?.ok === false) {
+        const err = connectRes?.error ? String(connectRes.error) : 'TradeLocker reconnect failed.';
+        appendLiveError({
+          source: 'tradelocker.account',
+          level: 'warn',
+          message: err,
+          detail: { accountKey: acct.accountKey, reason: reason || null, stage: 'connect' }
+        });
+        return { ok: false as const, error: err, resolvedBy: 'reconnect_retry' as const };
+      }
+      resolvedBy = 'reconnect_retry';
+    }
+    let res = await setActiveAccount(acct.accountId, acct.accNum ?? undefined);
+    if (res?.ok === false) {
+      const errText = String(res?.error || '').toLowerCase();
+      const retryable =
+        !!ensureConnected &&
+        (
+          errText.includes('not connected') ||
+          errText.includes('disconnected') ||
+          errText.includes('token')
+        );
+      if (retryable) {
+        const reconnectRes = await ensureConnected(reason ? `${reason}:retry` : 'account_switch_retry');
+        if (reconnectRes?.ok !== false) {
+          res = await setActiveAccount(acct.accountId, acct.accNum ?? undefined);
+          resolvedBy = 'reconnect_retry';
+        }
+      }
+    }
     if (res?.ok === false) {
       const err = res?.error ? String(res.error) : 'Failed to switch TradeLocker account.';
       appendLiveError({
         source: 'tradelocker.account',
         level: 'warn',
         message: err,
-        detail: { accountKey, reason: reason || null }
+        detail: { accountKey: acct.accountKey, reason: reason || null, stage: 'switch' }
       });
-      return { ok: false as const, error: err };
+      return { ok: false as const, error: err, resolvedBy };
     }
-    return { ok: true as const, changed: true };
-  }, [appendLiveError, getTradeLockerAccountKey]);
+    return { ok: true as const, changed: true, resolvedBy };
+  }, [appendLiveError, getTradeLockerAccountKey, resolveTradeLockerAccountEntry]);
 
   ensureTradeLockerAccountRef.current = ensureTradeLockerAccount;
 
   const resolveSnapshotSourceKey = useCallback(() => {
-    const accountMap = tlAccountMapRef.current;
     const explicit = tlSnapshotSourceKeyRef.current || '';
-    if (explicit && accountMap.has(explicit)) return explicit;
+    const explicitEntry = resolveTradeLockerAccountEntry(explicit);
+    if (explicitEntry?.accountKey) return explicitEntry.accountKey;
     const activeKey = getTradeLockerAccountKey();
-    if (activeKey && accountMap.has(activeKey)) return activeKey;
-    const first = accountMap.keys().next();
-    return first && !first.done ? first.value : null;
-  }, [getTradeLockerAccountKey]);
+    const activeEntry = resolveTradeLockerAccountEntry(activeKey);
+    if (activeEntry?.accountKey) return activeEntry.accountKey;
+    const canonical = listTradeLockerCanonicalAccountKeys();
+    return canonical.length > 0 ? canonical[0] : null;
+  }, [getTradeLockerAccountKey, listTradeLockerCanonicalAccountKeys, resolveTradeLockerAccountEntry]);
 
   resolveSnapshotSourceKeyRef.current = resolveSnapshotSourceKey;
 
   const resolveSnapshotFallbackOrder = useCallback((currentKey: string | null) => {
     const explicit = Array.isArray(tlSnapshotFallbackRef.current) ? tlSnapshotFallbackRef.current : [];
-    const accountMap = tlAccountMapRef.current;
-    const base = explicit.length ? explicit : Array.from(accountMap.keys());
-    return base.filter((key) => key && key !== currentKey);
-  }, []);
+    const base = explicit.length ? explicit : listTradeLockerCanonicalAccountKeys();
+    const currentCanonical = resolveTradeLockerAccountEntry(currentKey)?.accountKey || String(currentKey || '').trim();
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    for (const key of base) {
+      const entry = resolveTradeLockerAccountEntry(key);
+      const nextKey = entry?.accountKey || String(key || '').trim();
+      if (!nextKey || nextKey === currentCanonical || seen.has(nextKey)) continue;
+      seen.add(nextKey);
+      normalized.push(nextKey);
+    }
+    return normalized;
+  }, [listTradeLockerCanonicalAccountKeys, resolveTradeLockerAccountEntry]);
 
   resolveSnapshotFallbackOrderRef.current = resolveSnapshotFallbackOrder;
 
   const resolveTradeLockerExecutionTargets = useCallback(() => {
     const selected = Array.isArray(tlExecutionTargetsRef.current) ? tlExecutionTargetsRef.current : [];
-    const accountMap = tlAccountMapRef.current;
-    const valid = selected.filter((key) => accountMap.has(key));
+    const seen = new Set<string>();
+    const valid = selected
+      .map((key) => resolveTradeLockerAccountEntry(key)?.accountKey || '')
+      .filter((key) => {
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
     if (valid.length > 0) return valid;
     const active = getTradeLockerAccountKey();
-    if (active && accountMap.has(active)) return [active];
-    const first = accountMap.keys().next();
-    return first && !first.done ? [first.value] : [];
-  }, [getTradeLockerAccountKey]);
+    const activeEntry = resolveTradeLockerAccountEntry(active);
+    if (activeEntry?.accountKey) return [activeEntry.accountKey];
+    const canonical = listTradeLockerCanonicalAccountKeys();
+    return canonical.length > 0 ? [canonical[0]] : [];
+  }, [getTradeLockerAccountKey, listTradeLockerCanonicalAccountKeys, resolveTradeLockerAccountEntry]);
 
   const resolveNormalizationReferenceKey = useCallback(() => {
     const configured = tlNormalizeRefKeyRef.current || '';
-    const accountMap = tlAccountMapRef.current;
-    if (configured && accountMap.has(configured)) return configured;
+    const configuredEntry = resolveTradeLockerAccountEntry(configured);
+    if (configuredEntry?.accountKey) return configuredEntry.accountKey;
     return resolveSnapshotSourceKey();
-  }, [resolveSnapshotSourceKey]);
+  }, [resolveSnapshotSourceKey, resolveTradeLockerAccountEntry]);
 
   const updateSnapshotSourceKey = useCallback((nextKey: string) => {
     if (!nextKey) return;
     setTlSnapshotSourceKey(nextKey);
   }, []);
 
+  const setTradeLockerSwitchShield = useCallback((input: {
+    active: boolean;
+    source?: string | null;
+    stage?: string | null;
+    reason?: string | null;
+    holdMs?: number | null;
+  }) => {
+    const active = input?.active === true;
+    if (active) {
+      tradeLockerSwitchStatsRef.current.switchShieldActivations += 1;
+    }
+    const holdMsRaw = Number(input?.holdMs);
+    const holdMs = active
+      ? (Number.isFinite(holdMsRaw) && holdMsRaw > 0 ? Math.max(1_000, Math.min(180_000, holdMsRaw)) : 45_000)
+      : 0;
+    try {
+      dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_SWITCH_SHIELD, {
+        active,
+        holdMs,
+        source: String(input?.source || 'unknown').trim() || 'unknown',
+        stage: String(input?.stage || (active ? 'switch_start' : 'switch_end')).trim(),
+        reason: input?.reason ? String(input.reason) : null,
+        atMs: Date.now()
+      });
+    } catch {
+      // ignore renderer event dispatch failures
+    }
+  }, []);
+
   const handleSnapshotSourceChange = useCallback(async (nextKey: string) => {
-    if (!nextKey) return;
+    if (!nextKey) return { ok: false as const, error: 'TradeLocker account missing.' };
+    const previousKey = resolveSnapshotSourceKey();
     updateSnapshotSourceKey(nextKey);
-    await withTradeLockerAccountLock(async () => {
-      await ensureTradeLockerAccount(nextKey, 'snapshot_manual');
+    const fail = (message: string) => {
+      if (previousKey) setTlSnapshotSourceKey(previousKey);
+      appendLiveError({
+        source: 'tradelocker.account',
+        level: 'warn',
+        message,
+        detail: { requestedKey: nextKey, previousKey: previousKey || null, reason: 'snapshot_manual' }
+      });
+      addNotification('TradeLocker Account', message, 'warning');
+      return { ok: false as const, error: message };
+    };
+    setTradeLockerSwitchShield({
+      active: true,
+      source: 'snapshot_manual',
+      stage: 'set_active_account'
     });
-  }, [ensureTradeLockerAccount, updateSnapshotSourceKey, withTradeLockerAccountLock]);
+    try {
+      return await withTradeLockerAccountLock(async () => {
+        const targetEntry = resolveTradeLockerAccountEntry(nextKey);
+        if (!targetEntry) return fail('TradeLocker account not found.');
+        const switchRes = await ensureTradeLockerAccount(targetEntry.accountKey, 'snapshot_manual');
+        if (!switchRes?.ok) return fail(switchRes?.error ? String(switchRes.error) : 'Failed to switch TradeLocker account.');
+
+        const api = (window as any)?.glass?.tradelocker;
+        let activeIdentity: any = null;
+        try {
+          if (api?.getSavedConfig) {
+            const saved = await api.getSavedConfig();
+            if (saved && saved.ok !== false) {
+              activeIdentity = {
+                env: saved?.env ?? null,
+                server: saved?.server ?? null,
+                accountId: parseTradeLockerAccountNumber(saved?.accountId),
+                accNum: parseTradeLockerAccountNumber(saved?.accNum)
+              };
+            }
+          }
+        } catch {
+          // ignore saved-config read failures
+        }
+        if (!activeIdentity) {
+          const meta = tradeLockerExecRef.current || {};
+          activeIdentity = {
+            env: meta?.env ?? null,
+            server: meta?.server ?? null,
+            accountId: parseTradeLockerAccountNumber(meta?.accountId),
+            accNum: parseTradeLockerAccountNumber(meta?.accNum)
+          };
+        }
+        const matchState = resolveTradeLockerIdentityMatchState({
+          env: targetEntry.env,
+          server: targetEntry.server,
+          accountId: targetEntry.accountId,
+          accNum: targetEntry.accNum ?? null,
+          accountKey: targetEntry.accountKey
+        }, activeIdentity);
+        if (matchState === 'mismatch') {
+          return fail('TradeLocker switch verification failed.');
+        }
+
+        const refreshTasks: Promise<any>[] = [];
+        if (tlRefreshSavedConfigRef.current) refreshTasks.push(tlRefreshSavedConfigRef.current());
+        if (tlRefreshAccountsRef.current) refreshTasks.push(tlRefreshAccountsRef.current());
+        if (refreshSnapshotRef.current) refreshTasks.push(refreshSnapshotRef.current());
+        if (refreshOrdersRef.current) refreshTasks.push(refreshOrdersRef.current());
+        if (refreshAccountMetricsRef.current) refreshTasks.push(refreshAccountMetricsRef.current());
+        if (refreshQuotesRef.current) refreshTasks.push(refreshQuotesRef.current());
+        if (refreshTasks.length > 0) {
+          await Promise.allSettled(refreshTasks);
+        }
+
+        const resolvedEntry = resolveTradeLockerAccountEntry(targetEntry.accountKey) || targetEntry;
+        setTlSnapshotSourceKey(resolvedEntry.accountKey);
+        addNotification(
+          'TradeLocker Account',
+          `Switched to account ${resolvedEntry.accountId}${resolvedEntry.accNum != null ? `/${resolvedEntry.accNum}` : ''}.`,
+          'success'
+        );
+        return {
+          ok: true as const,
+          accountKey: resolvedEntry.accountKey,
+          resolvedBy: switchRes?.resolvedBy || 'exact'
+        };
+      });
+    } finally {
+      setTradeLockerSwitchShield({
+        active: false,
+        source: 'snapshot_manual',
+        stage: 'verify'
+      });
+    }
+  }, [
+    addNotification,
+    appendLiveError,
+    ensureTradeLockerAccount,
+    resolveSnapshotSourceKey,
+    resolveTradeLockerAccountEntry,
+    setTradeLockerSwitchShield,
+    updateSnapshotSourceKey,
+    withTradeLockerAccountLock
+  ]);
+
+  const promoteTradeLockerPrimaryRouting = useCallback(async (input: {
+    accountKey?: string | null;
+    accountId?: number | null;
+    accNum?: number | null;
+    source?: string | null;
+    stage?: string | null;
+    resolvedBy?: 'exact' | 'accountId_fallback' | 'reconnect_retry' | null;
+    retryRefresh?: boolean;
+  }) => {
+    const source = String(input?.source || 'unknown').trim() || 'unknown';
+    const requestedAccountKey = String(input?.accountKey || '').trim();
+    const requestedAccountId = parseTradeLockerAccountNumber(input?.accountId);
+    const requestedAccNum = parseTradeLockerAccountNumber(input?.accNum);
+    const stage = String(input?.stage || 'promote').trim() || 'promote';
+    const resolvedBy = input?.resolvedBy || 'exact';
+    tradeLockerSwitchStatsRef.current.switchAttempts += 1;
+
+    const fail = (message: string, failStage: string) => {
+      tradeLockerSwitchStatsRef.current.switchFailures += 1;
+      tradeLockerSwitchStatsRef.current.switchReverts += 1;
+      appendLiveError({
+        source: 'tradelocker.account',
+        level: 'warn',
+        message,
+        detail: {
+          source,
+          stage: failStage,
+          accountKey: requestedAccountKey || null,
+          accountId: requestedAccountId,
+          accNum: requestedAccNum
+        }
+      });
+      return {
+        ok: false as const,
+        error: message,
+        stage: failStage
+      };
+    };
+
+    const resolveFromMap = () => {
+      if (requestedAccountKey) {
+        const direct = resolveTradeLockerAccountEntry(requestedAccountKey);
+        if (direct?.accountKey) return direct;
+      }
+      const uniqueEntries = Array.from(
+        new Map(
+          Array.from(tlAccountMapRef.current.values())
+            .map((entry) => [String(entry?.accountKey || '').trim(), entry] as const)
+            .filter(([key]) => !!key)
+        ).values()
+      );
+      if (requestedAccountId == null && requestedAccNum == null) {
+        return null;
+      }
+      for (const entry of uniqueEntries) {
+        if (!entry?.accountKey) continue;
+        if (requestedAccountId != null && Number(entry.accountId || 0) !== requestedAccountId) continue;
+        if (requestedAccNum != null && Number(entry.accNum || 0) !== requestedAccNum) continue;
+        return entry;
+      }
+      return null;
+    };
+
+    return withTradeLockerAccountLock(async () => {
+      let targetEntry = resolveFromMap();
+      if (!targetEntry && input?.retryRefresh !== false && tlRefreshAccountsRef.current) {
+        tradeLockerSwitchStatsRef.current.switchReconnectRetries += 1;
+        try {
+          await tlRefreshAccountsRef.current();
+        } catch {
+          // ignore refresh failures here; unresolved handling below will surface the error
+        }
+        targetEntry = resolveFromMap();
+      }
+      if (!targetEntry?.accountKey) {
+        return fail('TradeLocker primary source promotion failed: account unresolved.', stage);
+      }
+
+      const selectedKey = String(targetEntry.accountKey);
+      setTlSnapshotSourceKey(selectedKey);
+      setTlNormalizeRefKey(selectedKey);
+      setTlExecutionTargets([selectedKey]);
+      const fallback = listTradeLockerCanonicalAccountKeys().filter((key) => key && key !== selectedKey);
+      setTlSnapshotFallbackOrder(fallback);
+      return {
+        ok: true as const,
+        stage,
+        resolvedBy,
+        accountKey: selectedKey,
+        accountId: targetEntry.accountId,
+        accNum: targetEntry.accNum ?? null
+      };
+    });
+  }, [
+    appendLiveError,
+    listTradeLockerCanonicalAccountKeys,
+    resolveTradeLockerAccountEntry,
+    withTradeLockerAccountLock
+  ]);
 
   const handleNormalizationChange = useCallback((patch: { enabled?: boolean; referenceKey?: string | null }) => {
     if (typeof patch.enabled === 'boolean') {
@@ -13162,7 +14301,7 @@ const App: React.FC = () => {
     applyUpdate(undefined);
   }, [addNotification, getMt5AccountKey, getTradeLockerAccountKey, normalizeShadowProfile, persistShadowProfile, resolveLiveAccountKey]);
 
-  const refreshSignalHistory = useCallback(async (opts?: { force?: boolean; limit?: number }) => {
+  const refreshSignalHistory = useCallback(async (opts?: { force?: boolean; limit?: number; _fullRetry?: boolean }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Signal history unavailable.' };
     const now = Date.now();
@@ -13170,20 +14309,43 @@ const App: React.FC = () => {
       return { ok: true as const, skipped: true };
     }
     signalHistoryFetchAtRef.current = now;
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(20, Math.min(2000, Math.floor(Number(opts?.limit)))) : 1000;
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(20, Math.min(5_000, Math.floor(Number(opts?.limit)))) : 1_500;
+    const syncCursor = opts?.force ? null : signalHistorySyncCursorRef.current;
+    const listOptions = {
+      ...buildIncrementalListOptions(limit, syncCursor, true),
+      kind: 'signal_history'
+    };
     try {
-      const res = await ledger.listAgentMemory({ limit, kind: 'signal_history' });
+      const res = await ledger.listAgentMemory(listOptions);
       if (!res?.ok || !Array.isArray(res.memories)) {
         return { ok: false as const, error: res?.error ? String(res.error) : 'Failed to load signal history.' };
       }
-      const entries = res.memories.map(normalizeSignalHistoryMemory).filter(Boolean) as SignalHistoryEntry[];
-      entries.sort((a, b) => {
-        const aTime = a.resolvedAtMs ?? a.executedAtMs ?? 0;
-        const bTime = b.resolvedAtMs ?? b.executedAtMs ?? 0;
-        return bTime - aTime;
-      });
-      setSignalHistory(entries);
-      return { ok: true as const };
+      const incoming = res.memories.map(normalizeSignalHistoryMemory).filter(Boolean) as SignalHistoryEntry[];
+      const hasExisting = (signalHistoryRef.current || []).length > 0;
+      if (
+        !opts?.force &&
+        !opts?._fullRetry &&
+        incoming.length === 0 &&
+        hasExisting &&
+        now >= Number(signalHistoryIncrementalFallbackNotBeforeRef.current || 0)
+      ) {
+        signalHistoryIncrementalFallbackNotBeforeRef.current = now + ACADEMY_COMPANION_FULL_RECONCILE_MS;
+        incrementalCursorFallbackCountRef.current += 1;
+        return refreshSignalHistory({ force: true, _fullRetry: true, limit });
+      }
+
+      const mergeResult = mergeSignalHistoryEntries(signalHistoryRef.current || [], incoming);
+      setSignalHistory(mergeResult.merged);
+      const nextCursor = nextCursorFromItems(
+        signalHistorySyncCursorRef.current || null,
+        mergeResult.merged,
+        (entry) => Number(entry?.resolvedAtMs ?? entry?.executedAtMs ?? entry?.createdAtMs ?? 0) || null
+      );
+      if (nextCursor && Number(nextCursor) !== Number(signalHistorySyncCursorRef.current || 0)) {
+        signalHistorySyncCursorRef.current = nextCursor;
+        writeSignalHistorySyncCursor(nextCursor);
+      }
+      return { ok: true as const, ...mergeResult.stats };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load signal history.' };
     }
@@ -13206,8 +14368,9 @@ const App: React.FC = () => {
         .map(normalizeAgentScorecardMemory)
         .filter(Boolean) as AgentScorecardSnapshot[];
       entries.sort((a, b) => (Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0)));
-      setAgentScorecards(entries);
-      return { ok: true as const };
+      const mergeResult = mergeAgentScorecards(agentScorecardsRef.current || [], entries);
+      setAgentScorecards(mergeResult.merged);
+      return { ok: true as const, ...mergeResult.stats };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load agent scorecards.' };
     }
@@ -13556,35 +14719,115 @@ const App: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    const hydrate = async () => {
+    const hydrate = async (opts?: { force?: boolean; _fullRetry?: boolean }) => {
       const ledger = window.glass?.tradeLedger;
       if (!ledger?.listAgentMemory) return;
       try {
+        const cursor = signalIntentSyncCursorRef.current || {};
+        const intentsLimit = opts?.force ? 5000 : 1000;
+        const runsLimit = opts?.force ? 10000 : 2000;
+        const chatLimit = opts?.force ? 10000 : 2000;
         const [intentRes, runRes, chatRes] = await Promise.all([
-          ledger.listAgentMemory({ limit: 5000, kind: SIGNAL_INTENT_KIND, includeArchived: true }),
-          ledger.listAgentMemory({ limit: 10000, kind: SIGNAL_INTENT_RUN_KIND, includeArchived: true }),
-          ledger.listAgentMemory({ limit: 10000, kind: SIGNAL_INTENT_CHAT_KIND, includeArchived: true })
+          ledger.listAgentMemory({
+            ...buildIncrementalListOptions(intentsLimit, opts?.force ? null : cursor.intentsUpdatedAfterMs, true),
+            kind: SIGNAL_INTENT_KIND
+          }),
+          ledger.listAgentMemory({
+            ...buildIncrementalListOptions(runsLimit, opts?.force ? null : cursor.runsUpdatedAfterMs, true),
+            kind: SIGNAL_INTENT_RUN_KIND
+          }),
+          ledger.listAgentMemory({
+            ...buildIncrementalListOptions(chatLimit, opts?.force ? null : cursor.chatUpdatedAfterMs, true),
+            kind: SIGNAL_INTENT_CHAT_KIND
+          })
         ]);
         if (cancelled) return;
-        const intents = intentRes?.ok && Array.isArray(intentRes.memories)
+        const intentsRowsRead = intentRes?.ok && Array.isArray(intentRes.memories) ? intentRes.memories.length : 0;
+        const runsRowsRead = runRes?.ok && Array.isArray(runRes.memories) ? runRes.memories.length : 0;
+        const chatRowsRead = chatRes?.ok && Array.isArray(chatRes.memories) ? chatRes.memories.length : 0;
+        intentHydrationRowsReadRef.current += intentsRowsRead + runsRowsRead + chatRowsRead;
+
+        const incomingIntents = intentRes?.ok && Array.isArray(intentRes.memories)
           ? intentRes.memories.map((memory: any) => normalizeSignalIntent(memory?.payload || memory)).filter(Boolean) as SignalIntent[]
           : [];
-        const runs = runRes?.ok && Array.isArray(runRes.memories)
+        const incomingRuns = runRes?.ok && Array.isArray(runRes.memories)
           ? runRes.memories.map((memory: any) => normalizeSignalIntentRun(memory?.payload || memory)).filter(Boolean) as SignalIntentRun[]
           : [];
-        const chatTurns = chatRes?.ok && Array.isArray(chatRes.memories)
+        const incomingChatTurns = chatRes?.ok && Array.isArray(chatRes.memories)
           ? chatRes.memories.map((memory: any) => normalizeSignalIntentChatTurn(memory?.payload || memory)).filter(Boolean) as SignalIntentChatTurn[]
           : [];
-        runs.sort((a, b) => Number(b.triggerAtMs || 0) - Number(a.triggerAtMs || 0));
-        chatTurns.sort((a, b) => Number(a.atMs || 0) - Number(b.atMs || 0));
-        setSignalIntents(sortSignalIntents(intents));
-        setSignalIntentRuns(runs);
-        setSignalIntentChatTurns(chatTurns);
+
+        const hasExisting =
+          (signalIntentsRef.current || []).length > 0 ||
+          (signalIntentRunsRef.current || []).length > 0 ||
+          (signalIntentChatTurnsRef.current || []).length > 0;
+        if (
+          !opts?.force &&
+          !opts?._fullRetry &&
+          incomingIntents.length === 0 &&
+          incomingRuns.length === 0 &&
+          incomingChatTurns.length === 0 &&
+          hasExisting &&
+          Date.now() >= Number(signalIntentHydrateFallbackNotBeforeRef.current || 0)
+        ) {
+          signalIntentHydrateFallbackNotBeforeRef.current = Date.now() + ACADEMY_COMPANION_FULL_RECONCILE_MS;
+          incrementalCursorFallbackCountRef.current += 1;
+          return hydrate({ force: true, _fullRetry: true });
+        }
+
+        const mergedIntentResult = mergeSignalIntents(signalIntentsRef.current || [], incomingIntents);
+        const mergedRunResult = mergeSignalIntentRuns(signalIntentRunsRef.current || [], incomingRuns);
+        const mergedChatResult = mergeSignalIntentChatTurns(signalIntentChatTurnsRef.current || [], incomingChatTurns);
+        const mergedIntents = sortSignalIntents(mergedIntentResult.merged);
+        const mergedRuns = mergedRunResult.merged;
+        const mergedChatTurns = mergedChatResult.merged;
+
+        setSignalIntents(mergedIntents);
+        setSignalIntentRuns(mergedRuns);
+        setSignalIntentChatTurns(mergedChatTurns);
         signalIntentSeenSlotsRef.current.clear();
-        for (const intent of intents) {
+        for (const intent of mergedIntents) {
           if (intent?.lastTriggeredSlotKey) {
             signalIntentSeenSlotsRef.current.add(String(intent.lastTriggeredSlotKey));
           }
+        }
+
+        const nextIntentCursor = nextCursorFromItems(
+          cursor.intentsUpdatedAfterMs || null,
+          mergedIntents,
+          (entry) => Number(entry?.updatedAtMs || entry?.createdAtMs || 0) || null
+        );
+        const nextRunCursor = nextCursorFromItems(
+          cursor.runsUpdatedAfterMs || null,
+          mergedRuns,
+          (entry) => Number(entry?.triggerAtMs || 0) || null
+        );
+        const nextChatCursor = nextCursorFromItems(
+          cursor.chatUpdatedAfterMs || null,
+          mergedChatTurns,
+          (entry) => Number(entry?.atMs || 0) || null
+        );
+        const nextCursorState: SignalIntentSyncCursorState = {
+          intentsUpdatedAfterMs: cursor.intentsUpdatedAfterMs || null,
+          runsUpdatedAfterMs: cursor.runsUpdatedAfterMs || null,
+          chatUpdatedAfterMs: cursor.chatUpdatedAfterMs || null
+        };
+        let cursorChanged = false;
+        if (nextIntentCursor && Number(nextIntentCursor) !== Number(nextCursorState.intentsUpdatedAfterMs || 0)) {
+          nextCursorState.intentsUpdatedAfterMs = nextIntentCursor;
+          cursorChanged = true;
+        }
+        if (nextRunCursor && Number(nextRunCursor) !== Number(nextCursorState.runsUpdatedAfterMs || 0)) {
+          nextCursorState.runsUpdatedAfterMs = nextRunCursor;
+          cursorChanged = true;
+        }
+        if (nextChatCursor && Number(nextChatCursor) !== Number(nextCursorState.chatUpdatedAfterMs || 0)) {
+          nextCursorState.chatUpdatedAfterMs = nextChatCursor;
+          cursorChanged = true;
+        }
+        if (cursorChanged) {
+          signalIntentSyncCursorRef.current = nextCursorState;
+          writeSignalIntentSyncCursor(nextCursorState);
         }
       } catch (err: any) {
         appendLiveError({
@@ -14923,9 +16166,10 @@ const App: React.FC = () => {
       }
       const entries = res.memories.map(normalizeCalendarRuleMemory).filter(Boolean) as CalendarRule[];
       entries.sort((a, b) => (Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0)));
-      setCalendarRules(entries);
+      const mergeResult = mergeCalendarRules(calendarRulesRef.current || [], entries);
+      setCalendarRules(mergeResult.merged);
       setCalendarRulesUpdatedAtMs(Date.now());
-      return { ok: true as const };
+      return { ok: true as const, ...mergeResult.stats };
     } catch (err: any) {
       return { ok: false as const, error: err?.message ? String(err.message) : 'Failed to load calendar rules.' };
     }
@@ -15375,18 +16619,43 @@ const App: React.FC = () => {
   const refreshAcademyCases = useCallback(async (opts?: { force?: boolean; limit?: number }) => {
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory) return { ok: false as const, error: 'Academy memory unavailable.' };
-    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(50000, Math.floor(Number(opts?.limit)))) : 50000;
+    const nowMs = Date.now();
+    const limit = Number.isFinite(Number(opts?.limit)) ? Math.max(50, Math.min(10_000, Math.floor(Number(opts?.limit)))) : 5_000;
     const syncCursor = academySyncCursorRef.current || {};
     const caseListOptions = {
       ...buildIncrementalListOptions(limit, opts?.force ? null : syncCursor.casesUpdatedAfterMs, true),
       kind: 'academy_case'
     };
+    const companionLimit = Math.max(250, Math.min(10_000, limit));
+    const shouldFullCompanionReconcile =
+      opts?.force === true ||
+      !Number(syncCursor.companionLastFullAtMs || 0) ||
+      (nowMs - Number(syncCursor.companionLastFullAtMs || 0)) >= ACADEMY_COMPANION_FULL_RECONCILE_MS;
+    const historyListOptions = shouldFullCompanionReconcile
+      ? { limit: companionLimit, kind: 'signal_history', includeArchived: true }
+      : {
+          ...buildIncrementalListOptions(companionLimit, syncCursor.companionSignalHistoryUpdatedAfterMs, true),
+          kind: 'signal_history'
+        };
+    const signalEntryListOptions = shouldFullCompanionReconcile
+      ? { limit: companionLimit, kind: 'signal_entry', includeArchived: true }
+      : {
+          ...buildIncrementalListOptions(companionLimit, syncCursor.companionSignalEntryUpdatedAfterMs, true),
+          kind: 'signal_entry'
+        };
+    const lockListOptions = shouldFullCompanionReconcile
+      ? companionLimit
+      : {
+          limit: companionLimit,
+          updatedAfterMs: Number(syncCursor.companionLockUpdatedAfterMs || 0) || undefined,
+          includeArchived: true
+        };
     try {
       const [res, historyRes, signalEntryRes, lockMap] = await Promise.all([
         ledger.listAgentMemory(caseListOptions),
-        ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_history', includeArchived: true }),
-        ledger.listAgentMemory({ limit: Math.max(limit, 50000), kind: 'signal_entry', includeArchived: true }),
-        listAcademyCaseLocks(Math.max(limit, 50000))
+        ledger.listAgentMemory(historyListOptions),
+        ledger.listAgentMemory(signalEntryListOptions),
+        listAcademyCaseLocks(lockListOptions)
       ]);
       academyCaseLocksRef.current = lockMap;
       if (!res?.ok || !Array.isArray(res.memories)) {
@@ -15395,6 +16664,8 @@ const App: React.FC = () => {
       const academyCaseRowsRead = res.memories.length;
       const signalHistoryRowsRead = historyRes?.ok && Array.isArray(historyRes.memories) ? historyRes.memories.length : 0;
       const signalEntryRowsRead = signalEntryRes?.ok && Array.isArray(signalEntryRes.memories) ? signalEntryRes.memories.length : 0;
+      const lockRowsRead = lockMap.size;
+      academyCompanionRowsReadRef.current += signalHistoryRowsRead + signalEntryRowsRead + lockRowsRead;
 
       const parseSignalId = (memory: any) => {
         if (!memory || typeof memory !== 'object') return '';
@@ -15814,12 +17085,59 @@ const App: React.FC = () => {
           0
         ) || null
       );
-      if (nextCasesCursor && Number(nextCasesCursor) !== Number(syncCursor.casesUpdatedAfterMs || 0)) {
-        academySyncCursorRef.current = {
-          ...syncCursor,
-          casesUpdatedAfterMs: nextCasesCursor
-        };
-        writeAcademySyncCursor(academySyncCursorRef.current);
+      const nextCompanionHistoryCursor = nextCursorFromItems(
+        syncCursor.companionSignalHistoryUpdatedAfterMs || null,
+        resolvedHistoryEntries,
+        (entry) => Number(entry?.resolvedAtMs ?? entry?.executedAtMs ?? 0) || null
+      );
+      const nextCompanionSignalEntryCursor = nextCursorFromItems(
+        syncCursor.companionSignalEntryUpdatedAfterMs || null,
+        resolvedSignalEntryEntries,
+        (entry) => Number(entry?.resolvedAtMs ?? entry?.executedAtMs ?? entry?.createdAtMs ?? 0) || null
+      );
+      const nextCompanionLockCursor = nextCursorFromItems(
+        syncCursor.companionLockUpdatedAfterMs || null,
+        Array.from(lockMap.values()),
+        (entry) => Number(entry?.lockedAtMs || 0) || null
+      );
+      const nextSyncCursor = {
+        ...syncCursor,
+        companionLastFullAtMs: shouldFullCompanionReconcile
+          ? nowMs
+          : Number(syncCursor.companionLastFullAtMs || 0) || null
+      };
+      let cursorChanged = false;
+      if (nextCasesCursor && Number(nextCasesCursor) !== Number(nextSyncCursor.casesUpdatedAfterMs || 0)) {
+        nextSyncCursor.casesUpdatedAfterMs = nextCasesCursor;
+        cursorChanged = true;
+      }
+      if (
+        nextCompanionHistoryCursor &&
+        Number(nextCompanionHistoryCursor) !== Number(nextSyncCursor.companionSignalHistoryUpdatedAfterMs || 0)
+      ) {
+        nextSyncCursor.companionSignalHistoryUpdatedAfterMs = nextCompanionHistoryCursor;
+        cursorChanged = true;
+      }
+      if (
+        nextCompanionSignalEntryCursor &&
+        Number(nextCompanionSignalEntryCursor) !== Number(nextSyncCursor.companionSignalEntryUpdatedAfterMs || 0)
+      ) {
+        nextSyncCursor.companionSignalEntryUpdatedAfterMs = nextCompanionSignalEntryCursor;
+        cursorChanged = true;
+      }
+      if (
+        nextCompanionLockCursor &&
+        Number(nextCompanionLockCursor) !== Number(nextSyncCursor.companionLockUpdatedAfterMs || 0)
+      ) {
+        nextSyncCursor.companionLockUpdatedAfterMs = nextCompanionLockCursor;
+        cursorChanged = true;
+      }
+      if (shouldFullCompanionReconcile && Number(nextSyncCursor.companionLastFullAtMs || 0) !== Number(syncCursor.companionLastFullAtMs || 0)) {
+        cursorChanged = true;
+      }
+      if (cursorChanged) {
+        academySyncCursorRef.current = nextSyncCursor;
+        writeAcademySyncCursor(nextSyncCursor);
       }
       if (ledger?.archiveAgentMemories && Date.now() >= Number(academyArchiveNotBeforeRef.current || 0)) {
         academyArchiveNotBeforeRef.current = Date.now() + (5 * 60_000);
@@ -26208,6 +27526,17 @@ const App: React.FC = () => {
     });
   }, [executeAgentToolRequest]);
 
+  const IMMEDIATE_TRADELOCKER_ACTION_IDS = React.useMemo(
+    () =>
+      new Set([
+        'tradelocker.connect',
+        'tradelocker.refresh_accounts',
+        'tradelocker.set_active_account',
+        'tradelocker.disconnect'
+      ]),
+    []
+  );
+
   const requestSystemSnapshot = useCallback(async (input?: { detail?: 'summary' | 'full'; maxItems?: number }) => {
     const action: AgentToolAction = {
       type: 'GET_SYSTEM_STATE',
@@ -26224,6 +27553,897 @@ const App: React.FC = () => {
       dropSessionBars: opts?.dropSessionBars === true
     });
   }, [chartEngine]);
+
+  const persistRuntimeOpsRecord = useCallback(async (
+    kind: 'runtime_ops_event' | 'runtime_ops_action' | 'runtime_ops_guardrail' | 'runtime_ops_decision',
+    payload: Record<string, any>
+  ) => {
+    const ledger = window.glass?.tradeLedger;
+    if (!ledger?.append) return;
+    try {
+      await ledger.append({
+        kind,
+        schemaVersion: 'runtime_ops_v1',
+        ts: Date.now(),
+        source: 'runtime_ops',
+        status: 'info',
+        payload: payload || null
+      });
+    } catch {
+      // ignore runtime ops ledger failures
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!runtimeOpsFeatureFlags.runtimeOpsControllerV1) return;
+    const persisted = runtimeOpsPersistedState || {};
+    const storedPolicy = readRuntimeOpsPolicy();
+    const policy: RuntimeOpsPolicy = {
+      ...DEFAULT_RUNTIME_OPS_POLICY,
+      ...storedPolicy,
+      allowLiveExecution: runtimeOpsFeatureFlags.runtimeOpsLiveExecutionV1 && storedPolicy.allowLiveExecution !== false
+    };
+    runtimeOpsPolicyRef.current = policy;
+    writeRuntimeOpsPolicy(policy);
+    const startupSettledHealthy = startupBridgeGateRef.current.ready && !startupBridgeGateRef.current.error;
+    const initialMode: RuntimeOpsMode =
+      persisted.mode ||
+      (policy.alwaysArmed ? (startupSettledHealthy ? 'autonomous' : 'observe_only') : 'observe_only');
+    const controller = new RuntimeOpsController({
+      deps: {
+        getHealthSnapshot: () => healthSnapshotRef.current || null,
+        runActionCatalog,
+        executeAgentToolRequest,
+        appendAuditEvent,
+        persistEvent: persistRuntimeOpsRecord,
+        onStateChange: (state) => {
+          const previous = runtimeOpsControllerStateRef.current;
+          const nextState: RuntimeOpsControllerState = {
+            ...state,
+            commandSubscriberHealthy:
+              state.commandSubscriberHealthy !== undefined
+                ? state.commandSubscriberHealthy
+                : (previous?.commandSubscriberHealthy ?? false),
+            externalRelayHealthy:
+              state.externalRelayHealthy !== undefined
+                ? state.externalRelayHealthy
+                : (previous?.externalRelayHealthy !== undefined ? previous.externalRelayHealthy : true),
+            lastExternalCommandAtMs:
+              state.lastExternalCommandAtMs !== undefined
+                ? state.lastExternalCommandAtMs
+                : (previous?.lastExternalCommandAtMs ?? null),
+            lastExternalCommandError:
+              state.lastExternalCommandError !== undefined
+                ? state.lastExternalCommandError
+                : (previous?.lastExternalCommandError ?? null)
+          };
+          runtimeOpsControllerStateRef.current = nextState;
+          setRuntimeOpsControllerState(nextState);
+          writeRuntimeOpsState({
+            mode: nextState.mode,
+            armed: nextState.armed,
+            emergencyStop: nextState.mode === 'emergency_stop',
+            updatedAtMs: Date.now()
+          });
+          writeRuntimeOpsLastRun({
+            mode: nextState.mode,
+            queueDepth: nextState.queueDepth,
+            actionRuns: nextState.actionRuns,
+            actionFailures: nextState.actionFailures,
+            guardrailTrips: nextState.guardrailTrips
+          });
+        }
+      },
+      policy,
+      initialMode,
+      armed: persisted.armed
+    });
+    runtimeOpsControllerRef.current = controller;
+    const bootstrapStreamStatus: RuntimeOpsControllerState['streamStatus'] = runtimeOpsStreamConnectedRef.current
+      ? 'connected'
+      : (runtimeOpsControllerState.streamStatus === 'fallback_polling' ? 'fallback_polling' : 'disconnected');
+    controller.setStreamStatus(bootstrapStreamStatus, {
+      streamId: runtimeOpsActiveStreamIdRef.current || runtimeOpsControllerState.activeStreamId || null,
+      connectedAtMs: runtimeOpsStreamConnectedAtMsRef.current || runtimeOpsControllerState.streamConnectedAtMs || null,
+      error: runtimeOpsStreamLastErrorRef.current || runtimeOpsControllerState.streamLastError || null
+    });
+    controller.start();
+    setRuntimeOpsControllerState(controller.getState());
+    return () => {
+      controller.stop();
+      if (runtimeOpsControllerRef.current === controller) {
+        runtimeOpsControllerRef.current = null;
+      }
+    };
+  }, [
+    appendAuditEvent,
+    executeAgentToolRequest,
+    persistRuntimeOpsRecord,
+    runActionCatalog,
+    runtimeOpsFeatureFlags.runtimeOpsControllerV1,
+    runtimeOpsFeatureFlags.runtimeOpsLiveExecutionV1,
+    runtimeOpsPersistedState
+  ]);
+
+  const setRuntimeOpsEnabled = useCallback(async (next: boolean) => {
+    const controller = runtimeOpsControllerRef.current;
+    if (!controller) return { ok: false, error: 'Runtime Ops controller unavailable.' };
+    if (next) {
+      controller.resumeAutonomy();
+    } else {
+      controller.setMode('disarmed');
+    }
+    const state = controller.getState();
+    setRuntimeOpsControllerState(state);
+    writeRuntimeOpsState({
+      mode: state.mode,
+      armed: state.armed,
+      emergencyStop: state.mode === 'emergency_stop',
+      updatedAtMs: Date.now()
+    });
+    return { ok: true, mode: state.mode, armed: state.armed };
+  }, []);
+
+  const setRuntimeOpsMode = useCallback(async (mode: RuntimeOpsMode) => {
+    const controller = runtimeOpsControllerRef.current;
+    if (!controller) return { ok: false, error: 'Runtime Ops controller unavailable.' };
+    const normalized: RuntimeOpsMode =
+      mode === 'autonomous' || mode === 'observe_only' || mode === 'disarmed' || mode === 'emergency_stop'
+        ? mode
+        : 'observe_only';
+    if (normalized === 'emergency_stop') {
+      controller.emergencyStop('manual_mode_switch');
+    } else if (normalized === 'observe_only') {
+      controller.forceObserveOnly('manual_mode_switch');
+    } else if (normalized === 'autonomous') {
+      controller.resumeAutonomy();
+    } else {
+      controller.setMode('disarmed');
+    }
+    const state = controller.getState();
+    setRuntimeOpsControllerState(state);
+    return { ok: true, mode: state.mode };
+  }, []);
+
+  const emergencyStopRuntimeOps = useCallback(async () => {
+    const controller = runtimeOpsControllerRef.current;
+    if (!controller) return { ok: false, error: 'Runtime Ops controller unavailable.' };
+    controller.emergencyStop('monitor_emergency_stop');
+    const state = controller.getState();
+    setRuntimeOpsControllerState(state);
+    return { ok: true, mode: state.mode };
+  }, []);
+
+  const runRuntimeOpsAction = useCallback(async (input: {
+    actionId: string;
+    payload?: Record<string, any>;
+    source?: RuntimeOpsActionRecord['source'];
+  }) => {
+    const actionId = String(input?.actionId || '').trim();
+    if (!actionId) return { ok: false, error: 'Action id is required.' };
+    const source = input?.source || 'monitor';
+    const controller = runtimeOpsControllerRef.current;
+    if (!controller || !runtimeOpsFeatureFlags.runtimeOpsControlV1) {
+      if (source === 'external_codex') {
+        return {
+          ok: false,
+          code: 'controller_unavailable',
+          error: 'Runtime Ops controller unavailable for external command path.'
+        };
+      }
+      return runActionCatalog({ actionId, payload: input?.payload && typeof input.payload === 'object' ? input.payload : {} });
+    }
+    const result = await controller.requestManualAction(
+      actionId,
+      input?.payload && typeof input.payload === 'object' ? input.payload : {},
+      source
+    );
+    setRuntimeOpsControllerState(controller.getState());
+    return result;
+  }, [runActionCatalog, runtimeOpsFeatureFlags.runtimeOpsControlV1]);
+
+  useEffect(() => {
+    setRuntimeOpsModeRef.current = setRuntimeOpsMode;
+  }, [setRuntimeOpsMode]);
+
+  useEffect(() => {
+    emergencyStopRuntimeOpsRef.current = emergencyStopRuntimeOps;
+  }, [emergencyStopRuntimeOps]);
+
+  useEffect(() => {
+    runRuntimeOpsActionRef.current = runRuntimeOpsAction;
+  }, [runRuntimeOpsAction]);
+
+  useEffect(() => {
+    promoteTradeLockerPrimaryRoutingRef.current = promoteTradeLockerPrimaryRouting;
+  }, [promoteTradeLockerPrimaryRouting]);
+
+  const handleRuntimeOpsExternalCommand = useCallback(async (incoming: any) => {
+    const runtimeOpsApi = window.glass?.runtimeOps;
+    if (!runtimeOpsApi?.replyExternalCommand) return;
+    const requestId = String(incoming?.requestId || '').trim();
+    const command = String(incoming?.command || '').trim().toLowerCase();
+    if (!requestId || !command) return;
+    const payload =
+      incoming?.payload && typeof incoming.payload === 'object' && !Array.isArray(incoming.payload)
+        ? incoming.payload
+        : {};
+
+    let result: any = {
+      ok: false,
+      requestId,
+      command,
+      code: 'unsupported_command',
+      error: `Unsupported external command: ${command}`
+    };
+    const logExternalAudit = (
+      eventType: string,
+      level: 'info' | 'warn' | 'error',
+      payloadData?: Record<string, any> | null
+    ) => {
+      const logger = appendAuditEventRef.current;
+      if (!logger) return;
+      Promise.resolve(
+        logger({
+          eventType,
+          level,
+          payload: payloadData || null
+        })
+      ).catch(() => {
+        // ignore audit failures
+      });
+    };
+    logExternalAudit('runtime_ops_external_command', 'info', {
+      source: 'external_codex',
+      requestId,
+      command
+    });
+    try {
+      if (command === 'health.get') {
+        const state = runtimeOpsControllerRef.current?.getState() || runtimeOpsControllerStateRef.current;
+        result = {
+          ok: true,
+          requestId,
+          command,
+          mode: state?.mode || null,
+          health: healthSnapshotRef.current || null
+        };
+      } else if (command === 'state.get') {
+        const state = runtimeOpsControllerRef.current?.getState() || runtimeOpsControllerStateRef.current;
+        result = {
+          ok: true,
+          requestId,
+          command,
+          mode: state?.mode || null,
+          state
+        };
+      } else if (command === 'actions.list') {
+        try {
+          const actionCatalog = await loadActionCatalogModule();
+          const actions = (actionCatalog?.listActionDefinitions?.() || []).map((def: any) => ({
+            id: String(def?.id || ''),
+            domain: def?.domain ? String(def.domain) : null,
+            summary: def?.summary ? String(def.summary) : null,
+            requiresBroker: def?.requiresBroker === true,
+            requiresVision: def?.requiresVision === true,
+            safety: {
+              gates: Array.isArray(def?.safety?.gates) ? def.safety.gates.map((g: any) => String(g)) : [],
+              requiresConfirmation:
+                def?.safety?.requiresConfirmation === true ||
+                (Array.isArray(def?.safety?.gates) && def.safety.gates.some((g: any) => String(g) === 'confirmation'))
+            }
+          })).filter((row: any) => !!row.id);
+          result = {
+            ok: true,
+            requestId,
+            command,
+            actions
+          };
+        } catch (err: any) {
+          result = {
+            ok: false,
+            requestId,
+            command,
+            code: 'action_catalog_unavailable',
+            error: err?.message ? String(err.message) : 'Action catalog unavailable.'
+          };
+        }
+      } else if (command === 'tradelocker.switch') {
+        tradeLockerSwitchStatsRef.current.switchAttempts += 1;
+        setTradeLockerSwitchShield({
+          active: true,
+          source: 'external_codex',
+          stage: 'connect',
+          reason: 'runtime_command'
+        });
+        result = { ok: true, requestId, command };
+        const profileId = payload?.profileId != null ? String(payload.profileId).trim() : '';
+        const accountKeyRaw = payload?.accountKey != null ? String(payload.accountKey).trim() : '';
+        const payloadEnv = payload?.env != null ? String(payload.env).trim().toLowerCase() : '';
+        const payloadServer = payload?.server != null ? String(payload.server).trim() : '';
+        const payloadEmail = payload?.email != null ? String(payload.email).trim() : '';
+        const payloadPassword = payload?.password != null ? String(payload.password) : '';
+        const payloadDeveloperApiKey = payload?.developerApiKey != null ? String(payload.developerApiKey) : '';
+        const payloadRememberPassword =
+          payload?.rememberPassword === true ? true : (payload?.rememberPassword === false ? false : null);
+        const payloadRememberDeveloperApiKey =
+          payload?.rememberDeveloperApiKey === true ? true : (payload?.rememberDeveloperApiKey === false ? false : null);
+        let accountId = parseTradeLockerAccountNumber(payload?.accountId ?? payload?.id ?? payload?.accountID);
+        let accNum = parseTradeLockerAccountNumber(payload?.accNum ?? payload?.accountNum ?? payload?.accountNumber);
+        let resolvedBy: 'exact' | 'accountId_fallback' | 'reconnect_retry' = 'exact';
+        const failSwitch = (code: string, error: string, stage: string) => {
+          tradeLockerSwitchStatsRef.current.switchFailures += 1;
+          return {
+            ok: false,
+            requestId,
+            command,
+            code,
+            error,
+            stage,
+            resolvedBy
+          };
+        };
+
+        let profile: any = null;
+        if (profileId) {
+          try {
+            const raw = localStorage.getItem(TL_PROFILES_KEY);
+            const parsed = raw ? JSON.parse(raw) : [];
+            if (Array.isArray(parsed)) {
+              profile = parsed.find((entry: any) => String(entry?.id || '') === profileId) || null;
+            }
+          } catch {
+            profile = null;
+          }
+          if (!profile) {
+            result = failSwitch('profile_not_found', `TradeLocker saved profile "${profileId}" not found.`, 'resolve_profile');
+          } else {
+            accountId = parseTradeLockerAccountNumber(profile?.accountId) ?? accountId;
+            accNum = parseTradeLockerAccountNumber(profile?.accNum) ?? accNum;
+          }
+        }
+
+        if (result?.ok !== false) {
+          const parsedFromKey = accountKeyRaw ? parseTradeLockerAccountKey(accountKeyRaw) : null;
+          if (parsedFromKey) {
+            accountId = accountId ?? parseTradeLockerAccountNumber(parsedFromKey.accountId);
+            accNum = accNum ?? parseTradeLockerAccountNumber(parsedFromKey.accNum);
+          }
+          if (!profile && !accountKeyRaw && accountId == null) {
+            result = failSwitch(
+              'account_unresolved',
+              'TradeLocker switch requires profileId, accountKey, or accountId.',
+              'resolve_target'
+            );
+          }
+        }
+
+        if (result?.ok !== false) {
+          const tlApi = window.glass?.tradelocker;
+          if (!tlApi?.setActiveAccount || !tlApi?.getSavedConfig) {
+            result = failSwitch('tradelocker_unavailable', 'TradeLocker bridge unavailable.', 'bridge');
+          } else {
+            const performConnect = async (reasonLabel: string) => {
+              if (!tlApi?.connect) {
+                return { ok: false, error: 'TradeLocker connect unavailable.' };
+              }
+              const savedCfg = tlSavedConfigRef.current || {};
+              const env = payloadEnv || (profile?.env ? String(profile.env).trim().toLowerCase() : String(savedCfg?.env || 'demo').trim().toLowerCase());
+              const server = payloadServer || (profile?.server ? String(profile.server || '').trim() : String(savedCfg?.server || '').trim());
+              const email = payloadEmail || (profile?.email ? String(profile.email || '').trim() : String(savedCfg?.email || '').trim());
+              const explicitProfileKey = payload?.profileKey != null ? String(payload.profileKey).trim().toLowerCase() : '';
+              const inferredProfileKey =
+                profile?.env && profile?.server && profile?.email
+                  ? `${String(profile.env).trim().toLowerCase()}:${String(profile.server).trim().toLowerCase()}:${String(profile.email).trim().toLowerCase()}`
+                  : '';
+              const profileKey = explicitProfileKey || inferredProfileKey;
+              if (!server || !email) {
+                return { ok: false, error: 'TradeLocker saved credentials are incomplete for reconnect.' };
+              }
+              tradeLockerSwitchStatsRef.current.switchReconnectRetries += 1;
+              resolvedBy = 'reconnect_retry';
+              const connectRes = await tlApi.connect({
+                env: env === 'live' ? 'live' : 'demo',
+                server,
+                email,
+                profileKey: profileKey || undefined,
+                password: payloadPassword,
+                developerApiKey: payloadDeveloperApiKey,
+                rememberPassword:
+                  payloadRememberPassword == null
+                    ? profile?.rememberPassword !== false
+                    : payloadRememberPassword,
+                rememberDeveloperApiKey:
+                  payloadRememberDeveloperApiKey == null
+                    ? profile?.rememberDeveloperKey === true
+                    : payloadRememberDeveloperApiKey,
+                accountId: accountId ?? undefined,
+                accNum: accNum ?? undefined
+              });
+              if (connectRes?.ok === false) {
+                return { ok: false, error: connectRes?.error ? String(connectRes.error) : `TradeLocker reconnect failed (${reasonLabel}).` };
+              }
+              return { ok: true };
+            };
+
+            const switchResult = await withTradeLockerAccountLock(async () => {
+              const savedBefore = await tlApi.getSavedConfig();
+              const activeEnv = savedBefore?.ok ? String(savedBefore?.env || '').trim().toLowerCase() : '';
+              const activeServer = savedBefore?.ok ? String(savedBefore?.server || '').trim().toLowerCase() : '';
+              const targetEnv = profile?.env ? String(profile.env).trim().toLowerCase() : '';
+              const targetServer = profile?.server ? String(profile.server).trim().toLowerCase() : '';
+              const isConnected = tradeLockerExecRef.current?.connected === true;
+              const needsReconnect = !isConnected || (!!targetEnv && !!targetServer && (targetEnv !== activeEnv || targetServer !== activeServer));
+              if (needsReconnect) {
+                const reconnectRes = await performConnect('pre_switch');
+                if (reconnectRes?.ok === false) {
+                  return {
+                    ok: false as const,
+                    code: 'tradelocker_disconnected',
+                    error: reconnectRes?.error || 'TradeLocker reconnect failed.',
+                    stage: 'connect'
+                  };
+                }
+              }
+
+              try {
+                void tlApi.getAccounts?.().catch(() => {
+                  // best-effort account refresh; switch verification uses saved config
+                });
+              } catch {
+                // ignore sync failures from optional best-effort refresh
+              }
+
+              if (accountId == null && accountKeyRaw) {
+                const entry = resolveTradeLockerAccountEntry(accountKeyRaw);
+                if (entry) {
+                  accountId = parseTradeLockerAccountNumber(entry.accountId);
+                  accNum = parseTradeLockerAccountNumber(entry.accNum);
+                }
+              }
+
+              if (accountId == null) {
+                const refreshedConfig = await tlApi.getSavedConfig();
+                if (refreshedConfig?.ok) {
+                  accountId = parseTradeLockerAccountNumber(refreshedConfig?.accountId);
+                  accNum = parseTradeLockerAccountNumber(refreshedConfig?.accNum) ?? accNum;
+                }
+              }
+
+              if (accountId == null) {
+                return {
+                  ok: false as const,
+                  code: 'account_unresolved',
+                  error: 'TradeLocker target account could not be resolved.',
+                  stage: 'resolve_target'
+                };
+              }
+
+              let switchRes = await tlApi.setActiveAccount({ accountId, accNum: accNum ?? undefined });
+              if (switchRes?.ok === false) {
+                const errorText = String(switchRes?.error || '').toLowerCase();
+                const retryable = errorText.includes('not connected') || errorText.includes('disconnected') || errorText.includes('token');
+                if (retryable) {
+                  const reconnectRes = await performConnect('switch_retry');
+                  if (reconnectRes?.ok !== false) {
+                    switchRes = await tlApi.setActiveAccount({ accountId, accNum: accNum ?? undefined });
+                  }
+                }
+              }
+              if (switchRes?.ok === false) {
+                return {
+                  ok: false as const,
+                  code: 'switch_verification_failed',
+                  error: switchRes?.error ? String(switchRes.error) : 'Failed to switch TradeLocker account.',
+                  stage: 'set_active_account'
+                };
+              }
+
+              const verifyConfig = await tlApi.getSavedConfig();
+              const verifiedAccountId = parseTradeLockerAccountNumber(verifyConfig?.accountId ?? accountId);
+              const verifiedAccNum = parseTradeLockerAccountNumber(verifyConfig?.accNum ?? accNum);
+              if (verifiedAccountId == null) {
+                return {
+                  ok: false as const,
+                  code: 'switch_verification_failed',
+                  error: 'TradeLocker switch verification failed.',
+                  stage: 'verify'
+                };
+              }
+              if (accountId != null && verifiedAccountId !== accountId) {
+                return {
+                  ok: false as const,
+                  code: 'switch_verification_failed',
+                  error: 'TradeLocker switched to an unexpected account.',
+                  stage: 'verify'
+                };
+              }
+              if (accNum != null && verifiedAccNum != null && verifiedAccNum !== accNum) {
+                return {
+                  ok: false as const,
+                  code: 'switch_verification_failed',
+                  error: 'TradeLocker switched to an unexpected sub-account.',
+                  stage: 'verify'
+                };
+              }
+
+              const verifyEnv = String(verifyConfig?.env || profile?.env || tlSavedConfigRef.current?.env || '').trim().toLowerCase();
+              const verifyServer = String(verifyConfig?.server || profile?.server || tlSavedConfigRef.current?.server || '').trim().toLowerCase();
+              const canonicalAccountKey = buildTradeLockerAccountKey({
+                env: verifyEnv || null,
+                server: verifyServer || null,
+                accountId: verifiedAccountId,
+                accNum: verifiedAccNum ?? null
+              });
+
+              let promotedLocally = false;
+              const promoteRunner = promoteTradeLockerPrimaryRoutingRef.current;
+              if (promoteRunner) {
+                const promoteRes = await promoteRunner({
+                  accountKey: canonicalAccountKey || null,
+                  accountId: verifiedAccountId,
+                  accNum: verifiedAccNum ?? null,
+                  source: 'external_codex',
+                  stage: 'verify',
+                  resolvedBy,
+                  retryRefresh: true
+                });
+                if (promoteRes?.ok === false) {
+                  return {
+                    ok: false as const,
+                    code: 'switch_verification_failed',
+                    error: promoteRes?.error ? String(promoteRes.error) : 'TradeLocker primary routing promotion failed.',
+                    stage: 'verify'
+                  };
+                }
+                promotedLocally = true;
+              }
+
+              try {
+                dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
+                  accountKey: canonicalAccountKey || null,
+                  accountId: verifiedAccountId,
+                  accNum: verifiedAccNum ?? null,
+                  source: 'external_codex',
+                  makePrimary: true,
+                  skipPrimarySync: promotedLocally,
+                  stage: 'verify',
+                  resolvedBy,
+                  atMs: Date.now()
+                });
+              } catch {
+                // ignore renderer event dispatch failures
+              }
+
+              return {
+                ok: true as const,
+                stage: 'verify' as const,
+                accountId: verifiedAccountId,
+                accNum: verifiedAccNum ?? null,
+                accountKey: canonicalAccountKey || null
+              };
+            });
+
+            if (!switchResult?.ok) {
+              result = failSwitch(
+                String(switchResult?.code || 'switch_failed'),
+                switchResult?.error ? String(switchResult.error) : 'TradeLocker switch failed.',
+                String(switchResult?.stage || 'set_active_account')
+              );
+            } else {
+              result = {
+                ok: true,
+                requestId,
+                command,
+                stage: switchResult.stage || 'verify',
+                resolvedBy,
+                accountId: switchResult.accountId,
+                accNum: switchResult.accNum,
+                accountKey: switchResult.accountKey
+              };
+            }
+          }
+        }
+        setTradeLockerSwitchShield({
+          active: false,
+          source: 'external_codex',
+          stage: result?.ok === false ? String(result?.stage || 'failed') : 'verify'
+        });
+      } else if (command === 'mode.set') {
+        const modeRaw = String(payload?.mode || '').trim();
+        const mode: RuntimeOpsMode =
+          modeRaw === 'autonomous' || modeRaw === 'observe_only' || modeRaw === 'disarmed' || modeRaw === 'emergency_stop'
+            ? modeRaw
+            : 'observe_only';
+        const modeSetter = setRuntimeOpsModeRef.current;
+        if (!modeSetter) {
+          result = {
+            ok: false,
+            requestId,
+            command,
+            code: 'controller_unavailable',
+            error: 'Runtime Ops mode controller unavailable.'
+          };
+        } else {
+          const modeResult = await modeSetter(mode);
+          const state = runtimeOpsControllerRef.current?.getState() || runtimeOpsControllerStateRef.current;
+          result = {
+            ...modeResult,
+            requestId,
+            command,
+            mode: state?.mode || modeResult?.mode || null,
+            state
+          };
+        }
+      } else if (command === 'emergency.stop') {
+        const stopper = emergencyStopRuntimeOpsRef.current;
+        if (!stopper) {
+          result = {
+            ok: false,
+            requestId,
+            command,
+            code: 'controller_unavailable',
+            error: 'Runtime Ops emergency stop unavailable.'
+          };
+        } else {
+          const stopResult = await stopper();
+          const state = runtimeOpsControllerRef.current?.getState() || runtimeOpsControllerStateRef.current;
+          result = {
+            ...stopResult,
+            requestId,
+            command,
+            mode: state?.mode || stopResult?.mode || null,
+            state
+          };
+        }
+      } else if (command === 'action.run') {
+        const actionId = String(payload?.actionId || '').trim();
+        if (!actionId) {
+          result = {
+            ok: false,
+            requestId,
+            command,
+            code: 'action_required',
+            error: 'Action id is required.'
+          };
+        } else {
+          const actionPayload =
+            payload?.payload && typeof payload.payload === 'object' && !Array.isArray(payload.payload)
+              ? { ...payload.payload }
+              : {};
+          if (payload?.confirm === true || payload?.confirmed === true) {
+            actionPayload.confirm = true;
+            actionPayload.confirmed = true;
+            actionPayload.confirmation = true;
+          }
+          const actionRunner = runRuntimeOpsActionRef.current;
+          if (!actionRunner) {
+            result = {
+              ok: false,
+              requestId,
+              command,
+              code: 'controller_unavailable',
+              error: 'Runtime Ops action dispatcher unavailable.'
+            };
+          } else {
+            const actionResult = await actionRunner({
+              actionId,
+              payload: actionPayload,
+              source: 'external_codex'
+            });
+            const state = runtimeOpsControllerRef.current?.getState() || runtimeOpsControllerStateRef.current;
+            result = {
+              ...(actionResult || {}),
+              requestId,
+              command,
+              mode: state?.mode || null,
+              state
+            };
+          }
+        }
+      }
+    } catch (err: any) {
+      result = {
+        ok: false,
+        requestId,
+        command,
+        code: 'external_command_exception',
+        error: err?.message ? String(err.message) : 'External command failed.'
+      };
+      if (command === 'tradelocker.switch') {
+        setTradeLockerSwitchShield({
+          active: false,
+          source: 'external_codex',
+          stage: 'exception',
+          reason: result?.error ? String(result.error) : 'external_command_exception'
+        });
+      }
+    }
+
+    const commandAtMs = Date.now();
+    setRuntimeOpsControllerState((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        commandSubscriberHealthy: true,
+        externalRelayHealthy: result?.ok !== false,
+        lastExternalCommandAtMs: commandAtMs,
+        lastExternalCommandError:
+          result?.ok === false
+            ? String(result?.error || result?.code || 'external_command_failed')
+            : null
+      };
+    });
+
+    let replyFailed = false;
+    let replyFailureMessage = '';
+    try {
+      const replyRes: any = await runtimeOpsApi.replyExternalCommand({
+        requestId,
+        result
+      });
+      if (replyRes?.ok === false) {
+        replyFailed = true;
+        replyFailureMessage = replyRes?.error ? String(replyRes.error) : 'Runtime external command reply was rejected.';
+      }
+    } catch (err: any) {
+      replyFailed = true;
+      replyFailureMessage = err?.message ? String(err.message) : 'Runtime external command reply failed.';
+    }
+    if (replyFailed) {
+      runtimeOpsExternalStatsRef.current.externalCommandReplyFailures += 1;
+      setRuntimeOpsControllerState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          commandSubscriberHealthy: false,
+          externalRelayHealthy: false,
+          lastExternalCommandAtMs: Date.now(),
+          lastExternalCommandError: replyFailureMessage || 'runtime_ops_external_command_reply_failed'
+        };
+      });
+      appendRuntimeOpsEvent({
+        source: 'runtime',
+        level: 'warn',
+        code: 'runtime_ops_external_command_reply_failed',
+        message: replyFailureMessage || 'Runtime external command reply failed.',
+        payload: {
+          requestId,
+          command
+        }
+      });
+      appendLiveError({
+        source: 'runtime_ops',
+        level: 'warn',
+        message: `External command reply failed: ${command}${replyFailureMessage ? ` (${replyFailureMessage})` : ''}`
+      });
+    }
+    logExternalAudit(
+      result?.ok === false ? 'runtime_ops_external_command_failed' : 'runtime_ops_external_command_succeeded',
+      result?.ok === false ? 'warn' : 'info',
+      {
+        source: 'external_codex',
+        requestId,
+        command,
+        ok: result?.ok !== false,
+        code: result?.code || null,
+        error: result?.error || null
+      }
+    );
+  }, []);
+
+  useEffect(() => {
+    runtimeOpsExternalCommandHandlerRef.current = (incoming: any) => {
+      void handleRuntimeOpsExternalCommand(incoming);
+    };
+  }, [handleRuntimeOpsExternalCommand]);
+
+  useEffect(() => {
+    const runtimeOpsApi = window.glass?.runtimeOps;
+    if (!runtimeOpsApi?.onExternalCommand) return;
+    let disposed = false;
+    const setCommandSubscriberHealth = (healthy: boolean, error?: string | null) => {
+      setRuntimeOpsControllerState((prev) => {
+        if (!prev) return prev;
+        const normalizedError = error ? String(error) : null;
+        const next: RuntimeOpsControllerState = {
+          ...prev,
+          commandSubscriberHealthy: healthy,
+          externalRelayHealthy: healthy ? prev.externalRelayHealthy : false,
+          lastExternalCommandError: healthy ? prev.lastExternalCommandError : (normalizedError || prev.lastExternalCommandError)
+        };
+        const unchanged =
+          prev.commandSubscriberHealthy === next.commandSubscriberHealthy &&
+          prev.externalRelayHealthy === next.externalRelayHealthy &&
+          (prev.lastExternalCommandError ?? null) === (next.lastExternalCommandError ?? null);
+        return unchanged ? prev : next;
+      });
+    };
+    const subscribeExternalCommands = async (source: 'mount' | 'reassert') => {
+      if (!runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1) return;
+      if (!runtimeOpsApi.subscribeExternalCommand) return;
+      try {
+        const res: any = await runtimeOpsApi.subscribeExternalCommand();
+        if (disposed) return;
+        if (res?.ok === false) {
+          setCommandSubscriberHealth(false, res?.error ? String(res.error) : 'External command subscribe failed.');
+          appendRuntimeOpsEvent({
+            source: 'runtime',
+            level: 'warn',
+            code: 'runtime_ops_external_command_subscribe_failed',
+            message: res?.error ? String(res.error) : 'Runtime external command subscribe failed.',
+            payload: {
+              source
+            }
+          });
+          return;
+        }
+        setCommandSubscriberHealth(true, null);
+        appendRuntimeOpsEvent({
+          source: 'runtime',
+          level: 'info',
+          code: 'runtime_ops_external_command_subscriber_ready',
+          message: `Runtime external command subscriber ready (${source})`,
+          payload: {
+            source,
+            reused: res?.reused === true,
+            webContentsId: Number.isFinite(Number(res?.webContentsId)) ? Number(res.webContentsId) : null
+          }
+        });
+      } catch (err: any) {
+        if (disposed) return;
+        const message = err?.message ? String(err.message) : 'Runtime external command subscribe exception.';
+        setCommandSubscriberHealth(false, message);
+        appendRuntimeOpsEvent({
+          source: 'runtime',
+          level: 'warn',
+          code: 'runtime_ops_external_command_subscribe_failed',
+          message,
+          payload: {
+            source
+          }
+        });
+      }
+    };
+    void subscribeExternalCommands('mount');
+    const unsubscribe = runtimeOpsApi.onExternalCommand((payload: any) => {
+      if (disposed) return;
+      runtimeOpsExternalCommandHandlerRef.current?.(payload);
+    });
+    const disposeReassertTask = runtimeScheduler.registerTask({
+      id: 'runtime.ops.external_command.reassert',
+      groupId: 'runtime_ops',
+      intervalMs: 15_000,
+      jitterPct: 0,
+      visibilityMode: 'always',
+      priority: 'low',
+      run: async () => {
+        if (disposed) return;
+        if (!runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1) return;
+        if (runtimeOpsControllerStateRef.current?.commandSubscriberHealthy === true) return;
+        await subscribeExternalCommands('reassert');
+      }
+    });
+    return () => {
+      try {
+        unsubscribe?.();
+      } catch {
+        // ignore cleanup errors
+      }
+      try {
+        disposeReassertTask?.();
+      } catch {
+        // ignore reassert cleanup errors
+      }
+      if (runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1 && runtimeOpsApi.unsubscribeExternalCommand) {
+        void runtimeOpsApi.unsubscribeExternalCommand().catch(() => {
+          // ignore unsubscribe failures
+        });
+      }
+      disposed = true;
+      setCommandSubscriberHealth(false, null);
+    };
+  }, [runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1]);
 
   const cancelAgentToolRequest = useCallback((messageId: string, action: AgentToolAction) => {
     if (!messageId) return;
@@ -28089,7 +30309,9 @@ const App: React.FC = () => {
       }
 
       const snapshotKey = resolveSnapshotSourceKey();
-      const primaryKey = snapshotKey && executionTargets.includes(snapshotKey) ? snapshotKey : executionTargets[0];
+      const primaryKey = snapshotKey
+        ? (executionTargets.find((targetKey) => areAccountKeysEquivalent(targetKey, snapshotKey)) || executionTargets[0])
+        : executionTargets[0];
       const strategyId = computeClientStrategyIdFromDedupeKey(dedupeKey);
       const qtyLabel = qty != null && Number.isFinite(Number(qty)) ? ` (${Number(qty)})` : '';
       const targetLabel = executionTargets.length > 1 ? ` (${executionTargets.length} accounts)` : '';
@@ -28220,7 +30442,7 @@ const App: React.FC = () => {
         // ignore
       }
 
-      const primaryResult = results.find((r) => r.accountKey === primaryKey) || results[0];
+      const primaryResult = selectPrimaryResultByAccountKey(results, primaryKey) || results[0];
       const res = primaryResult?.res;
       const orderId = extractBrokerOrderId(res);
       const orderStatus = res?.orderStatus != null ? String(res.orderStatus) : null;
@@ -31331,142 +33553,190 @@ const App: React.FC = () => {
     };
 
     {
-      const uiRuntime = await loadCatalogUiRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await uiRuntime.runCatalogUiRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          sidebarControlRef,
-          resolveSidebarMode,
-          openCommandPalette,
-          closeCommandPalette,
-          setCommandPaletteOpen,
-          setIsSettingsOpen,
-          addTab,
-          updateTab,
-          tabsRef,
-          activeTabIdRef,
-          setActiveTabId,
-          closeTab,
-          setTabLabel,
-          browserControlsRef,
-          isFullscreen,
-          setIsFullscreen
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'UI action failed.' };
+      try {
+        const uiRuntime = await loadCatalogUiRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await uiRuntime.runCatalogUiRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            sidebarControlRef,
+            resolveSidebarMode,
+            openCommandPalette,
+            closeCommandPalette,
+            setCommandPaletteOpen,
+            setIsSettingsOpen,
+            addTab,
+            updateTab,
+            tabsRef,
+            activeTabIdRef,
+            setActiveTabId,
+            closeTab,
+            setTabLabel,
+            browserControlsRef,
+            isFullscreen,
+            setIsFullscreen
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'UI action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'UI catalog runtime failed.',
+          code: 'catalog_ui_runtime_failed'
+        };
+      }
     }
     {
-      const playbookRuntime = await loadCatalogPlaybookRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await playbookRuntime.runCatalogPlaybookRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          enqueuePlaybookRunRef,
-          definition,
-          taskPlaybooksRef,
-          upsertTaskPlaybook,
-          resumePlaybookRunRef
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Playbook action failed.' };
+      try {
+        const playbookRuntime = await loadCatalogPlaybookRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await playbookRuntime.runCatalogPlaybookRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            enqueuePlaybookRunRef,
+            definition,
+            taskPlaybooksRef,
+            upsertTaskPlaybook,
+            resumePlaybookRunRef
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Playbook action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'Playbook catalog runtime failed.',
+          code: 'catalog_playbook_runtime_failed'
+        };
+      }
     }
     {
-      const chartRuntime = await loadCatalogChartRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await chartRuntime.runCatalogChartRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          chartEngine,
-          chartWatchEnabled,
-          setChartWatchEnabled,
-          setChartWatchMode,
-          snoozeChartWatch,
-          clearChartWatchSnooze,
-          setChartWatchLeadAgentId,
-          nativeChartRef,
-          persistChartSnapshotMemory,
-          isChartFullscreen,
-          setIsChartFullscreen,
-          chartSessions,
-          chatChannel,
-          chartHandlers,
-          setSessionBias,
-          updateSymbolScope,
-          normalizeScopeTimeframes,
-          clearSymbolScope,
-          activeTabIdRef,
-          tabsRef
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Chart action failed.' };
+      try {
+        const chartRuntime = await loadCatalogChartRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await chartRuntime.runCatalogChartRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            chartEngine,
+            chartWatchEnabled,
+            setChartWatchEnabled,
+            setChartWatchMode,
+            snoozeChartWatch,
+            clearChartWatchSnooze,
+            setChartWatchLeadAgentId,
+            nativeChartRef,
+            persistChartSnapshotMemory,
+            isChartFullscreen,
+            setIsChartFullscreen,
+            chartSessions,
+            chatChannel,
+            chartHandlers,
+            setSessionBias,
+            updateSymbolScope,
+            normalizeScopeTimeframes,
+            clearSymbolScope,
+            activeTabIdRef,
+            tabsRef
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Chart action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'Chart catalog runtime failed.',
+          code: 'catalog_chart_runtime_failed'
+        };
+      }
     }
     {
-      const tabsNow = tabsRef.current || [];
-      const chatLiveRuntime = await loadCatalogChatLiveRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await chatLiveRuntime.runCatalogChatLiveRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          chatChannel,
-          chartHandlers,
-          setReplyMode,
-          clearChat,
-          activeTabIdRef,
-          tabsNow,
-          chartChatContextRef,
-          normalizeTimeframeKey,
-          sendMessage,
-          setAutoTabVisionEnabled,
-          startLiveSession,
-          stopLiveSession,
-          liveStream,
-          setPostTradeReviewEnabled,
-          setPostTradeReviewAgentId,
-          reviewLastClosedTrade
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Chat/Live action failed.' };
+      try {
+        const tabsNow = tabsRef.current || [];
+        const chatLiveRuntime = await loadCatalogChatLiveRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await chatLiveRuntime.runCatalogChatLiveRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            chatChannel,
+            chartHandlers,
+            setReplyMode,
+            clearChat,
+            activeTabIdRef,
+            tabsNow,
+            chartChatContextRef,
+            normalizeTimeframeKey,
+            sendMessage,
+            setAutoTabVisionEnabled,
+            startLiveSession,
+            stopLiveSession,
+            liveStream,
+            setPostTradeReviewEnabled,
+            setPostTradeReviewAgentId,
+            reviewLastClosedTrade
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Chat/Live action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'Chat/Live catalog runtime failed.',
+          code: 'catalog_chat_live_runtime_failed'
+        };
+      }
     }
     {
-      const settingsRuntime = await loadCatalogSettingsAutopilotRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await settingsRuntime.runCatalogSettingsAutopilotRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          persistSetting,
-          setAutoPilotConfig,
-          activeBrokerIdRef
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Settings/AutoPilot action failed.' };
+      try {
+        const settingsRuntime = await loadCatalogSettingsAutopilotRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await settingsRuntime.runCatalogSettingsAutopilotRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            persistSetting,
+            setAutoPilotConfig,
+            activeBrokerIdRef
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Settings/AutoPilot action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'Settings/AutoPilot catalog runtime failed.',
+          code: 'catalog_settings_runtime_failed'
+        };
+      }
     }
     {
-      const brokerRuntime = await loadCatalogBrokerRuntimeModule();
-      const runtimeRes = normalizeCatalogRuntimeResponse(await brokerRuntime.runCatalogBrokerRuntime({
-        actionId,
-        payload,
-        requestContext: input,
-        context: {
-          refreshSnapshotRef,
-          refreshQuotesRef,
-          quoteMap,
-          savedConfig,
-          normalizeSymbolKey,
-          executeBulkCancelOrdersViaApi,
-          executeBulkClosePositionsViaApi,
-          executeTicketOrderViaApi,
-          tlSearchInstrumentsRef,
-          tlPositionsRef,
-          tlOrdersRef
-        }
-      }));
-      if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Broker action failed.' };
+      try {
+        const brokerRuntime = await loadCatalogBrokerRuntimeModule();
+        const runtimeRes = normalizeCatalogRuntimeResponse(await brokerRuntime.runCatalogBrokerRuntime({
+          actionId,
+          payload,
+          requestContext: input,
+          context: {
+            refreshSnapshotRef,
+            refreshQuotesRef,
+            quoteMap,
+            savedConfig,
+            normalizeSymbolKey,
+            executeBulkCancelOrdersViaApi,
+            executeBulkClosePositionsViaApi,
+            executeTicketOrderViaApi,
+            tlSearchInstrumentsRef,
+            tlPositionsRef,
+            tlOrdersRef
+          }
+        }));
+        if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Broker action failed.' };
+      } catch (err: any) {
+        return {
+          ok: false,
+          error: err?.message ? String(err.message) : 'Broker catalog runtime failed.',
+          code: 'catalog_broker_runtime_failed'
+        };
+      }
     }
     {
       const runtimeModule = await loadCatalogAgentRuntimeModule();
@@ -31617,6 +33887,29 @@ const App: React.FC = () => {
     updateTradeMemory,
     upsertTaskPlaybook
   ]);
+
+  const runActionCatalogImmediate = useCallback(async (input: { actionId: string; payload?: Record<string, any> }) => {
+    const actionId = String(input?.actionId || '').trim();
+    if (!actionId) return { ok: false, error: 'Action id is required.' };
+    if (!IMMEDIATE_TRADELOCKER_ACTION_IDS.has(actionId)) {
+      return await runActionCatalog(input);
+    }
+    const payload = input?.payload && typeof input.payload === 'object' ? input.payload : {};
+    const immediateSource = `catalog_immediate:${actionId}`;
+    return await panelConnectivityEngine.runAction({
+      panel: 'app',
+      request: { actionId, payload },
+      source: immediateSource,
+      disableCooldown: true,
+      runActionCatalog: async (request) => {
+        return await executeCatalogAction({
+          actionId: request.actionId,
+          payload: request.payload,
+          source: 'ui_immediate'
+        });
+      }
+    });
+  }, [IMMEDIATE_TRADELOCKER_ACTION_IDS, executeCatalogAction, panelConnectivityEngine, runActionCatalog]);
 
   const ensureTaskPlaybook = useCallback((input?: { playbookId?: string | null; playbook?: TaskPlaybook | null }) => {
     const explicit = input?.playbook ? normalizeTaskPlaybook(input.playbook) : null;
@@ -34489,7 +36782,11 @@ const App: React.FC = () => {
     Number.isFinite(Number(tlUpstreamBlockedUntilMs)) ? Number(tlUpstreamBlockedUntilMs) : null;
   tlSavedConfigRef.current = tlSavedConfig;
   tlSetActiveAccountRef.current = tlSetActiveAccount;
+  tlRefreshSavedConfigRef.current = tlRefreshSavedConfig;
+  tlRefreshAccountsRef.current = tlRefreshAccounts;
   refreshSnapshotRef.current = tlRefreshSnapshot;
+  refreshOrdersRef.current = tlRefreshOrders;
+  refreshAccountMetricsRef.current = tlRefreshAccountMetrics;
   refreshQuotesRef.current = tlRefreshQuotes;
   tlCancelOrderRef.current = tlCancelOrder;
   tlClosePositionRef.current = tlClosePosition;
@@ -34502,23 +36799,72 @@ const App: React.FC = () => {
   useEffect(() => {
     const accountsList = Array.isArray(tlAccounts) ? tlAccounts : [];
     tlAccountsRef.current = accountsList;
-    const map = new Map<string, { env: string; server: string; accountId: number; accNum: number }>();
-    const env = tlSavedConfig?.env ? String(tlSavedConfig.env) : '';
-    const server = tlSavedConfig?.server ? String(tlSavedConfig.server) : '';
-    if (env && server && accountsList.length > 0) {
-      for (const acct of accountsList) {
-        const accountId = parseTradeLockerAccountNumber(acct?.id);
-        const accNum = parseTradeLockerAccountNumber(acct?.accNum);
-        if (accountId == null || accNum == null) continue;
-        const key = buildTradeLockerAccountKey({ env, server, accountId, accNum });
+    const map = new Map<string, TradeLockerAccountMapEntry>();
+    const env = tlSavedConfig?.env ? String(tlSavedConfig.env).trim().toLowerCase() : '';
+    const server = tlSavedConfig?.server ? String(tlSavedConfig.server).trim().toLowerCase() : '';
+    const addNormalizedEntry = (normalized: ReturnType<typeof normalizeTradeLockerAccountRecord> | null) => {
+      if (!normalized) return;
+      const accountKey =
+        normalized.accountKey ||
+        buildTradeLockerAccountKey({
+          env,
+          server,
+          accountId: normalized.accountId,
+          accNum: normalized.accNum ?? null
+        }) ||
+        buildTradeLockerAccountKey({
+          env,
+          server,
+          accountId: normalized.accountId,
+          accNum: null
+        });
+      if (!accountKey) return;
+      const fallbackKey = buildTradeLockerAccountKey({
+        env,
+        server,
+        accountId: normalized.accountId,
+        accNum: null
+      });
+      const aliases = Array.from(
+        new Set([
+          accountKey,
+          fallbackKey,
+          ...(Array.isArray(normalized.aliases) ? normalized.aliases : [])
+        ].filter((value): value is string => !!String(value || '').trim()))
+      );
+      const entry: TradeLockerAccountMapEntry = {
+        env,
+        server,
+        accountId: normalized.accountId,
+        accNum: normalized.accNum ?? null,
+        accountKey,
+        aliases
+      };
+      for (const alias of aliases) {
+        const key = String(alias || '').trim();
         if (!key) continue;
-        map.set(key, { env, server, accountId, accNum });
+        map.set(key, entry);
       }
+    };
+
+    if (env && server) {
+      for (const acct of accountsList) {
+        addNormalizedEntry(normalizeTradeLockerAccountRecord(acct, { env, server }));
+      }
+      addNormalizedEntry(
+        normalizeTradeLockerAccountRecord(
+          {
+            accountId: tlSavedConfig?.accountId,
+            accNum: tlSavedConfig?.accNum
+          },
+          { env, server }
+        )
+      );
     }
     tlAccountMapRef.current = map;
     if (map.size > 0) {
-      const first = map.keys().next();
-      const fallback = first && !first.done ? first.value : null;
+      const canonical = Array.from(new Set(Array.from(map.values()).map((entry) => entry.accountKey).filter(Boolean)));
+      const fallback = canonical.length > 0 ? canonical[0] : null;
       if (fallback) {
         if (!tlSnapshotSourceKey || !map.has(tlSnapshotSourceKey)) {
           setTlSnapshotSourceKey(fallback);
@@ -34529,6 +36875,38 @@ const App: React.FC = () => {
       }
     }
   }, [tlAccounts, tlSavedConfig?.env, tlSavedConfig?.server, tlSnapshotSourceKey, tlNormalizeRefKey]);
+
+  useEffect(() => {
+    const eventName = GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED;
+    const promotableSources = new Set([
+      'settings_modal_select_direct',
+      'tradelocker_panel_direct',
+      'external_codex'
+    ]);
+    const onAccountChanged = (evt: Event) => {
+      const custom = evt as CustomEvent<any>;
+      const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
+      if (detail?.skipPrimarySync === true) return;
+      const source = String(detail?.source || '').trim().toLowerCase();
+      const shouldPromote = detail?.makePrimary === true || promotableSources.has(source);
+      if (!shouldPromote) return;
+      void promoteTradeLockerPrimaryRouting({
+        accountKey: detail?.accountKey ? String(detail.accountKey) : null,
+        accountId: parseTradeLockerAccountNumber(detail?.accountId),
+        accNum: parseTradeLockerAccountNumber(detail?.accNum),
+        source: source || 'unknown',
+        stage: detail?.stage ? String(detail.stage) : 'account_changed_event',
+        resolvedBy: detail?.resolvedBy === 'accountId_fallback' || detail?.resolvedBy === 'reconnect_retry'
+          ? detail.resolvedBy
+          : 'exact',
+        retryRefresh: true
+      });
+    };
+    window.addEventListener(eventName, onAccountChanged as EventListener);
+    return () => {
+      window.removeEventListener(eventName, onAccountChanged as EventListener);
+    };
+  }, [promoteTradeLockerPrimaryRouting]);
 
   useEffect(() => {
     if (tlStatus === 'connected') {
@@ -35144,6 +37522,42 @@ const App: React.FC = () => {
   startupBridgeGateRef.current.error = startupBridgeError ? String(startupBridgeError) : null;
 
   useEffect(() => {
+    if (!runtimeOpsFeatureFlags.runtimeOpsControlSafetyV1) return;
+    const controller = runtimeOpsControllerRef.current;
+    if (!controller) return;
+    const state = controller.getState();
+    if (startupBridgeState === 'failed' && state.mode === 'autonomous') {
+      controller.forceObserveOnly('startup_bridge_failed');
+      setRuntimeOpsControllerState(controller.getState());
+      return;
+    }
+    if (
+      !runtimeOpsAutoPromotedRef.current &&
+      !runtimeOpsPersistedState?.mode &&
+      runtimeOpsPolicyRef.current.alwaysArmed &&
+      startupBridgeState === 'ready' &&
+      startupBridgeReady &&
+      state.mode === 'observe_only'
+    ) {
+      runtimeOpsAutoPromotedRef.current = true;
+      controller.resumeAutonomy();
+      setRuntimeOpsControllerState(controller.getState());
+      appendRuntimeOpsEvent({
+        source: 'runtime',
+        level: 'info',
+        code: 'runtime_ops_mode_auto_promoted',
+        message: 'Runtime Ops auto-promoted to autonomous mode after startup readiness.'
+      });
+    }
+  }, [
+    appendRuntimeOpsEvent,
+    runtimeOpsFeatureFlags.runtimeOpsControlSafetyV1,
+    runtimeOpsPersistedState?.mode,
+    startupBridgeReady,
+    startupBridgeState
+  ]);
+
+  useEffect(() => {
     const glass = (window as any)?.glass;
     if (!glass || !glass.tradeLedger || glass.__tradeLedgerHealthInstrumented) return;
     try {
@@ -35683,6 +38097,31 @@ const App: React.FC = () => {
       academyGraphCaseActions: Number(academyLearningGraphTelemetryRef.current.graphCaseActions || 0),
       academyGraphLifecycleActions: Number(academyLearningGraphTelemetryRef.current.graphLifecycleActions || 0),
       academyGraphExportCount: Number(academyLearningGraphTelemetryRef.current.graphExportCount || 0),
+      runtimeOpsStreamDrops: Number(runtimeOpsControllerState?.droppedCount || 0),
+      runtimeOpsExternalCommandSubscribeCount: Number(runtimeOpsExternalStatsRef.current.externalCommandSubscribeCount || 0),
+      runtimeOpsExternalCommandUnsubscribeCount: Number(runtimeOpsExternalStatsRef.current.externalCommandUnsubscribeCount || 0),
+      runtimeOpsExternalCommandReplyFailures: Number(runtimeOpsExternalStatsRef.current.externalCommandReplyFailures || 0),
+      runtimeOpsExternalCommandTimeouts: Number(runtimeOpsExternalStatsRef.current.externalCommandTimeouts || 0),
+      runtimeOpsRendererErrorForwarded: Number(runtimeOpsExternalStatsRef.current.rendererErrorForwarded || 0),
+      runtimeOpsStreamStartAttempts: Number(runtimeOpsStreamStatsRef.current.startAttempts || 0),
+      runtimeOpsStreamStarts: Number(runtimeOpsStreamStatsRef.current.starts || 0),
+      runtimeOpsStreamReuses: Number(runtimeOpsStreamStatsRef.current.reuses || 0),
+      runtimeOpsStreamDisconnects: Number(runtimeOpsStreamStatsRef.current.disconnects || 0),
+      runtimeOpsStreamReconnects: Number(runtimeOpsControllerState?.reconnectCount || 0),
+      runtimeOpsDecisions: Number((runtimeOpsControllerState?.recentDecisions || []).length || 0),
+      runtimeOpsActions: Number(runtimeOpsControllerState?.actionRuns || 0),
+      runtimeOpsActionFailures: Number(runtimeOpsControllerState?.actionFailures || 0),
+      runtimeOpsGuardrailTrips: Number(runtimeOpsControllerState?.guardrailTrips || 0),
+      runtimeOpsMode: runtimeOpsControllerState?.mode || null,
+      runtimeOpsLockedAttempts: Number(runtimeOpsControllerState?.lockedAttempts || 0),
+      tradeLockerSwitchAttempts: Number(tradeLockerSwitchStatsRef.current.switchAttempts || 0),
+      tradeLockerSwitchFailures: Number(tradeLockerSwitchStatsRef.current.switchFailures || 0),
+      tradeLockerSwitchReverts: Number(tradeLockerSwitchStatsRef.current.switchReverts || 0),
+      tradeLockerSwitchReconnectRetries: Number(tradeLockerSwitchStatsRef.current.switchReconnectRetries || 0),
+      tradeLockerSwitchShieldActivations: Number(tradeLockerSwitchStatsRef.current.switchShieldActivations || 0),
+      academyCompanionRowsRead: Number(academyCompanionRowsReadRef.current || 0),
+      intentHydrationRowsRead: Number(intentHydrationRowsReadRef.current || 0),
+      incrementalCursorFallbackCount: Number(incrementalCursorFallbackCountRef.current || 0),
       ledgerArchiveMoves: Number(ledgerArchiveStatsRef.current.moves || 0),
       ledgerArchiveRows: Number(ledgerArchiveStatsRef.current.rows || 0),
       signalIdCollisionPreventedCount: Number(signalIdCollisionPreventedCountRef.current || 0),
@@ -35811,7 +38250,7 @@ const App: React.FC = () => {
       },
       crossPanelContext: crossPanelContextSnapshot
     };
-  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlQuotesError, tlQuotesUpdatedAtMs, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
+  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, runtimeOpsControllerState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlQuotesError, tlQuotesUpdatedAtMs, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
 
   useEffect(() => {
     buildHealthSnapshotRef.current = buildHealthSnapshot;
@@ -36953,7 +39392,9 @@ const App: React.FC = () => {
       }
 
       const snapshotKey = resolveSnapshotSourceKey();
-      const primaryKey = snapshotKey && executionTargets.includes(snapshotKey) ? snapshotKey : executionTargets[0];
+      const primaryKey = snapshotKey
+        ? (executionTargets.find((targetKey) => areAccountKeysEquivalent(targetKey, snapshotKey)) || executionTargets[0])
+        : executionTargets[0];
       const primaryAccount = primaryKey ? parseTradeLockerAccountKey(primaryKey) : null;
       const env = primaryAccount?.env || tlSavedConfig?.env || null;
       const server = primaryAccount?.server || tlSavedConfig?.server || null;
@@ -37174,7 +39615,7 @@ const App: React.FC = () => {
             normalized: !!row.normalized
           }));
 
-      const primaryResult = results.find((r) => r.accountKey === primaryKey) || results[0];
+      const primaryResult = selectPrimaryResultByAccountKey(results, primaryKey) || results[0];
       const res = primaryResult?.res;
       if (!res) {
         addNotification('TradeLocker Error', 'Failed to place order.', 'error');
@@ -37319,6 +39760,9 @@ const App: React.FC = () => {
 
     if (tlStatus === 'connected') {
       addNotification('TradeLocker Connected', `Connected to ${target}.`, 'success');
+    } else if (tlStatus === 'degraded_account_auth') {
+      const msg = tlLastError ? String(tlLastError) : 'Account authentication context is invalid.';
+      addNotification('TradeLocker Degraded', msg, 'warning');
     } else if (tlStatus === 'disconnected') {
       addNotification('TradeLocker Disconnected', 'Connection closed.', 'warning');
     } else if (tlStatus === 'error') {
@@ -38606,6 +41050,19 @@ const App: React.FC = () => {
                       health={healthSnapshot}
                       onRequestSnapshot={requestSystemSnapshot}
                       onClearSnapshotFrameCache={clearSnapshotFrameCache}
+                      onRunActionCatalog={runActionCatalog}
+                      onExecuteAgentTool={executeAgentToolRequest}
+                      liveErrors={liveErrors}
+                      onClearLiveErrors={clearLiveErrors}
+                      runtimeOpsEvents={runtimeOpsEvents}
+                      onClearRuntimeOpsEvents={clearRuntimeOpsEvents}
+                      runtimeOpsState={runtimeOpsControllerState}
+                      runtimeOpsEnabled={runtimeOpsControllerState.mode !== 'disarmed'}
+                      onSetRuntimeOpsEnabled={setRuntimeOpsEnabled}
+                      onSetRuntimeOpsMode={setRuntimeOpsMode}
+                      onEmergencyStopRuntimeOps={emergencyStopRuntimeOps}
+                      onRunRuntimeOpsAction={runRuntimeOpsAction}
+                      runtimeOpsFeatureFlags={runtimeOpsFeatureFlags}
                     />
                 )}
                 {mode === 'mt5' && (
@@ -38668,6 +41125,7 @@ const App: React.FC = () => {
                           connectionLabel={tlConnectionMeta.label}
                           connectionDotClass={tlConnectionMeta.dot}
                           onRunActionCatalog={runActionCatalog}
+                          onRunActionCatalogImmediate={runActionCatalogImmediate}
                           onSnapshotSourceChange={handleSnapshotSourceChange}
                           onSnapshotAutoSwitchChange={setTlSnapshotAutoSwitch}
                           onSnapshotFallbackChange={setTlSnapshotFallbackOrder}
@@ -38883,6 +41341,7 @@ const App: React.FC = () => {
             onClose={() => setIsSettingsOpen(false)}
             onSave={handleSettingsSaved}
             onRunActionCatalog={runActionCatalog}
+            onRunActionCatalogImmediate={runActionCatalogImmediate}
             onExecuteAgentTool={executeAgentToolRequest}
             liveErrors={liveErrors}
             onClearLiveErrors={clearLiveErrors}

@@ -36,3 +36,5 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+Executive Summary.pdf
+glass-live-errors-*.json
