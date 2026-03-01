@@ -37,30 +37,17 @@ const SidebarFrame: React.FC<SidebarFrameProps> = ({
         {/* Feature Switcher Tabs */}
         <div className="flex bg-black/40 rounded-lg p-1 gap-1 overflow-x-auto custom-scrollbar border border-white/5">
             <button 
-                onClick={() => onSwitchMode('chat')}
-                onMouseEnter={() => prefetch('chat')}
-                onFocus={() => prefetch('chat')}
+                onClick={() => onSwitchMode('chartchat')}
+                onMouseEnter={() => prefetch('chartchat')}
+                onFocus={() => prefetch('chartchat')}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
-                    activeMode === 'chat' 
-                    ? 'bg-blue-600 text-white shadow-sm' 
+                    isChatMode
+                    ? 'bg-sky-600 text-white shadow-sm'
                     : 'text-gray-400 hover:text-white hover:bg-white/5'
                 }`}
             >
                 <MessageSquare size={14} />
                 <span>Chat</span>
-            </button>
-            <button 
-                onClick={() => onSwitchMode('chartchat')}
-                onMouseEnter={() => prefetch('chartchat')}
-                onFocus={() => prefetch('chartchat')}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all whitespace-nowrap ${
-                    activeMode === 'chartchat'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-gray-400 hover:text-white hover:bg-white/5'
-                }`}
-            >
-                <BarChart2 size={14} />
-                <span>Chart Chat</span>
             </button>
             <button 
                 onClick={() => onSwitchMode('signal')}

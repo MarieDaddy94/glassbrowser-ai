@@ -550,6 +550,11 @@ import { getCrossPanelContextEngine } from './services/crossPanelContextEngine';
 import { getOutcomeConsistencyEngine } from './services/outcomeConsistencyEngine';
 import { GLASS_EVENT, dispatchGlassEvent } from './services/glassEvents';
 import { submitTradeLockerOrderBatch } from './services/executionSubmissionService';
+import { createTradeLockerTenantRegistry, buildTradeLockerTenantKey } from './services/tradeLockerTenantRegistry';
+import { createTradeLockerMarketBus } from './services/tradeLockerMarketBus';
+import { createTradeLockerShardScheduler } from './services/tradeLockerShardScheduler';
+import { createTradeLockerStrategyRuntime } from './services/tradeLockerStrategyRuntime';
+import { createTradeLockerReconcileStore } from './services/tradeLockerReconcileStore';
 import { cancelTimer, deferMs, sleepMs, type TimerHandle } from './services/timerPrimitives';
 import { buildCalendarPnlSnapshot } from './services/calendarPnlEngine';
 import {
@@ -621,7 +626,7 @@ import {
 } from './services/runtimeOpsPolicy';
 import { RuntimeOpsController } from './services/runtimeOpsController';
 import { normalizeRuntimeOpsEvent, pushRuntimeOpsEvent } from './services/runtimeOpsEventStream';
-import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, RuntimeOpsActionRecord, RuntimeOpsControllerState, RuntimeOpsEvent, RuntimeOpsMode, RuntimeOpsPolicy, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerQuote, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
+import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, Message, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, RuntimeOpsActionRecord, RuntimeOpsControllerState, RuntimeOpsEvent, RuntimeOpsMode, RuntimeOpsPolicy, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerAccountShardState, TradeLockerMarketSubscriptionState, TradeLockerQuote, TradeLockerStrategyMatrixRow, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
 import type { SignalEntry, SignalEntryStatus, SignalExecutionTarget, SignalSessionWindow, SignalSnapshotStatus, SignalStrategyMode } from './components/SignalInterface';
@@ -730,6 +735,9 @@ const TL_EXECUTION_TARGETS_KEY = 'glass_tl_execution_targets';
 const TL_NORMALIZE_ENABLED_KEY = 'glass_tl_normalize_enabled';
 const TL_NORMALIZE_REF_KEY = 'glass_tl_normalize_ref';
 const TL_PROFILES_KEY = 'glass_tradelocker_profiles_v1';
+const TL_STRATEGY_ASSIGNMENTS_KEY = 'glass_tl_strategy_assignments_v1';
+const TL_TENANT_RUNTIME_STATE_KEY = 'glass_tl_tenant_runtime_state_v1';
+const TL_SHARD_SCHEDULER_STATE_KEY = 'glass_tl_shard_scheduler_state_v1';
 const LEGACY_TL_SUBMISSION_FLAG_KEY = 'execution.useLegacyTradeLockerSubmission';
 const TL_NORMALIZE_WINDOW = 120;
 const TL_NORMALIZE_MIN_SAMPLES = 30;
@@ -5175,6 +5183,41 @@ const App: React.FC = () => {
   const tlExecutionTargetsRef = React.useRef(tlExecutionTargets);
   const tlNormalizeEnabledRef = React.useRef(tlNormalizeEnabled);
   const tlNormalizeRefKeyRef = React.useRef(tlNormalizeRefKey);
+  const [tlStrategyAssignments, setTlStrategyAssignments] = useState<Record<string, string[]>>(() => {
+    const parsed = readLocalJson(TL_STRATEGY_ASSIGNMENTS_KEY);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const next: Record<string, string[]> = {};
+    for (const [strategyId, accountKeys] of Object.entries(parsed)) {
+      const key = String(strategyId || '').trim().toLowerCase();
+      if (!key) continue;
+      const entries = Array.isArray(accountKeys)
+        ? Array.from(new Set(accountKeys.map((entry) => String(entry || '').trim()).filter(Boolean)))
+        : [];
+      next[key] = entries;
+    }
+    return next;
+  });
+  const [tlStrategyMatrixRows, setTlStrategyMatrixRows] = useState<TradeLockerStrategyMatrixRow[]>([]);
+  const [tlMarketSubscriptions, setTlMarketSubscriptions] = useState<TradeLockerMarketSubscriptionState[]>([]);
+  const [tlShardStates, setTlShardStates] = useState<TradeLockerAccountShardState[]>([]);
+  const tlTenantRegistry = React.useMemo(() => createTradeLockerTenantRegistry(), []);
+  const tlShardScheduler = React.useMemo(
+    () => createTradeLockerShardScheduler({ scheduler: runtimeScheduler, maxQueueDepth: 120 }),
+    []
+  );
+  const tlReconcileStore = React.useMemo(
+    () => createTradeLockerReconcileStore({ storageKey: TL_SHARD_SCHEDULER_STATE_KEY }),
+    []
+  );
+  const tlStrategyRuntime = React.useMemo(
+    () =>
+      createTradeLockerStrategyRuntime({
+        tenantRegistry: tlTenantRegistry,
+        shardScheduler: tlShardScheduler,
+        reconcileStore: tlReconcileStore
+      }),
+    [tlReconcileStore, tlShardScheduler, tlTenantRegistry]
+  );
   const [brokerRateLimitSuppressUntilMs, setBrokerRateLimitSuppressUntilMs] = useState(0);
   const openSettings = useCallback(() => setIsSettingsOpen(true), []);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -5243,6 +5286,32 @@ const App: React.FC = () => {
       // ignore
     }
   }, [tlNormalizeRefKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TL_STRATEGY_ASSIGNMENTS_KEY, JSON.stringify(tlStrategyAssignments || {}));
+    } catch {
+      // ignore
+    }
+  }, [tlStrategyAssignments]);
+
+  useEffect(() => {
+    const stop = tlTenantRegistry.subscribe((snap) => {
+      setTlStrategyMatrixRows(tlTenantRegistry.getMatrixRows());
+      setTlMarketSubscriptions(Array.isArray(snap.subscriptions) ? snap.subscriptions.slice() : []);
+    });
+    setTlStrategyMatrixRows(tlTenantRegistry.getMatrixRows());
+    setTlMarketSubscriptions(tlTenantRegistry.getSnapshot().subscriptions || []);
+    return () => {
+      stop?.();
+    };
+  }, [tlTenantRegistry]);
+
+  useEffect(() => {
+    return () => {
+      tlShardScheduler.dispose();
+    };
+  }, [tlShardScheduler]);
 
   const prefetchedSidebarModesRef = React.useRef<Set<string>>(new Set());
   const prefetchSidebarMode = useCallback((nextMode: SidebarMode) => {
@@ -6478,6 +6547,7 @@ const App: React.FC = () => {
   const tlRefreshAccountsRef = React.useRef<(() => Promise<any>) | null>(null);
   const refreshSnapshotRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const refreshOrdersRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
+  const refreshOrdersHistoryRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const refreshAccountMetricsRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const refreshQuotesRef = React.useRef<((args?: any) => Promise<any>) | null>(null);
   const tlCancelOrderRef = React.useRef<((id: string) => Promise<any>) | null>(null);
@@ -7683,8 +7753,8 @@ const App: React.FC = () => {
     recent: Array<{ actionId: string; ok: boolean; atMs: number }>;
   }>());
   const actionFlowUpdatedAtRef = React.useRef(0);
-  const sidebarModeRef = React.useRef<SidebarMode>('chat');
-  const sidebarStateRef = React.useRef<{ isOpen: boolean; mode: SidebarMode }>({ isOpen: false, mode: 'chat' });
+  const sidebarModeRef = React.useRef<SidebarMode>('chartchat');
+  const sidebarStateRef = React.useRef<{ isOpen: boolean; mode: SidebarMode }>({ isOpen: false, mode: 'chartchat' });
   const liveStatusRef = React.useRef({ isLive: false, chartChatIsLive: false });
   useEffect(() => {
     lastTradeBlockRef.current = lastTradeBlock;
@@ -13590,6 +13660,69 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const tlMarketBus = React.useMemo(
+    () =>
+      createTradeLockerMarketBus({
+        schedulerIntervalMs: 1500,
+        fetchQuotes: async ({ symbols, maxAgeMs }) => {
+          const tl = window.glass?.tradelocker;
+          const list = Array.isArray(symbols) ? symbols.map((entry) => String(entry || '').trim()).filter(Boolean) : [];
+          if (!tl || list.length === 0) return { ok: false, quotes: [], error: 'TradeLocker bridge unavailable.' };
+          try {
+            if (tl.getQuotes) {
+              const res = await withTradeLockerAccountLock(async () => await tl.getQuotes({ symbols: list, maxAgeMs }));
+              if (!res?.ok) return { ok: false, quotes: [], error: res?.error ? String(res.error) : 'Failed to fetch broker quotes.' };
+              const quotes: TradeLockerQuote[] = (Array.isArray(res?.quotes) ? res.quotes : []).map((item: any) => ({
+                symbol: String(item?.symbol || ''),
+                tradableInstrumentId: Number.isFinite(Number(item?.tradableInstrumentId)) ? Number(item?.tradableInstrumentId) : null,
+                routeId: Number.isFinite(Number(item?.routeId)) ? Number(item?.routeId) : null,
+                bid: item?.quote?.bid ?? null,
+                ask: item?.quote?.ask ?? null,
+                last: item?.quote?.last ?? null,
+                mid: item?.quote?.mid ?? null,
+                bidSize: item?.quote?.bidSize ?? null,
+                askSize: item?.quote?.askSize ?? null,
+                spread: item?.quote?.spread ?? null,
+                timestampMs: item?.quote?.timestampMs ?? null,
+                fetchedAtMs: item?.fetchedAtMs ?? null
+              }));
+              return { ok: true, quotes };
+            }
+            if (!tl.getQuote) return { ok: false, quotes: [], error: 'TradeLocker quote API unavailable.' };
+            const quotes: TradeLockerQuote[] = [];
+            for (const symbol of list) {
+              const single = await withTradeLockerAccountLock(async () => await tl.getQuote({ symbol, maxAgeMs }));
+              if (!single?.ok) continue;
+              const quote = single?.quote || {};
+              quotes.push({
+                symbol,
+                tradableInstrumentId: Number.isFinite(Number(single?.tradableInstrumentId)) ? Number(single?.tradableInstrumentId) : null,
+                routeId: Number.isFinite(Number(single?.routeId)) ? Number(single?.routeId) : null,
+                bid: quote?.bid ?? null,
+                ask: quote?.ask ?? null,
+                last: quote?.last ?? null,
+                mid: quote?.mid ?? null,
+                bidSize: quote?.bidSize ?? null,
+                askSize: quote?.askSize ?? null,
+                spread: quote?.spread ?? null,
+                timestampMs: quote?.timestampMs ?? null,
+                fetchedAtMs: single?.fetchedAtMs ?? null
+              });
+            }
+            return { ok: quotes.length > 0, quotes, error: quotes.length > 0 ? null : 'No quotes available.' };
+          } catch (err: any) {
+            return { ok: false, quotes: [], error: err?.message ? String(err.message) : 'Failed to fetch broker quotes.' };
+          }
+        }
+      }),
+    [withTradeLockerAccountLock]
+  );
+  useEffect(() => {
+    return () => {
+      tlMarketBus.stop();
+    };
+  }, [tlMarketBus]);
+
   const ensureTradeLockerAccount = useCallback(async (accountKey: string | null, reason?: string) => {
     if (!accountKey) return { ok: false as const, error: 'TradeLocker account missing.' };
     const acct = resolveTradeLockerAccountEntry(accountKey);
@@ -13955,6 +14088,132 @@ const App: React.FC = () => {
       setTlNormalizeRefKey(String(patch.referenceKey));
     }
   }, []);
+
+  const listTradeLockerStrategyRuntimes = useCallback(() => {
+    return {
+      ok: true as const,
+      rows: tlStrategyRuntime.listRuntimes(),
+      assignments: tlStrategyRuntime.getAssignments(),
+      marketSubscriptions: tlMarketBus.getSubscriptionSnapshot(),
+      shards: tlShardScheduler.getSnapshot()
+    };
+  }, [tlMarketBus, tlShardScheduler, tlStrategyRuntime]);
+
+  const setTradeLockerStrategyRuntimeState = useCallback(async (input: {
+    tenantKey: string;
+    state: TradeLockerStrategyMatrixRow['state'];
+    reason?: string | null;
+  }) => {
+    const tenantKey = String(input?.tenantKey || '').trim();
+    const state = (String(input?.state || '').trim().toLowerCase() || 'paused') as TradeLockerStrategyMatrixRow['state'];
+    if (!tenantKey) return { ok: false as const, error: 'tenant_key_required' };
+    const result = tlStrategyRuntime.setRuntimeState(tenantKey, state, input?.reason ? String(input.reason) : null);
+    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+    return result;
+  }, [tlStrategyRuntime]);
+
+  const assignTradeLockerStrategyRuntimeAccounts = useCallback(async (input: {
+    strategyId: string;
+    accountKeys: string[];
+  }) => {
+    const strategyId = String(input?.strategyId || '').trim().toLowerCase();
+    if (!strategyId) return { ok: false as const, error: 'strategy_id_required' };
+    const accountKeys = Array.isArray(input?.accountKeys)
+      ? Array.from(new Set(input.accountKeys.map((entry) => String(entry || '').trim()).filter(Boolean)))
+      : [];
+    tlStrategyRuntime.assignStrategyAccounts(strategyId, accountKeys);
+    setTlStrategyAssignments((prev) => ({
+      ...prev,
+      [strategyId]: accountKeys
+    }));
+    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+    return { ok: true as const, strategyId, accountKeys };
+  }, [tlStrategyRuntime]);
+
+  const reconcileTradeLockerStrategyRuntime = useCallback(async (input: {
+    tenantKey?: string;
+    accountKey?: string;
+    reason?: string | null;
+    force?: boolean;
+  }) => {
+    const tenantKey = String(input?.tenantKey || '').trim();
+    const accountKeyRaw = String(input?.accountKey || '').trim();
+    const reason = String(input?.reason || 'strategy_runtime').trim();
+    const runRefreshBurst = async () => {
+      const refreshTasks: Promise<any>[] = [];
+      if (refreshSnapshotRef.current) refreshTasks.push(Promise.resolve(refreshSnapshotRef.current()));
+      if (refreshOrdersRef.current) refreshTasks.push(Promise.resolve(refreshOrdersRef.current()));
+      if (refreshAccountMetricsRef.current) refreshTasks.push(Promise.resolve(refreshAccountMetricsRef.current()));
+      if (refreshQuotesRef.current) refreshTasks.push(Promise.resolve(refreshQuotesRef.current()));
+      if (refreshOrdersHistoryRef.current) refreshTasks.push(Promise.resolve(refreshOrdersHistoryRef.current()));
+      if (tlRefreshAccountsRef.current) refreshTasks.push(Promise.resolve(tlRefreshAccountsRef.current()));
+      await Promise.allSettled(refreshTasks);
+    };
+    if (tenantKey) {
+      const result = await tlStrategyRuntime.reconcileTenant(tenantKey, async ({ accountKey }) => {
+        const switchRes = await ensureTradeLockerAccount(accountKey, `${reason}:tenant_reconcile`);
+        if (!switchRes?.ok) {
+          throw new Error(switchRes?.error ? String(switchRes.error) : 'TradeLocker account reconcile switch failed.');
+        }
+        await runRefreshBurst();
+        tlReconcileStore.upsertAccountCheckpoint({
+          accountKey,
+          lastReconciledAtMs: Date.now()
+        });
+        tlReconcileStore.upsertTenantCheckpoint({
+          tenantKey,
+          lastReconciledAtMs: Date.now()
+        });
+        return { ok: true, accountKey };
+      });
+      setTlShardStates(tlShardScheduler.getSnapshot().map((entry) => ({ ...entry })));
+      setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+      return result;
+    }
+    if (!accountKeyRaw) return { ok: false as const, error: 'tenant_or_account_required' };
+    const result = await tlStrategyRuntime.reconcileShard(accountKeyRaw, async ({ accountKey }) => {
+      const switchRes = await ensureTradeLockerAccount(accountKey, `${reason}:shard_reconcile`);
+      if (!switchRes?.ok) {
+        throw new Error(switchRes?.error ? String(switchRes.error) : 'TradeLocker account reconcile switch failed.');
+      }
+      await runRefreshBurst();
+      tlReconcileStore.upsertAccountCheckpoint({
+        accountKey,
+        lastReconciledAtMs: Date.now()
+      });
+      return { ok: true, accountKey };
+    });
+    setTlShardStates(tlShardScheduler.getSnapshot().map((entry) => ({ ...entry })));
+    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+    return result;
+  }, [
+    ensureTradeLockerAccount,
+    tlReconcileStore,
+    tlShardScheduler,
+    tlStrategyRuntime
+  ]);
+
+  const noteTradeLockerTenantActivity = useCallback((input: {
+    accountKey: string;
+    strategyId?: string | null;
+    decision?: string | null;
+    order?: string | null;
+    error?: string | null;
+    state?: TradeLockerStrategyMatrixRow['state'];
+  }) => {
+    const accountKey = String(input?.accountKey || '').trim();
+    if (!accountKey) return;
+    const strategyId = String(input?.strategyId || 'manual').trim().toLowerCase() || 'manual';
+    tlTenantRegistry.upsertTenant({
+      accountKey,
+      strategyId,
+      state: (input?.state || 'running') as any,
+      lastDecision: input?.decision ? String(input.decision) : null,
+      lastOrder: input?.order ? String(input.order) : null,
+      lastError: input?.error ? String(input.error) : null
+    });
+    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+  }, [tlStrategyRuntime, tlTenantRegistry]);
 
   const updateNormalizationSeries = useCallback((series: {
     bidOffsets: number[];
@@ -23610,7 +23869,7 @@ const App: React.FC = () => {
       const capturedAtMs = Date.now();
       const healthBuilder = buildHealthSnapshotRef.current;
       const health = healthSnapshotRef.current || healthSnapshot || (healthBuilder ? healthBuilder() : null);
-      const sidebarState = sidebarStateRef.current || { isOpen: false, mode: 'chat' as SidebarMode };
+      const sidebarState = sidebarStateRef.current || { isOpen: false, mode: 'chartchat' as SidebarMode };
       const tabsNow = Array.isArray(tabsRef.current) ? tabsRef.current : tabs;
       const activeId = String(activeTabIdRef.current || '').trim();
       const activeTabNow = activeId ? tabsNow.find((t) => t.id === activeId) : null;
@@ -28430,6 +28689,7 @@ const App: React.FC = () => {
       } catch {
         // ignore cleanup errors
       }
+      disposed = true;
       try {
         disposeReassertTask?.();
       } catch {
@@ -28440,7 +28700,6 @@ const App: React.FC = () => {
           // ignore unsubscribe failures
         });
       }
-      disposed = true;
       setCommandSubscriberHealth(false, null);
     };
   }, [runtimeOpsFeatureFlags.runtimeOpsBridgeStabilityV1]);
@@ -30440,6 +30699,18 @@ const App: React.FC = () => {
         if (exec?.refreshAccountMetrics) void exec.refreshAccountMetrics();
       } catch {
         // ignore
+      }
+
+      for (const row of results) {
+        const ok = row?.res?.ok === true;
+        noteTradeLockerTenantActivity({
+          accountKey: row?.accountKey || '',
+          strategyId,
+          decision: `execute:${executionProposal.action}:${executionProposal.symbol}`,
+          order: ok ? String(row?.res?.orderId || row?.res?.positionId || 'accepted') : null,
+          error: ok ? null : (row?.res?.error ? String(row.res.error) : 'order_failed'),
+          state: ok ? 'running' : 'degraded'
+        });
       }
 
       const primaryResult = selectPrimaryResultByAccountKey(results, primaryKey) || results[0];
@@ -33298,16 +33569,99 @@ const App: React.FC = () => {
     return value;
   }, [resolvePlaybookPath]);
 
+  const CHAT_UNIFIED_MIGRATION_KEY = 'glass_chat_panel_unified_migration_v1';
+  const LEGACY_CHAT_MESSAGES_KEY = 'glass_chat_messages_v1';
+  const LEGACY_CHART_CHAT_MESSAGES_KEY = 'glass_chartchat_messages_v1';
+
+  const loadLegacyChatMessages = useCallback((key: string): Message[] => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((entry: any, index: number) => {
+          if (!entry || typeof entry !== 'object') return null;
+          const roleRaw = String(entry.role || '').trim().toLowerCase();
+          const role: Message['role'] =
+            roleRaw === 'user' || roleRaw === 'model' || roleRaw === 'system'
+              ? (roleRaw as Message['role'])
+              : 'model';
+          const text = typeof entry.text === 'string' ? entry.text : String(entry.text || '');
+          if (!text.trim()) return null;
+          const timestampMs = entry.timestamp instanceof Date
+            ? entry.timestamp.getTime()
+            : Number.isFinite(Number(entry.createdAtMs))
+              ? Number(entry.createdAtMs)
+              : Number.isFinite(Number(entry.timestamp))
+                ? Number(entry.timestamp)
+                : (typeof entry.timestamp === 'string' && Number.isFinite(Date.parse(entry.timestamp))
+                    ? Date.parse(entry.timestamp)
+                    : Date.now());
+          const id = entry.id != null ? String(entry.id) : `legacy_${timestampMs}_${index}`;
+          return {
+            ...(entry as Message),
+            id,
+            role,
+            text,
+            timestamp: new Date(timestampMs)
+          } as Message;
+        })
+        .filter(Boolean) as Message[];
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const mergeChatTranscripts = useCallback((...sources: Message[][]): Message[] => {
+    const all = sources.flat().filter(Boolean) as Message[];
+    if (all.length === 0) return [];
+    const normalizeText = (value: string) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const byKey = new Map<string, Message>();
+    for (const msg of all) {
+      if (!msg || typeof msg !== 'object') continue;
+      const timestampMs = msg.timestamp instanceof Date ? msg.timestamp.getTime() : Number(msg.timestamp) || Date.now();
+      const messageId = String(msg.id || '').trim();
+      const dedupeKey = messageId
+        ? `id:${messageId}`
+        : `hash:${String(msg.role || 'model').toLowerCase()}|${timestampMs}|${normalizeText(msg.text)}`;
+      const existing = byKey.get(dedupeKey);
+      if (!existing) {
+        byKey.set(dedupeKey, { ...msg, timestamp: new Date(timestampMs) });
+        continue;
+      }
+      const existingAttachmentCount = Array.isArray(existing.attachments) ? existing.attachments.length : 0;
+      const nextAttachmentCount = Array.isArray(msg.attachments) ? msg.attachments.length : 0;
+      if (nextAttachmentCount > existingAttachmentCount) {
+        byKey.set(dedupeKey, { ...msg, timestamp: new Date(timestampMs) });
+      }
+    }
+    const ordered = Array.from(byKey.values()).sort((a, b) => {
+      const aTs = a.timestamp instanceof Date ? a.timestamp.getTime() : Number(a.timestamp) || 0;
+      const bTs = b.timestamp instanceof Date ? b.timestamp.getTime() : Number(b.timestamp) || 0;
+      return aTs - bTs;
+    });
+    const firstWelcomeIndex = ordered.findIndex((entry) => String(entry.id || '') === 'welcome');
+    return ordered.filter((entry, index) => String(entry.id || '') !== 'welcome' || index === firstWelcomeIndex);
+  }, []);
+
+  const unifiedChatSeedMessages = React.useMemo(() => {
+    const legacyChat = loadLegacyChatMessages(LEGACY_CHAT_MESSAGES_KEY);
+    const legacyChart = loadLegacyChatMessages(LEGACY_CHART_CHAT_MESSAGES_KEY);
+    return mergeChatTranscripts(legacyChat, legacyChart);
+  }, [loadLegacyChatMessages, mergeChatTranscripts]);
+
   const chatSystemPrefix = [
     'You are Trading Desk Agents.',
     'Use structured broker + chart-engine data by default.',
     'Only request/attach images when the user explicitly asks to see visuals (e.g., "show me what you see", "analyze the snapshot").',
     'Prefer the SYMBOL SCOPE context for default symbol + multi-timeframe analysis.',
-    'When using chat.* actions, set payload.channel="chat" to target the main chat.'
+    'When using chat.* actions, set payload.channel="chart" to target chart chat.'
   ].join('\n');
 
   const { 
   messages, 
+  replaceMessages,
   sendMessage, 
   clearChat, 
   isThinking,
@@ -33367,7 +33721,8 @@ const App: React.FC = () => {
     onExecuteAgentTool: executeAgentToolRequest,
     onCancelAgentTool: cancelAgentToolRequest,
     onAgentRequest: handleAgentRequest,
-    defaultActionSource: 'chat',
+    defaultActionSource: 'chart',
+    initialMessages: unifiedChatSeedMessages,
     resolveActionFlowIntent
   });
 
@@ -33415,6 +33770,54 @@ const App: React.FC = () => {
     sessionBias
   ]);
 
+  const chatUnifiedMigrationAppliedRef = React.useRef(false);
+  useEffect(() => {
+    if (chatUnifiedMigrationAppliedRef.current) return;
+    chatUnifiedMigrationAppliedRef.current = true;
+    let alreadyMigrated = false;
+    try {
+      alreadyMigrated = localStorage.getItem(CHAT_UNIFIED_MIGRATION_KEY) === '1';
+    } catch {
+      alreadyMigrated = false;
+    }
+    if (alreadyMigrated) {
+      void appendAuditEvent({
+        eventType: 'chat_panel_unified_migration_skipped',
+        level: 'info',
+        payload: { reason: 'already_migrated' }
+      });
+      return;
+    }
+    void appendAuditEvent({
+      eventType: 'chat_panel_unified_cutover_started',
+      level: 'info',
+      payload: {
+        mergedSeedCount: unifiedChatSeedMessages.length
+      }
+    });
+    if (unifiedChatSeedMessages.length > 0) {
+      replaceMessages(unifiedChatSeedMessages);
+      void appendAuditEvent({
+        eventType: 'chat_panel_unified_migration_merged',
+        level: 'info',
+        payload: { mergedCount: unifiedChatSeedMessages.length }
+      });
+    } else {
+      void appendAuditEvent({
+        eventType: 'chat_panel_unified_migration_skipped',
+        level: 'info',
+        payload: { reason: 'no_legacy_messages' }
+      });
+    }
+    try {
+      localStorage.setItem(CHAT_UNIFIED_MIGRATION_KEY, '1');
+      localStorage.removeItem(LEGACY_CHAT_MESSAGES_KEY);
+      localStorage.removeItem(LEGACY_CHART_CHAT_MESSAGES_KEY);
+    } catch {
+      // ignore storage issues
+    }
+  }, [appendAuditEvent, replaceMessages, unifiedChatSeedMessages]);
+
   const executeCatalogAction = useCallback(async (input: {
     actionId: string;
     payload?: Record<string, any> | null;
@@ -33439,9 +33842,9 @@ const App: React.FC = () => {
     const quoteMap = quotesBySymbolRef.current || {};
     const resolveChatChannel = (value: any) => {
       const raw = String(value || '').trim().toLowerCase();
-      if (!raw) return 'chat';
-      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat') return 'chart';
-      return 'chat';
+      if (!raw) return 'chart';
+      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat' || raw === 'chat') return 'chart';
+      return 'chart';
     };
     const sourceHint = String(input?.source || payload.source || '').toLowerCase();
     const sourceChannel = sourceHint.includes('chart') ? 'chart' : '';
@@ -33531,7 +33934,7 @@ const App: React.FC = () => {
       if (!key) return null;
       if (key === 'chart' || key === 'nativechart' || key === 'native_chart') return 'nativechart';
       if (key === 'chartchat' || key === 'chart_chat') return 'chartchat';
-      if (key === 'chat') return 'chat';
+      if (key === 'chat') return 'chartchat';
       if (key === 'patterns' || key === 'pattern') return 'patterns';
       if (key === 'snapshot' || key === 'snap') return 'snapshot';
       if (key === 'shadow') return 'shadow';
@@ -33726,7 +34129,11 @@ const App: React.FC = () => {
             executeTicketOrderViaApi,
             tlSearchInstrumentsRef,
             tlPositionsRef,
-            tlOrdersRef
+            tlOrdersRef,
+            listTradeLockerStrategyRuntimes,
+            setTradeLockerStrategyRuntimeState,
+            assignTradeLockerStrategyRuntimeAccounts,
+            reconcileTradeLockerStrategyRuntime
           }
         }));
         if (runtimeRes.handled) return runtimeRes.result || { ok: false, error: 'Broker action failed.' };
@@ -33864,13 +34271,16 @@ const App: React.FC = () => {
     executeBulkCancelOrdersViaApi,
     executeBulkClosePositionsViaApi,
     executeTicketOrderViaApi,
+    listTradeLockerStrategyRuntimes,
     isChartFullscreen,
     isFullscreen,
     openCommandPalette,
     persistChartSnapshotMemory,
     refreshSetupLibrary,
     recommendedActionFlowsState,
+    reconcileTradeLockerStrategyRuntime,
     resolveActionFlowByIntent,
+    setTradeLockerStrategyRuntimeState,
     setActiveTabId,
     setAutoPilotConfig,
     setBacktesterMounted,
@@ -33885,7 +34295,8 @@ const App: React.FC = () => {
     updateTab,
     updateSetupWatcher,
     updateTradeMemory,
-    upsertTaskPlaybook
+    upsertTaskPlaybook,
+    assignTradeLockerStrategyRuntimeAccounts
   ]);
 
   const runActionCatalogImmediate = useCallback(async (input: { actionId: string; payload?: Record<string, any> }) => {
@@ -35448,56 +35859,44 @@ const App: React.FC = () => {
   }, [addNotification, appendAuditEvent, enqueuePlaybookRun, refreshShadowTrades]);
   runRecommendedActionFlowRef.current = runRecommendedActionFlow;
 
-  const {
-    messages: chartChatMessages,
-    sendMessage: sendChartChatMessage,
-    clearChat: clearChartChat,
-    isThinking: chartChatThinking,
-    replyMode: chartChatReplyMode,
-    setReplyMode: setChartChatReplyMode,
-    autoTabVisionEnabled: chartChatAutoTabVisionEnabled,
-    setAutoTabVisionEnabled: setChartChatAutoTabVisionEnabled,
-    chartWatchEnabled: chartChatWatchEnabled,
-    setChartWatchEnabled: setChartChatWatchEnabled,
-    chartWatchMode: chartChatWatchMode,
-    setChartWatchMode: setChartChatWatchMode,
-    chartWatchSnoozedUntilMs: chartChatSnoozedUntilMs,
-    snoozeChartWatch: chartChatSnoozeWatch,
-    clearChartWatchSnooze: clearChartChatSnooze,
-    chartWatchLeadAgentId: chartChatLeadAgentId,
-    setChartWatchLeadAgentId: setChartChatLeadAgentId,
-    agents: chartChatAgents,
-    activeAgentId: chartChatActiveAgentId,
-    addAgent: addChartChatAgent,
-    updateAgent: updateChartChatAgent,
-    deleteAgent: deleteChartChatAgent,
-    switchAgent: switchChartChatAgent,
-    isLive: chartChatIsLive,
-    liveMode: chartChatLiveMode,
-    liveStream: chartChatLiveStream,
-    startLiveSession: startChartChatLive,
-    stopLiveSession: stopChartChatLive,
-    sendVideoFrame: sendChartChatVideoFrame,
-    speakMessage: speakChartChatMessage,
-    speakingMessageId: chartChatSpeakingMessageId,
-    sessionBias: chartChatSessionBias,
-    setSessionBias: setChartChatSessionBias,
-    executeTradeProposal: executeChartChatTradeProposal,
-    rejectTradeProposal: rejectChartChatTradeProposal,
-    executeBrokerAction: executeChartChatBrokerAction,
-    rejectBrokerAction: rejectChartChatBrokerAction,
-    cancelAgentTool: cancelChartChatAgentTool
-  } = useChat(executeTradeRequestViaApi, {
-    getExternalContext: getChartChatAgentContext,
-    systemContextPrefix: chartChatSystemPrefix,
-    disableChartWatch: true,
-    onExecuteBrokerAction: executeBrokerActionViaApi,
-    onExecuteAgentTool: executeAgentToolRequest,
-    onCancelAgentTool: cancelAgentToolRequest,
-    onAgentRequest: handleAgentRequest,
-    defaultActionSource: 'chart',
-    resolveActionFlowIntent
-  });
+  const chartChatMessages = messages;
+  const sendChartChatMessage = sendMessage;
+  const clearChartChat = clearChat;
+  const chartChatThinking = isThinking;
+  const chartChatReplyMode = replyMode;
+  const setChartChatReplyMode = setReplyMode;
+  const chartChatAutoTabVisionEnabled = autoTabVisionEnabled;
+  const setChartChatAutoTabVisionEnabled = setAutoTabVisionEnabled;
+  const chartChatWatchEnabled = chartWatchEnabled;
+  const setChartChatWatchEnabled = setChartWatchEnabled;
+  const chartChatWatchMode = chartWatchMode;
+  const setChartChatWatchMode = setChartWatchMode;
+  const chartChatSnoozedUntilMs = chartWatchSnoozedUntilMs;
+  const chartChatSnoozeWatch = snoozeChartWatch;
+  const clearChartChatSnooze = clearChartWatchSnooze;
+  const chartChatLeadAgentId = chartWatchLeadAgentId;
+  const setChartChatLeadAgentId = setChartWatchLeadAgentId;
+  const chartChatAgents = agents;
+  const chartChatActiveAgentId = activeAgentId;
+  const addChartChatAgent = addAgent;
+  const updateChartChatAgent = updateAgent;
+  const deleteChartChatAgent = deleteAgent;
+  const switchChartChatAgent = switchAgent;
+  const chartChatIsLive = isLive;
+  const chartChatLiveMode = liveMode;
+  const chartChatLiveStream = liveStream;
+  const startChartChatLive = startLiveSession;
+  const stopChartChatLive = stopLiveSession;
+  const sendChartChatVideoFrame = sendVideoFrame;
+  const speakChartChatMessage = speakMessage;
+  const chartChatSpeakingMessageId = speakingMessageId;
+  const chartChatSessionBias = sessionBias;
+  const setChartChatSessionBias = setSessionBias;
+  const executeChartChatTradeProposal = executeTradeProposal;
+  const rejectChartChatTradeProposal = rejectTradeProposal;
+  const executeChartChatBrokerAction = executeBrokerAction;
+  const rejectChartChatBrokerAction = rejectBrokerAction;
+  const cancelChartChatAgentTool = cancelAgentTool;
 
   const sendChartChatMessageWithSnapshot = useCallback(async (
     text: string,
@@ -35555,7 +35954,26 @@ const App: React.FC = () => {
       truncated
     });
 
-    return sendChartChatMessage(text, context, monitoredUrls, finalAttachment, {
+    const activeUrl = String(activeTab?.url || '').trim();
+    const contextUrl = String(context?.url || '').trim();
+    const contextTitle = String(context?.title || '').trim();
+    const useActiveTabContext = !contextUrl || contextUrl === 'chart://engine';
+    const resolvedContext = {
+      url: useActiveTabContext ? (activeUrl || contextUrl || 'chart://engine') : contextUrl,
+      title: useActiveTabContext ? (String(activeTab?.title || '').trim() || contextTitle || 'Chart Engine') : (contextTitle || 'Chart Engine'),
+      captureScreenshot: async () => {
+        const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 60, width: 1280 }, 1200);
+        if (!frame?.data) return null;
+        return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
+      },
+      captureScreenshots: captureChatTabContextImages
+    };
+    const resolvedMonitoredUrls =
+      Array.isArray(monitoredUrls) && monitoredUrls.length > 0
+        ? monitoredUrls
+        : tabs.filter((tab) => !!tab.isWatched).map((tab) => tab.url);
+
+    return sendChartChatMessage(text, resolvedContext, resolvedMonitoredUrls, finalAttachment, {
       correlationId: msgId,
       channel: 'chart',
       symbol: snapshotBundle?.status?.symbol || symbol || null,
@@ -35565,11 +35983,17 @@ const App: React.FC = () => {
       payloadChars
     });
   }, [
+    activeTab?.title,
+    activeTab?.url,
+    activeTabId,
+    captureChatTabContextImages,
+    captureTabCached,
     captureChartChatSnapshot,
     logChartChatEvent,
     resolveChartChatSymbol,
     resolveChartChatTimeframes,
-    sendChartChatMessage
+    sendChartChatMessage,
+    tabs
   ]);
 
   const clearChartChatWithSnapshot = useCallback(() => {
@@ -36099,17 +36523,26 @@ const App: React.FC = () => {
     backgroundWatchersEnabledRef.current = backgroundWatchersEnabled;
   }, [backgroundWatchersEnabled]);
 
+  const canonicalizeChatSidebarMode = useCallback((nextMode: SidebarMode): SidebarMode => {
+    if (nextMode === 'chat') return 'chartchat';
+    return nextMode;
+  }, []);
+  const isUnifiedChatMode = useCallback((value: SidebarMode | null | undefined) => {
+    return value === 'chat' || value === 'chartchat';
+  }, []);
+
   const handleSwitchSidebarMode = useCallback((nextMode: SidebarMode) => {
-    if (nextMode === 'autopilot') {
+    const canonicalMode = canonicalizeChatSidebarMode(nextMode);
+    if (canonicalMode === 'autopilot') {
       setShadowPanelTabSafe('auto');
       switchMode('shadow');
       return;
     }
-    if (nextMode === 'shadow') {
+    if (canonicalMode === 'shadow') {
       setShadowPanelTabSafe('shadow');
     }
-    switchMode(nextMode);
-  }, [setShadowPanelTabSafe, switchMode]);
+    switchMode(canonicalMode);
+  }, [canonicalizeChatSidebarMode, setShadowPanelTabSafe, switchMode]);
 
   const openSidebarMode = useCallback((nextMode: SidebarMode) => {
     openSidebar();
@@ -36537,13 +36970,12 @@ const App: React.FC = () => {
         ]
       : [];
     return [
-      { id: 'open-chat', label: 'Open Chat', group: 'Panels', onSelect: () => openSidebarMode('chat') },
+      { id: 'open-chat', label: 'Open Chat', group: 'Panels', onSelect: () => openSidebarMode('chartchat') },
       { id: 'open-signal', label: 'Open Signal', group: 'Panels', onSelect: () => openSidebarMode('signal') },
       { id: 'open-snapshot', label: 'Open Snapshot', group: 'Panels', onSelect: () => openSidebarMode('snapshot') },
       { id: 'open-patterns', label: 'Open Patterns', group: 'Panels', onSelect: () => openSidebarMode('patterns') },
       { id: 'open-shadow', label: 'Open Shadow', group: 'Panels', onSelect: () => openSidebarMode('shadow') },
       { id: 'open-calendar', label: 'Open Calendar', group: 'Panels', onSelect: () => openSidebarMode('calendar') },
-      { id: 'open-chart-chat', label: 'Open Chart Chat', group: 'Panels', onSelect: () => openSidebarMode('chartchat') },
       { id: 'open-notes', label: 'Open Notes', group: 'Panels', onSelect: () => openSidebarMode('notes') },
       { id: 'open-autopilot', label: 'Open AutoPilot', group: 'Panels', onSelect: () => openSidebarMode('autopilot') },
       { id: 'open-tradelocker', label: 'Open TradeLocker', group: 'Panels', onSelect: () => openSidebarMode('tradelocker') },
@@ -36716,14 +37148,13 @@ const App: React.FC = () => {
 
   const keepWatchedTabsMountedRequested =
     isLive ||
-    (chartWatchEnabled && isOpen && mode === 'chat') ||
-    (autoTabVisionEnabled && isOpen && mode === 'chat');
+    (chartWatchEnabled && isOpen && isUnifiedChatMode(mode)) ||
+    (autoTabVisionEnabled && isOpen && isUnifiedChatMode(mode));
   const keepWatchedTabsMounted = keepWatchedTabsMountedRequested && !isSettingsOpen;
   const [tradeLockerStartupGate, setTradeLockerStartupGate] = useState<{ phase: 'booting' | 'restoring' | 'settled'; bridgeReady: boolean }>({
     phase: 'booting',
     bridgeReady: false
   });
-
   // TradeLocker (real broker connection)
   const {
     status: tlStatus,
@@ -36775,7 +37206,8 @@ const App: React.FC = () => {
     withAccountLock: withTradeLockerAccountLock,
     accountBusyRef: tradeLockerAccountBusyRef,
     startupPhase: tradeLockerStartupGate.phase,
-    startupBridgeReady: tradeLockerStartupGate.bridgeReady
+    startupBridgeReady: tradeLockerStartupGate.bridgeReady,
+    marketBus: tlMarketBus
   });
   tradeLockerExecutionGateRef.current.connected = tlStatus === 'connected';
   tradeLockerExecutionGateRef.current.upstreamBlockedUntilMs =
@@ -36786,6 +37218,7 @@ const App: React.FC = () => {
   tlRefreshAccountsRef.current = tlRefreshAccounts;
   refreshSnapshotRef.current = tlRefreshSnapshot;
   refreshOrdersRef.current = tlRefreshOrders;
+  refreshOrdersHistoryRef.current = tlRefreshOrdersHistory;
   refreshAccountMetricsRef.current = tlRefreshAccountMetrics;
   refreshQuotesRef.current = tlRefreshQuotes;
   tlCancelOrderRef.current = tlCancelOrder;
@@ -36875,6 +37308,91 @@ const App: React.FC = () => {
       }
     }
   }, [tlAccounts, tlSavedConfig?.env, tlSavedConfig?.server, tlSnapshotSourceKey, tlNormalizeRefKey]);
+
+  useEffect(() => {
+    const env = tlSavedConfig?.env ? String(tlSavedConfig.env).trim().toLowerCase() : '';
+    const server = tlSavedConfig?.server ? String(tlSavedConfig.server).trim().toLowerCase() : '';
+    const accountKeys = new Set<string>();
+    if (env && server) {
+      for (const acct of Array.isArray(tlAccounts) ? tlAccounts : []) {
+        const normalized = normalizeTradeLockerAccountRecord(acct, { env, server });
+        const accountKey = normalized?.accountKey || buildTradeLockerAccountKey({
+          env,
+          server,
+          accountId: normalized?.accountId,
+          accNum: normalized?.accNum ?? null
+        });
+        if (!accountKey) continue;
+        accountKeys.add(accountKey);
+        tlShardScheduler.ensureShard(accountKey);
+      }
+      const activeKey = buildTradeLockerAccountKey({
+        env,
+        server,
+        accountId: tlSavedConfig?.accountId,
+        accNum: tlSavedConfig?.accNum ?? null
+      });
+      if (activeKey) accountKeys.add(activeKey);
+    }
+
+    const activeAccountKey = buildTradeLockerAccountKey({
+      env,
+      server,
+      accountId: tlSavedConfig?.accountId,
+      accNum: tlSavedConfig?.accNum ?? null
+    });
+
+    const incomingAssignments: Record<string, string[]> = { ...tlStrategyAssignments };
+    const hasConfiguredAssignments = Object.keys(incomingAssignments).length > 0;
+    if (!hasConfiguredAssignments && activeAccountKey) {
+      incomingAssignments.manual = [activeAccountKey];
+      setTlStrategyAssignments(incomingAssignments);
+    }
+
+    for (const [strategyId, assigned] of Object.entries(incomingAssignments)) {
+      tlStrategyRuntime.assignStrategyAccounts(strategyId, assigned);
+    }
+    tlStrategyRuntime.syncFromWatchers(setupWatchers, { defaultAccountKey: activeAccountKey || null });
+
+    const shards = tlShardScheduler.getSnapshot();
+    for (const shard of shards) {
+      if (!accountKeys.has(shard.accountKey)) continue;
+      if (shard.accountKey === activeAccountKey) {
+        tlTenantRegistry.updateShard(shard.accountKey, {
+          queueDepth: Number(shard.queueDepth || 0),
+          rateBudget: Number(shard.rateBudget || 0),
+          circuitState: (shard.circuitState || 'closed') as TradeLockerAccountShardState['circuitState'],
+          lastError: shard.lastError || tlStatusMeta?.accountProbeLastError || null,
+          lastReconcileAtMs: shard.lastReconcileAtMs ?? null
+        });
+      } else {
+        tlTenantRegistry.updateShard(shard.accountKey, {
+          queueDepth: Number(shard.queueDepth || 0),
+          rateBudget: Number(shard.rateBudget || 0),
+          circuitState: (shard.circuitState || 'closed') as TradeLockerAccountShardState['circuitState'],
+          lastError: shard.lastError || null,
+          lastReconcileAtMs: shard.lastReconcileAtMs ?? null
+        });
+      }
+    }
+
+    setTlShardStates(shards.map((entry) => ({ ...entry })));
+    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
+    setTlMarketSubscriptions(tlMarketBus.getSubscriptionSnapshot());
+  }, [
+    setupWatchers,
+    tlAccounts,
+    tlMarketBus,
+    tlSavedConfig?.accNum,
+    tlSavedConfig?.accountId,
+    tlSavedConfig?.env,
+    tlSavedConfig?.server,
+    tlShardScheduler,
+    tlStatusMeta?.accountProbeLastError,
+    tlStrategyAssignments,
+    tlStrategyRuntime,
+    tlTenantRegistry
+  ]);
 
   useEffect(() => {
     const eventName = GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED;
@@ -38079,6 +38597,7 @@ const App: React.FC = () => {
       };
       return acc;
     }, {} as Record<string, { total: number; fallbackUsed: number; byReason: Record<string, number> }>);
+    const tlShardSchedulerTelemetry = tlShardScheduler.getTelemetry();
     return {
       updatedAtMs: now,
       academyMergeAddedCount: Number(academyMergeStatsRef.current.added || 0),
@@ -38163,6 +38682,31 @@ const App: React.FC = () => {
       tradelockerRequestConcurrency: tlStatusMeta?.requestConcurrency ?? null,
       tradelockerMinRequestIntervalMs: tlStatusMeta?.minRequestIntervalMs ?? null,
       tradelockerRateLimitTelemetry: tlStatusMeta?.rateLimitTelemetry ?? null,
+      tradelockerShards: Array.isArray(tlShardStates)
+        ? tlShardStates.map((entry) => ({
+            accountKey: String(entry?.accountKey || ''),
+            queueDepth: Number(entry?.queueDepth || 0),
+            rateBudget: Number(entry?.rateBudget || 0),
+            circuitState: (entry?.circuitState || 'closed') as any,
+            lastError: entry?.lastError ? String(entry.lastError) : null,
+            lastReconcileAtMs: Number.isFinite(Number(entry?.lastReconcileAtMs)) ? Number(entry?.lastReconcileAtMs) : null
+          }))
+        : null,
+      tradelockerTenants: Array.isArray(tlStrategyMatrixRows) ? tlStrategyMatrixRows.length : 0,
+      tradelockerFanout: Array.isArray(tlMarketSubscriptions)
+        ? tlMarketSubscriptions.map((entry) => ({
+            symbol: String(entry?.symbol || ''),
+            subscriberCount: Number(entry?.subscriberCount || 0),
+            subscribers: Array.isArray(entry?.subscribers) ? entry.subscribers.slice() : [],
+            lastQuoteAtMs: Number.isFinite(Number(entry?.lastQuoteAtMs)) ? Number(entry?.lastQuoteAtMs) : null
+          }))
+        : null,
+      tradelockerScheduler: {
+        shardCount: Number(tlShardSchedulerTelemetry?.shardCount || 0),
+        totalQueueDepth: Number(tlShardSchedulerTelemetry?.totalQueueDepth || 0),
+        totalRuns: Number(tlShardSchedulerTelemetry?.totalRuns || 0),
+        totalFailures: Number(tlShardSchedulerTelemetry?.totalFailures || 0)
+      },
       nativeChartSymbol: meta?.symbol || null,
       nativeChartUpdatedAtMs: meta?.updatedAtMs ?? null,
       nativeChartFrames: Array.isArray(meta?.frames) ? meta.frames.length : null,
@@ -38250,7 +38794,7 @@ const App: React.FC = () => {
       },
       crossPanelContext: crossPanelContextSnapshot
     };
-  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, runtimeOpsControllerState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlQuotesError, tlQuotesUpdatedAtMs, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
+  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, runtimeOpsControllerState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlMarketSubscriptions, tlQuotesError, tlQuotesUpdatedAtMs, tlShardScheduler, tlShardStates, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStrategyMatrixRows, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
 
   useEffect(() => {
     buildHealthSnapshotRef.current = buildHealthSnapshot;
@@ -39981,7 +40525,7 @@ const App: React.FC = () => {
   // --- Unified Capture Scheduler (Live Vision + Chart Watch) ---
   useEffect(() => {
     const liveEnabled = isLive && liveMode !== 'audio' && !isSettingsOpen;
-    const chartEnabled = chartWatchEnabled && !isSettingsOpen && isOpen && mode === 'chat';
+    const chartEnabled = chartWatchEnabled && !isSettingsOpen && isOpen && isUnifiedChatMode(mode);
     if (!liveEnabled && !chartEnabled) return;
 
     const readInterval = (key: string, fallback: number, min: number, max: number) => {
@@ -40265,7 +40809,7 @@ const App: React.FC = () => {
       cancelled = true;
       stop?.();
     };
-  }, [addNotification, applyVisionTransform, captureTabCached, chartSessionsRef, chartWatchEnabled, chartWatchMode, chartWatchSnoozedUntilMs, isLive, isOpen, isSettingsOpen, liveMode, mode, readChatTabContextTransform, runChartWatchUpdate, sendVideoFrame]);
+  }, [addNotification, applyVisionTransform, captureTabCached, chartSessionsRef, chartWatchEnabled, chartWatchMode, chartWatchSnoozedUntilMs, isLive, isOpen, isSettingsOpen, isUnifiedChatMode, liveMode, mode, readChatTabContextTransform, runChartWatchUpdate, sendVideoFrame]);
 
   const effectiveSignalSnapshotStatus = React.useMemo(() => {
     const normalizedSignal = classifyUnifiedSnapshotStatus(signalSnapshotStatus) || signalSnapshotStatus;
@@ -40444,127 +40988,6 @@ const App: React.FC = () => {
             >
                 <React.Suspense fallback={SIDEBAR_LAZY_FALLBACK}>
                 {/* Conditionally render the selected feature */}
-                        {mode === 'chat' && (
-                    <ChatInterface 
-                        channel="chat"
-                        messages={messages}
-                        onSendMessage={(text, img) => sendMessage(
-                          text,
-                          {
-                            url: activeTab.url,
-                            title: activeTab.title,
-                            captureScreenshot: async () => {
-                              const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 60, width: 1280 }, 1200);
-                              if (!frame?.data) return null;
-                              return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
-                            },
-                            captureScreenshots: captureChatTabContextImages
-                          },
-                          watchedUrls,
-                          img
-                        )}
-                        captureActiveTabScreenshot={async () => {
-                          const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 80, width: 1280 }, 1200);
-                          if (!frame?.data) return null;
-                          return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
-                        }}
-                        captureContextScreenshots={captureChatTabContextImages}
-                         onClearChat={clearChat}
-                         isThinking={isThinking}
-                         isTeamMode={replyMode === 'team'}
-                         onToggleTeamMode={() => setReplyMode(prev => prev === 'team' ? 'single' : 'team')}
-                         agents={agents}
-                         activeAgentId={activeAgentId}
-                         onAddAgent={addAgent}
-                         onSwitchAgent={switchAgent}
-                         onUpdateAgent={updateAgent}
-                         onDeleteAgent={deleteAgent}
-                         actionQueueDepth={actionTaskQueueDepth}
-                         actionTaskActiveConfig={actionTaskActiveStepRef.current}
-                         playbooks={taskPlaybooks}
-                         activePlaybookRun={taskPlaybookActiveRunRef.current}
-                         recentPlaybookRuns={taskPlaybookRunsRef.current}
-                         taskTreeResumeEntries={taskTreeResumeEntries}
-                         onResumeTaskTreeRun={(input) => {
-                           void resumeTaskTreeRun(input);
-                         }}
-                         taskTreeRuns={taskTreeRunsState}
-                         actionTaskTreeRuns={actionTaskTreeRunsState}
-                         onReplayTaskTree={handleReplayTaskTree}
-                         recommendedFlows={recommendedActionFlowsState}
-                         onRunActionFlow={runRecommendedActionFlow}
-                         onRunActionCatalog={runActionCatalog}
-                         onResumePlaybookRun={(runId, opts) => {
-                           void resumePlaybookRun(runId, opts);
-                         }}
-                         autoTabVisionEnabled={autoTabVisionEnabled}
-                         onToggleAutoTabVision={() => setAutoTabVisionEnabled(prev => !prev)}
-                         chartWatchEnabled={chartWatchEnabled}
-                         onToggleChartWatch={() => setChartWatchEnabled(prev => !prev)}
-                         chartWatchMode={chartWatchMode}
-                         onSetChartWatchMode={setChartWatchMode}
-                         chartWatchSnoozedUntilMs={chartWatchSnoozedUntilMs}
-                         onSnoozeChartWatch={snoozeChartWatch}
-                         onClearChartWatchSnooze={clearChartWatchSnooze}
-                         chartWatchLeadAgentId={chartWatchLeadAgentId}
-                         onSetChartWatchLeadAgentId={setChartWatchLeadAgentId}
-                         chartSessions={chartSessions.sessions}
-                         activeTabId={activeTabId}
-                         getTabTitle={(tabId) => {
-                           const tab = tabs.find((t) => t.id === tabId);
-                           return tab?.title || tab?.url || tabId;
-                         }}
-                         onCreateChartSessionFromActiveTab={() => {
-                           if (!activeTab) return;
-                           const sessionId = chartSessions.createSessionFromTab(activeTab);
-                           if (!sessionId) return;
-                           chartSessions.assignTabToTimeframe(sessionId, '15m', activeTabId);
-                           updateTab(activeTabId, { isWatched: true, watchSource: 'manual' });
-                         }}
-                         onAssignActiveTabToChartSession={(sessionId, timeframe) => {
-                           if (!activeTabId) return;
-                           chartSessions.assignTabToTimeframe(sessionId, timeframe, activeTabId);
-                           updateTab(activeTabId, { isWatched: true, watchSource: 'manual' });
-                         }}
-                         onClearChartSessionTimeframe={(sessionId, timeframe) => {
-                           chartSessions.clearTimeframe(sessionId, timeframe);
-                         }}
-                         onToggleChartSessionWatch={(sessionId) => {
-                           const session = chartSessions.byId.get(sessionId);
-                           if (!session) return;
-                           chartSessions.setSessionWatchEnabled(sessionId, !session.watchEnabled);
-                         }}
-                         onRemoveChartSession={(sessionId) => {
-                           chartSessions.removeSession(sessionId);
-                         }}
-                         // Live Props
-                         isLive={isLive}
-                         liveMode={liveMode}
-                         liveStream={liveStream}
-                        startLiveSession={startLiveSession}
-                        stopLiveSession={stopLiveSession}
-                        sendVideoFrame={sendVideoFrame}
-                        // TTS Props
-                        speakMessage={speakMessage}
-                        speakingMessageId={speakingMessageId}
-                        // Session Props
-                         sessionBias={sessionBias}
-                         onUpdateSessionBias={setSessionBias}
-                         // Execution Props
-                         onExecuteTrade={(messageId, proposal) => executeTradeProposal(messageId, proposal, 'manual')}
-                         onRejectTrade={(messageId) => rejectTradeProposal(messageId, 'Rejected by user')}
-                         onExecuteBrokerAction={(messageId, action) => executeBrokerAction(messageId, action)}
-                         onRejectBrokerAction={(messageId) => rejectBrokerAction(messageId, 'Rejected by user')}
-                         onCancelAgentTool={(messageId) => cancelAgentTool(messageId)}
-                         contextPackText={getContextPack()}
-                         onCaptureContextPack={captureContextPack}
-                         symbolScope={symbolScope}
-                         onUpdateSymbolScope={updateSymbolScope}
-                         onClearSymbolScope={clearSymbolScope}
-                         onSearchSymbols={searchSymbolSuggestions}
-                         crossPanelContext={crossPanelContext}
-                     />
-                 )}
                 {mode === 'signal' && (
                     <SignalInterface
                       symbols={signalSymbols}
@@ -40819,7 +41242,7 @@ const App: React.FC = () => {
                       onRunActionCatalog={runActionCatalog}
                     />
                 )}
-                {mode === 'chartchat' && (
+                {isUnifiedChatMode(mode) && (
                     <div className="flex h-full flex-col">
                       <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-white/5">
                         <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Chart Chat</div>
@@ -40836,6 +41259,12 @@ const App: React.FC = () => {
                             channel="chart"
                             messages={chartChatMessages}
                             onSendMessage={(text, img) => sendChartChatMessageWithSnapshot(text, chartChatContext, [], img)}
+                            captureActiveTabScreenshot={async () => {
+                              const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 80, width: 1280 }, 1200);
+                              if (!frame?.data) return null;
+                              return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
+                            }}
+                            captureContextScreenshots={captureChatTabContextImages}
                             onClearChat={clearChartChatWithSnapshot}
                             isThinking={chartChatThinking}
                             isTeamMode={chartChatReplyMode === 'team'}
@@ -41104,6 +41533,10 @@ const App: React.FC = () => {
                           normalizationEnabled={tlNormalizeEnabled}
                           normalizationReferenceKey={tlNormalizeRefKey || null}
                           symbolMap={brokerLinkConfig?.symbolMap || []}
+                          strategyMatrixRows={tlStrategyMatrixRows}
+                          strategyAssignments={tlStrategyAssignments}
+                          marketSubscriptions={tlMarketSubscriptions}
+                          shardStates={tlShardStates}
                           onRefresh={() => {
                             tlRefreshSnapshot();
                             tlRefreshOrders();

@@ -34,47 +34,53 @@ export async function runCatalogChatLiveRuntime(
   setPostTradeReviewAgentId,
   reviewLastClosedTrade
 } = context as any;
+    const channel = (() => {
+      const raw = String(chatChannel || '').trim().toLowerCase();
+      if (!raw) return 'chart';
+      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat' || raw === 'chat') return 'chart';
+      return 'chart';
+    })();
   
     if (actionId === 'chat.reply_mode.set') {
       const mode = String(payload.mode || payload.replyMode || '').trim().toLowerCase();
       if (mode !== 'single' && mode !== 'team') return { ok: false, error: 'Reply mode must be single or team.' };
-      if (chatChannel === 'chart' && typeof chartHandlers.setReplyMode === 'function') {
+      if (channel === 'chart' && typeof chartHandlers.setReplyMode === 'function') {
         chartHandlers.setReplyMode(mode as any);
       } else {
-        if (chatChannel === 'chart') {
+        if (channel === 'chart') {
           return { ok: false, error: 'Chart chat reply mode unavailable.' };
         }
         setReplyMode(mode as any);
       }
-      return { ok: true, data: { replyMode: mode, channel: chatChannel } };
+      return { ok: true, data: { replyMode: mode, channel } };
     }
 
     if (actionId === 'chat.clear') {
-      if (chatChannel === 'chart' && typeof chartHandlers.clearChat === 'function') {
+      if (channel === 'chart' && typeof chartHandlers.clearChat === 'function') {
         chartHandlers.clearChat();
       } else {
-        if (chatChannel === 'chart') {
+        if (channel === 'chart') {
           return { ok: false, error: 'Chart chat clear unavailable.' };
         }
         clearChat();
       }
-      return { ok: true, data: { cleared: true, channel: chatChannel } };
+      return { ok: true, data: { cleared: true, channel } };
     }
 
     if (actionId === 'chat.playbook.default.set') {
       const playbookId = String(payload.playbookId || payload.id || payload.value || '').trim();
       if (!playbookId) return { ok: false, error: 'Playbook id is required.' };
       try {
-        window.dispatchEvent(new CustomEvent('glass_chat_playbook_default', { detail: { playbookId, channel: chatChannel } }));
+        window.dispatchEvent(new CustomEvent('glass_chat_playbook_default', { detail: { playbookId, channel } }));
       } catch {
         return { ok: false, error: 'Unable to set default playbook.' };
       }
-      return { ok: true, data: { playbookId, channel: chatChannel } };
+      return { ok: true, data: { playbookId, channel } };
     }
 
     if (actionId === 'chat.attachment.set') {
       const detail = payload && typeof payload === 'object' ? payload : {};
-      if (!detail.channel) detail.channel = chatChannel;
+      if (!detail.channel) detail.channel = channel;
       try {
         window.dispatchEvent(new CustomEvent('glass_chat_attachment', { detail }));
       } catch {
@@ -85,7 +91,7 @@ export async function runCatalogChatLiveRuntime(
 
     if (actionId === 'chat.snapshot.capture') {
       const detail = payload && typeof payload === 'object' ? payload : {};
-      if (!detail.channel) detail.channel = chatChannel;
+      if (!detail.channel) detail.channel = channel;
       try {
         window.dispatchEvent(new CustomEvent('glass_chat_snapshot_capture', { detail }));
       } catch {
@@ -96,7 +102,7 @@ export async function runCatalogChatLiveRuntime(
 
     if (actionId === 'chat.snapshot.send') {
       const detail = payload && typeof payload === 'object' ? payload : {};
-      if (!detail.channel) detail.channel = chatChannel;
+      if (!detail.channel) detail.channel = channel;
       try {
         window.dispatchEvent(new CustomEvent('glass_chat_snapshot_send', { detail }));
       } catch {
@@ -109,7 +115,7 @@ export async function runCatalogChatLiveRuntime(
       const text = String(payload.text || payload.message || '').trim();
       if (!text) return { ok: false, error: 'Message text is required.' };
       const image = payload.image || payload.dataUrl || payload.attachment || null;
-      if (chatChannel === 'chart' && typeof chartHandlers.sendMessage === 'function') {
+      if (channel === 'chart' && typeof chartHandlers.sendMessage === 'function') {
         const context = chartChatContextRef.current || { url: 'chart://engine', title: 'Chart Engine' };
         const symbolOverride = String(payload.symbol || payload.symbolScope || payload.chartSymbol || '').trim();
         const timeframesRaw = payload.timeframes || payload.frames || payload.frameIds || payload.timeframe || null;
@@ -129,7 +135,7 @@ export async function runCatalogChatLiveRuntime(
         await chartHandlers.sendMessage(text, context, [], image, options);
         return { ok: true, data: { sent: true, channel: 'chart' } };
       }
-      if (chatChannel === 'chart') {
+      if (channel === 'chart') {
         return { ok: false, error: 'Chart chat send unavailable.' };
       }
       const tab = activeTabIdRef.current ? tabsNow.find((t) => t.id === activeTabIdRef.current) : null;
@@ -139,58 +145,58 @@ export async function runCatalogChatLiveRuntime(
       };
       const monitored = (tabsNow || []).filter((t) => t.isWatched).map((t) => t.url);
       await sendMessage(text, context as any, monitored, image);
-      return { ok: true, data: { sent: true, channel: 'chat' } };
+      return { ok: true, data: { sent: true, channel: 'chart' } };
     }
 
     if (actionId === 'chat.auto_tab_vision.set') {
       const enabled = payload.enabled !== undefined ? !!payload.enabled : payload.value !== undefined ? !!payload.value : payload.on !== undefined ? !!payload.on : true;
-      if (chatChannel === 'chart' && typeof chartHandlers.setAutoTabVisionEnabled === 'function') {
+      if (channel === 'chart' && typeof chartHandlers.setAutoTabVisionEnabled === 'function') {
         chartHandlers.setAutoTabVisionEnabled(enabled);
       } else {
-        if (chatChannel === 'chart') {
+        if (channel === 'chart') {
           return { ok: false, error: 'Chart chat auto tab vision unavailable.' };
         }
         setAutoTabVisionEnabled(enabled);
       }
-      return { ok: true, data: { enabled, channel: chatChannel } };
+      return { ok: true, data: { enabled, channel } };
     }
 
     if (actionId === 'live.start') {
       const typeRaw = String(payload.mode || payload.type || 'audio').trim().toLowerCase();
       const type = typeRaw === 'screen' ? 'screen' : typeRaw === 'camera' ? 'camera' : 'audio';
-      if (chatChannel === 'chart') {
+      if (channel === 'chart') {
         if (typeof chartHandlers.startLiveSession !== 'function') {
           return { ok: false, error: 'Chart chat live session unavailable.' };
         }
         const res = await chartHandlers.startLiveSession(type as any);
         if (res?.ok === false) return { ok: false, error: res.error || 'Failed to start live session.' };
-        return { ok: true, data: { started: true, mode: type, channel: chatChannel } };
+        return { ok: true, data: { started: true, mode: type, channel } };
       }
       const res = await startLiveSession(type as any);
       if (res?.ok === false) return { ok: false, error: res.error || 'Failed to start live session.' };
-      return { ok: true, data: { started: true, mode: type, channel: chatChannel } };
+      return { ok: true, data: { started: true, mode: type, channel } };
     }
 
     if (actionId === 'live.stop') {
-      if (chatChannel === 'chart' && typeof chartHandlers.stopLiveSession === 'function') {
+      if (channel === 'chart' && typeof chartHandlers.stopLiveSession === 'function') {
         chartHandlers.stopLiveSession();
       } else {
-        if (chatChannel === 'chart') {
+        if (channel === 'chart') {
           return { ok: false, error: 'Chart chat live stop unavailable.' };
         }
         stopLiveSession();
       }
-      return { ok: true, data: { stopped: true, channel: chatChannel } };
+      return { ok: true, data: { stopped: true, channel } };
     }
 
     if (actionId === 'live.mute' || actionId === 'live.unmute') {
-      const stream = chatChannel === 'chart' ? chartHandlers.liveStream : liveStream;
+      const stream = channel === 'chart' ? chartHandlers.liveStream : liveStream;
       if (!stream) return { ok: false, error: 'Live stream not active.' };
       const enabled = actionId === 'live.unmute';
       stream.getAudioTracks().forEach((track) => {
         track.enabled = enabled;
       });
-      return { ok: true, data: { muted: !enabled, channel: chatChannel } };
+      return { ok: true, data: { muted: !enabled, channel } };
     }
 
     if (actionId === 'post_trade_review.enable') {

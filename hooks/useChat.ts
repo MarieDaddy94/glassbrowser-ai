@@ -342,6 +342,61 @@ type UseChatOptions = {
   onAgentRequest?: (event: AgentRequestEvent) => void;
   defaultActionSource?: string;
   resolveActionFlowIntent?: (text: string) => ActionFlowRecommendation | null;
+  initialMessages?: Message[];
+};
+
+const buildWelcomeMessage = (): Message => ({
+  id: 'welcome',
+  role: 'model',
+  text: "Trading Desk initialized. The Technician, Macro Strategist, and Risk Manager are online. \n\nPlease set a Session Bias (e.g., 'Bullish USD') to align the team.",
+  timestamp: new Date(),
+  agentId: 'agent-1',
+  agentName: 'System',
+  agentColor: 'bg-gray-600'
+});
+
+const normalizeMessageSeed = (raw: any, index: number): Message | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const roleRaw = String(raw.role || '').trim().toLowerCase();
+  const role: Message['role'] =
+    roleRaw === 'user' || roleRaw === 'model' || roleRaw === 'system'
+      ? (roleRaw as Message['role'])
+      : 'model';
+  const text = typeof raw.text === 'string' ? raw.text : String(raw.text || '');
+  if (!text.trim()) return null;
+  const tsRaw = raw.timestamp instanceof Date
+    ? raw.timestamp.getTime()
+    : Number.isFinite(Number(raw.createdAtMs))
+      ? Number(raw.createdAtMs)
+      : Number.isFinite(Number(raw.timestamp))
+        ? Number(raw.timestamp)
+        : (typeof raw.timestamp === 'string' && Number.isFinite(Date.parse(raw.timestamp))
+            ? Date.parse(raw.timestamp)
+            : Date.now());
+  const id = raw.id != null ? String(raw.id) : `seed_${tsRaw}_${index}`;
+  return {
+    ...(raw as Message),
+    id,
+    role,
+    text,
+    timestamp: new Date(tsRaw)
+  };
+};
+
+const prepareSeedMessages = (input?: Message[] | null): Message[] => {
+  if (!Array.isArray(input) || input.length === 0) return [];
+  const normalized = input
+    .map((entry, index) => normalizeMessageSeed(entry, index))
+    .filter(Boolean) as Message[];
+  if (normalized.length === 0) return [];
+  const dedupedById = Array.from(new Map(normalized.map((entry) => [String(entry.id), entry])).values());
+  const ordered = dedupedById.slice().sort((a, b) => {
+    const aTs = a.timestamp instanceof Date ? a.timestamp.getTime() : Number(a.timestamp) || 0;
+    const bTs = b.timestamp instanceof Date ? b.timestamp.getTime() : Number(b.timestamp) || 0;
+    return aTs - bTs;
+  });
+  const filtered = ordered.filter((entry, idx) => entry.id !== 'welcome' || idx === ordered.findIndex((m) => m.id === 'welcome'));
+  return filtered.length > 0 ? filtered : [];
 };
 
 const detectElectron = () => {
@@ -499,17 +554,10 @@ export const useChat = (
   }, []);
 
   // --- Message State ---
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      role: 'model',
-      text: "Trading Desk initialized. The Technician, Macro Strategist, and Risk Manager are online. \n\nPlease set a Session Bias (e.g., 'Bullish USD') to align the team.",
-      timestamp: new Date(),
-      agentId: 'agent-1',
-      agentName: 'System',
-      agentColor: 'bg-gray-600'
-    }
-  ]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const seeded = prepareSeedMessages(options?.initialMessages);
+    return seeded.length > 0 ? seeded : [buildWelcomeMessage()];
+  });
 
   // Keep chat performant: cap total message count and avoid retaining too many base64 images.
   useEffect(() => {
@@ -3451,6 +3499,10 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
   }, []);
   const switchAgent = useCallback((id: string) => setActiveAgentId(id), []);
   const clearChat = useCallback(() => setMessages([]), []);
+  const replaceMessages = useCallback((nextMessages: Message[]) => {
+    const seeded = prepareSeedMessages(nextMessages);
+    setMessages(seeded.length > 0 ? seeded : [buildWelcomeMessage()]);
+  }, []);
 
   const snoozeChartWatch = useCallback((durationMs: number) => {
     const ms = Number(durationMs);
@@ -4489,6 +4541,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
 
   return {
     messages,
+    replaceMessages,
     sendMessage,
     clearChat,
     isThinking,

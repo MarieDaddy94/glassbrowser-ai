@@ -17,7 +17,7 @@ test("chart chat panel renders with chart channel and shared action bus", () => 
   assert.equal(app.includes("chartSessions={chartSessions.sessions}"), true);
   assert.equal(app.includes("onRunActionCatalog={runActionCatalog}"), true);
 
-  assert.equal(chat.includes("const normalizedChannel: 'chat' | 'chart' = channel === 'chart' ? 'chart' : 'chat';"), true);
+  assert.equal(chat.includes("const normalizedChannel: 'chat' | 'chart' = 'chart';"), true);
   assert.equal(chat.includes("void onRunActionCatalog({ actionId, payload: { ...payload, channel: normalizedChannel } });"), true);
   assert.equal(sessions.includes("export function useChartSessions()"), true);
 });

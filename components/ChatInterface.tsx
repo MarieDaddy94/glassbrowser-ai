@@ -233,7 +233,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onClearSymbolScope,
   onSearchSymbols
 }) => {
-  const normalizedChannel: 'chat' | 'chart' = channel === 'chart' ? 'chart' : 'chat';
+  // Unified chat surface: route all chat channels to chart chat.
+  const normalizedChannel: 'chat' | 'chart' = 'chart';
   const runChatActionOr = useCallback(
     (actionId: string, payload: Record<string, any>, fallback?: () => void) => {
       if (onRunActionCatalog) {
@@ -316,9 +317,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   useEffect(() => {
     const matchesChannel = (detail: any) => {
       const raw = String(detail?.channel || detail?.scope || detail?.target || detail?.chat || '').trim().toLowerCase();
-      if (!raw) return normalizedChannel === 'chat';
-      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat') return normalizedChannel === 'chart';
-      return normalizedChannel === 'chat';
+      if (!raw) return normalizedChannel === 'chart';
+      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat' || raw === 'chat') return normalizedChannel === 'chart';
+      return normalizedChannel === 'chart';
     };
 
     const handler = (event: any) => {
@@ -1023,9 +1024,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   useEffect(() => {
     const matchesChannel = (detail: any) => {
       const raw = String(detail?.channel || detail?.scope || detail?.target || detail?.chat || '').trim().toLowerCase();
-      if (!raw) return normalizedChannel === 'chat';
-      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat') return normalizedChannel === 'chart';
-      return normalizedChannel === 'chat';
+      if (!raw) return normalizedChannel === 'chart';
+      if (raw === 'chart' || raw === 'chartchat' || raw === 'chart_chat' || raw === 'chat') return normalizedChannel === 'chart';
+      return normalizedChannel === 'chart';
     };
 
     const handleAttachmentEvent = (event: any) => {
