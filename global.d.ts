@@ -310,6 +310,9 @@ declare global {
           accountRouteHealthy?: boolean;
           connectionState?: 'disconnected' | 'connected' | 'degraded_account_auth' | 'error';
           degradedReason?: string | null;
+          accountProbePath?: string | null;
+          accountProbeHealthyAtMs?: number | null;
+          accountProbeLastError?: string | null;
           lastAccountAuthError?: string | null;
           lastAccountAuthAtMs?: number | null;
           env?: 'demo' | 'live';
@@ -332,6 +335,14 @@ declare global {
           requestInFlight?: number;
           requestConcurrency?: number;
           minRequestIntervalMs?: number;
+          configFetchedAtMs?: number | null;
+          configAgeMs?: number | null;
+          reconcileAtMs?: number | null;
+          reconcileLagMs?: number | null;
+          accountRouteProbeOk?: boolean;
+          historyNoDataCount?: number;
+          historyNbJumps?: number;
+          historyCursorStallRecoveries?: number;
           rateLimitPolicy?: 'safe' | 'balanced' | 'aggressive';
           rateLimitPolicies?: Array<'safe' | 'balanced' | 'aggressive'>;
           rateLimitTelemetry?: any;
@@ -602,6 +613,17 @@ declare global {
         stopStream?: () => Promise<{ ok: boolean; status?: string; error?: string }>;
         onStreamEvent?: (handler: (payload: any) => void) => () => void;
         cancelOrder: (args: { orderId: string | number }) => Promise<{ ok: boolean; error?: string; response?: any }>;
+        cancelAllOrders?: (args?: { reason?: string | null }) => Promise<{
+          ok: boolean;
+          reason?: string | null;
+          pendingCount?: number | null;
+          remainingCount?: number | null;
+          cancelledCount?: number | null;
+          response?: any;
+          code?: string;
+          stage?: string;
+          error?: string;
+        }>;
         closePosition: (args: { positionId: string; qty?: number }) => Promise<{ ok: boolean; error?: string; response?: any }>;
         modifyOrder: (args: {
           orderId: string | number;
@@ -636,6 +658,23 @@ declare global {
           code?: string;
           error?: string;
           response?: any;
+        }>;
+        reconcileAccountState?: (args?: { reason?: string; force?: boolean }) => Promise<{
+          ok: boolean;
+          reason?: string | null;
+          accountKey?: string | null;
+          checkpoint?: {
+            accountId?: number | null;
+            accNum?: number | null;
+            lastReconciledAtMs?: number | null;
+            lastOrdersHistorySeenTs?: number | null;
+            lastPositionsHash?: string | null;
+            reason?: string | null;
+          } | null;
+          failures?: Array<{ stage?: string; error?: string }> | null;
+          error?: string;
+          code?: string;
+          stage?: string;
         }>;
       };
       codebase?: {

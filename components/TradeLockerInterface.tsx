@@ -37,6 +37,9 @@ interface TradeLockerInterfaceProps {
     brokerQuotesError?: string | null;
     accountMetrics?: TradeLockerAccountMetrics | null;
     accountMetricsError?: string | null;
+    accountProbePath?: string | null;
+    accountProbeLastError?: string | null;
+    reconcileLagMs?: number | null;
     snapshotUpdatedAtMs?: number | null;
     streamStatus?: string | null;
     streamUpdatedAtMs?: number | null;
@@ -165,14 +168,25 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
     if (!Array.isArray(parsed)) return [];
     return parsed
       .map((entry) => {
-        const env = entry?.env === 'live' ? 'live' : 'demo';
-        const server = String(entry?.server || '');
-        const email = String(entry?.email || '');
+        const parsedProfileId = parseTradeLockerProfileId(String(entry?.id || ''));
+        const baseParts = String(parsedProfileId?.baseId || '')
+          .split(':')
+          .map((part) => String(part || '').trim())
+          .filter(Boolean);
+        const inferredEnv = baseParts[0] === 'live' || baseParts[0] === 'demo' ? baseParts[0] : '';
+        const envRaw = String(entry?.env || '').trim().toLowerCase();
+        const env =
+          envRaw === 'live' || envRaw === 'demo'
+            ? envRaw
+            : inferredEnv === 'live' || inferredEnv === 'demo'
+              ? inferredEnv
+              : 'demo';
+        const server = String(entry?.server || baseParts[1] || '');
+        const email = String(entry?.email || (baseParts.length > 2 ? baseParts.slice(2).join(':') : '') || '');
         const accountId = parseTradeLockerAccountId(entry?.accountId);
         const accNum = parseTradeLockerAccountId(entry?.accNum);
         const id = normalizeTradeLockerProfileId(String(entry?.id || ''), env, server, email, accountId, accNum);
-        const labelRaw = String(entry?.label || '').trim();
-        const label = labelRaw || buildTradeLockerProfileLabel(env, server, email, accountId, accNum);
+        const label = buildTradeLockerProfileLabel(env, server, email, accountId, accNum);
         return {
           id,
           label,
@@ -321,6 +335,9 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     brokerQuotesError = null,
     accountMetrics = null,
     accountMetricsError = null,
+    accountProbePath = null,
+    accountProbeLastError = null,
+    reconcileLagMs = null,
     snapshotUpdatedAtMs = null,
     streamStatus = null,
     streamUpdatedAtMs = null,
@@ -607,7 +624,10 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
         }
       }
       if (onRunActionCatalog) {
-        const res = await runPanelAction(actionId, payload);
+        const res = await runPanelAction(actionId, payload, {
+          source: `catalog_immediate:${actionId}`,
+          disableCooldown: true
+        });
         if (res?.ok === false) {
           return { ok: false, error: res?.error ? String(res.error) : `Failed action: ${actionId}` };
         }
@@ -2307,6 +2327,19 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
             {streamError && (
               <div className="mt-2 text-[10px] text-red-300/90 font-mono">
                 Stream error: {streamError}
+              </div>
+            )}
+
+            {accountProbeLastError && (
+              <div className="mt-2 text-[10px] text-red-300/90 font-mono">
+                Account probe error: {accountProbeLastError}
+              </div>
+            )}
+
+            {(accountProbePath || reconcileLagMs != null) && (
+              <div className="mt-2 text-[10px] text-gray-500 font-mono">
+                {accountProbePath ? `Probe ${accountProbePath}` : 'Probe --'}
+                {reconcileLagMs != null ? ` • reconcile lag ${Math.max(0, Math.round(Number(reconcileLagMs) / 1000))}s` : ''}
               </div>
             )}
 

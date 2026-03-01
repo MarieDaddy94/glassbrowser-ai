@@ -100,6 +100,7 @@ type TradeLockerProfile = {
   rememberPassword?: boolean;
   rememberDeveloperKey?: boolean;
 };
+type TradeLockerConnectionState = "disconnected" | "connected" | "degraded_account_auth" | "error";
 
 type ChatTabContextMode = "active" | "active_watched" | "tradingview_all";
 type ChatTabContextRoi = "full" | "center" | "chart_focus";
@@ -157,14 +158,25 @@ const loadTradeLockerProfiles = (): TradeLockerProfile[] => {
     };
     return parsed
       .map((entry) => {
-        const env = entry?.env === "live" ? "live" : "demo";
-        const server = String(entry?.server || "");
-        const email = String(entry?.email || "");
+        const parsedProfileId = parseTradeLockerProfileId(String(entry?.id || ""));
+        const baseParts = String(parsedProfileId?.baseId || "")
+          .split(":")
+          .map((part) => String(part || "").trim())
+          .filter(Boolean);
+        const inferredEnv = baseParts[0] === "live" || baseParts[0] === "demo" ? baseParts[0] : "";
+        const envRaw = String(entry?.env || "").trim().toLowerCase();
+        const env =
+          envRaw === "live" || envRaw === "demo"
+            ? envRaw
+            : inferredEnv === "live" || inferredEnv === "demo"
+              ? inferredEnv
+              : "demo";
+        const server = String(entry?.server || baseParts[1] || "");
+        const email = String(entry?.email || (baseParts.length > 2 ? baseParts.slice(2).join(":") : "") || "");
         const accountId = parseStoredId(entry?.accountId);
         const accNum = parseStoredId(entry?.accNum);
         const id = normalizeTradeLockerProfileId(String(entry?.id || ""), env, server, email, accountId, accNum);
-        const labelRaw = String(entry?.label || "").trim();
-        const label = labelRaw || buildTlProfileLabel(env, server, email, accountId, accNum);
+        const label = buildTlProfileLabel(env, server, email, accountId, accNum);
         return {
           id,
           label,
@@ -858,8 +870,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   });
 
   const [tlConnected, setTlConnected] = useState(false);
+  const [tlConnectionState, setTlConnectionState] = useState<TradeLockerConnectionState>("disconnected");
   const [tlConnecting, setTlConnecting] = useState(false);
   const [tlLastError, setTlLastError] = useState<string | null>(null);
+  const [tlProbePath, setTlProbePath] = useState<string | null>(null);
+  const [tlProbeHealthyAtMs, setTlProbeHealthyAtMs] = useState<number | null>(null);
+  const [tlProbeLastError, setTlProbeLastError] = useState<string | null>(null);
+  const [tlReconcileAtMs, setTlReconcileAtMs] = useState<number | null>(null);
+  const [tlReconcileLagMs, setTlReconcileLagMs] = useState<number | null>(null);
 
   const [tlEncryptionAvailable, setTlEncryptionAvailable] = useState(true);
   const [tlHasSavedPassword, setTlHasSavedPassword] = useState(false);
@@ -884,11 +902,53 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [tlDebugTextLimit, setTlDebugTextLimit] = useState("6000");
 
   const tlStatusMeta = useMemo(() => {
-    if (tlConnected) return { dot: "bg-green-500", label: "CONNECTED" };
     if (tlConnecting) return { dot: "bg-yellow-500 animate-pulse", label: "CONNECTING..." };
+    if (tlConnectionState === "degraded_account_auth") return { dot: "bg-amber-500 animate-pulse", label: "DEGRADED (ACCOUNT AUTH)" };
+    if (tlConnectionState === "connected") return { dot: "bg-green-500", label: "CONNECTED" };
+    if (tlConnectionState === "error") return { dot: "bg-red-500 animate-pulse", label: "ERROR" };
     if (tlLastError) return { dot: "bg-red-500 animate-pulse", label: "ERROR" };
     return { dot: "bg-gray-600", label: "DISCONNECTED" };
-  }, [tlConnected, tlConnecting, tlLastError]);
+  }, [tlConnecting, tlConnectionState, tlLastError]);
+
+  const applyTradeLockerStatus = useCallback((stat: any) => {
+    if (!stat || typeof stat !== "object") return;
+    const rawConnectionState = String(stat?.connectionState || "").trim().toLowerCase();
+    const normalizedConnectionState: TradeLockerConnectionState =
+      rawConnectionState === "connected" ||
+      rawConnectionState === "degraded_account_auth" ||
+      rawConnectionState === "error" ||
+      rawConnectionState === "disconnected"
+        ? (rawConnectionState as TradeLockerConnectionState)
+        : stat?.connected === true
+          ? "connected"
+          : "disconnected";
+    setTlConnectionState(normalizedConnectionState);
+    setTlConnected(normalizedConnectionState === "connected");
+    setTlProbePath(stat?.accountProbePath ? String(stat.accountProbePath) : null);
+    setTlProbeHealthyAtMs(
+      Number.isFinite(Number(stat?.accountProbeHealthyAtMs)) ? Number(stat.accountProbeHealthyAtMs) : null
+    );
+    setTlProbeLastError(stat?.accountProbeLastError ? String(stat.accountProbeLastError) : null);
+    setTlReconcileAtMs(
+      Number.isFinite(Number(stat?.reconcileAtMs)) ? Number(stat.reconcileAtMs) : null
+    );
+    setTlReconcileLagMs(
+      Number.isFinite(Number(stat?.reconcileLagMs)) ? Number(stat.reconcileLagMs) : null
+    );
+    const statusError =
+      stat?.accountProbeLastError
+        ? String(stat.accountProbeLastError)
+        : stat?.lastAccountAuthError
+        ? String(stat.lastAccountAuthError)
+        : stat?.lastError
+          ? String(stat.lastError)
+          : normalizedConnectionState === "degraded_account_auth"
+            ? stat?.degradedReason
+              ? `TradeLocker degraded: ${String(stat.degradedReason)}`
+              : "TradeLocker account auth is degraded."
+            : null;
+    setTlLastError(statusError);
+  }, []);
 
   const tlSelectedAccountValue = useMemo(() => {
     const accountId = parseTradeLockerId(tlSelectedAccountId);
@@ -1119,16 +1179,9 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           setTlDebugTextLimit(String(Number.isFinite(textLimit) && textLimit > 0 ? Math.min(20000, Math.floor(textLimit)) : 6000));
         }
         if (stat?.ok) {
-          setTlConnected(!!stat.connected);
-          setTlLastError(
-            stat.lastAccountAuthError
-              ? String(stat.lastAccountAuthError)
-              : stat.lastError
-                ? String(stat.lastError)
-                : null
-          );
+          applyTradeLockerStatus(stat);
         }
-        if (stat?.ok && stat.connected && tl.getAccounts) {
+        if (stat?.ok && (stat.connected || stat.tokenConnected) && tl.getAccounts) {
           const accountsRes = await tl.getAccounts();
           if (accountsRes?.ok && Array.isArray(accountsRes.accounts)) setTlAccounts(accountsRes.accounts);
         }
@@ -1136,7 +1189,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         // ignore
       }
     })();
-  }, [isOpen, refreshSecretsStatus, refreshBrokerInfo]);
+  }, [applyTradeLockerStatus, isOpen, refreshSecretsStatus, refreshBrokerInfo]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1286,6 +1339,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       };
     }
 
+    const statusRes = await tl?.getStatus?.();
+    if (statusRes?.ok) {
+      applyTradeLockerStatus(statusRes);
+      if (statusRes.connected !== true) {
+        return {
+          ok: false as const,
+          error:
+            statusRes?.lastAccountAuthError
+              ? String(statusRes.lastAccountAuthError)
+              : statusRes?.lastError
+                ? String(statusRes.lastError)
+                : "TradeLocker account route verification failed.",
+          stage: "verify" as const,
+          resolvedBy
+        };
+      }
+    }
+
     setTlSelectedAccountId(String(verifiedAccountId));
     setTlSelectedAccNum(String(verifiedAccNum));
 
@@ -1302,14 +1373,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       // ignore renderer event dispatch failures
     }
 
-    return {
-      ok: true as const,
-      stage: "verify" as const,
-      resolvedBy,
-      accountId: verifiedAccountId,
-      accNum: verifiedAccNum
-    };
-  }, [runTradeLockerImmediateAction, tlAccounts]);
+      return {
+        ok: true as const,
+        stage: "verify" as const,
+        resolvedBy,
+        accountId: verifiedAccountId,
+        accNum: verifiedAccNum
+      };
+  }, [applyTradeLockerStatus, runTradeLockerImmediateAction, tlAccounts]);
 
   const reconnectTradeLockerProfile = useCallback(async (
     profile: TradeLockerProfile,
@@ -1399,6 +1470,24 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setTlSelectedAccountId(cfgAccountId != null ? String(cfgAccountId) : "");
         setTlSelectedAccNum(cfgAccNum != null ? String(cfgAccNum) : "");
       }
+      const statusRes = await tl?.getStatus?.();
+      if (statusRes?.ok) {
+        applyTradeLockerStatus(statusRes);
+        if (statusRes.connected !== true) {
+          finalStage = "verify";
+          finalError =
+            statusRes?.lastAccountAuthError
+              ? String(statusRes.lastAccountAuthError)
+              : statusRes?.lastError
+                ? String(statusRes.lastError)
+                : "TradeLocker account route verification failed.";
+          return {
+            ok: false as const,
+            error: finalError,
+            stage: "verify" as const
+          };
+        }
+      }
       finalStage = "verify";
       return {
         ok: true as const,
@@ -1420,7 +1509,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         reason: finalError
       });
     }
-  }, [applyTradeLockerActiveAccount, emitTradeLockerSwitchShield, runTradeLockerImmediateAction]);
+  }, [applyTradeLockerStatus, applyTradeLockerActiveAccount, emitTradeLockerSwitchShield, runTradeLockerImmediateAction]);
 
   const handleTradeLockerProfileSelect = useCallback((profileId: string) => {
     if (!profileId) {
@@ -1438,6 +1527,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       accNum: tlSelectedAccNum,
       accounts: Array.isArray(tlAccounts) ? [...tlAccounts] : [],
       connected: tlConnected,
+      connectionState: tlConnectionState,
       lastError: tlLastError
     };
     const restorePrevious = (message?: string | null) => {
@@ -1449,6 +1539,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       setTlSelectedAccNum(previous.accNum);
       setTlAccounts(previous.accounts);
       setTlConnected(previous.connected);
+      setTlConnectionState(previous.connectionState);
       setTlLastError(message != null ? String(message) : previous.lastError);
     };
     setTlActiveProfileId(profileId);
@@ -1484,8 +1575,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
           if (Array.isArray(result?.accounts)) {
             setTlAccounts(result.accounts);
           }
-          setTlConnected(true);
-          setTlLastError(null);
         })
         .finally(() => setTlConnecting(false));
       return;
@@ -1542,6 +1631,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     tlAccounts,
     tlActiveProfileId,
     tlConnected,
+    tlConnectionState,
     tlEmail,
     tlEnv,
     tlLastError,
@@ -1824,15 +1914,29 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       );
       if (!connectRes.ok) {
         setTlConnected(false);
+        setTlConnectionState("error");
         setTlLastError(connectRes.error ? String(connectRes.error) : "Failed to connect");
         return;
       }
-      setTlConnected(true);
       setTlPassword("");
       setTlDeveloperKey("");
 
       const stat = await tl?.getStatus?.();
-      if (stat?.ok) setTlLastError(stat.lastError ? String(stat.lastError) : null);
+      if (stat?.ok) {
+        applyTradeLockerStatus(stat);
+      }
+      if (stat?.ok && stat.connected !== true) {
+        setTlConnected(false);
+        setTlConnectionState("degraded_account_auth");
+        setTlLastError(
+          stat?.lastAccountAuthError
+            ? String(stat.lastAccountAuthError)
+            : stat?.lastError
+              ? String(stat.lastError)
+              : "TradeLocker connected token but account context is not ready."
+        );
+        return;
+      }
 
       const cfg = await tl?.getSavedConfig?.();
       if (cfg?.ok) {
@@ -1862,6 +1966,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       upsertTradeLockerProfile({ setActive: true });
     } catch (e: any) {
       setTlConnected(false);
+      setTlConnectionState("error");
       setTlLastError(e?.message ? String(e.message) : "Failed to connect");
     } finally {
       setTlConnecting(false);
@@ -1890,6 +1995,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
     setTlLastError(null);
     setTlConnected(false);
+    setTlConnectionState("disconnected");
   };
 
   const handleTradeLockerRefreshAccounts = async () => {
@@ -1909,6 +2015,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         setTlLastError(null);
       } else if (!actionRes?.ok) {
         setTlLastError(actionRes?.error ? String(actionRes.error) : "Failed to fetch accounts");
+      }
+      const statusRes = await tl?.getStatus?.();
+      if (statusRes?.ok) {
+        applyTradeLockerStatus(statusRes);
       }
     } catch (err: any) {
       setTlLastError(err?.message ? String(err.message) : "Failed to fetch accounts");
@@ -2200,6 +2310,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     tlBridgeAvailable,
     tlEncryptionAvailable,
     tlLastError,
+    tlProbePath,
+    tlProbeHealthyAtMs,
+    tlProbeLastError,
+    tlReconcileAtMs,
+    tlReconcileLagMs,
     tlActiveProfileId,
     handleTradeLockerProfileSelect,
     tlProfiles,

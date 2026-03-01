@@ -674,10 +674,12 @@ contextBridge.exposeInMainWorld('glass', {
     stopStream: () => guardedInvoke('tradelocker', 'tradelocker:stopStream'),
     onStreamEvent: guardedOnTradeLockerStreamEvent,
     cancelOrder: (args) => guardedInvoke('tradelocker', 'tradelocker:cancelOrder', args),
+    cancelAllOrders: (args) => guardedInvoke('tradelocker', 'tradelocker:cancelAllOrders', args),
     modifyOrder: (args) => guardedInvoke('tradelocker', 'tradelocker:modifyOrder', args),
     modifyPosition: (args) => guardedInvoke('tradelocker', 'tradelocker:modifyPosition', args),
     closePosition: (args) => guardedInvoke('tradelocker', 'tradelocker:closePosition', args),
-    placeOrder: (args) => guardedInvoke('tradelocker', 'tradelocker:placeOrder', args)
+    placeOrder: (args) => guardedInvoke('tradelocker', 'tradelocker:placeOrder', args),
+    reconcileAccountState: (args) => guardedInvoke('tradelocker', 'tradelocker:reconcileAccountState', args)
   },
   tradeLedger: {
     append: (entry) => guardedInvoke('tradeLedger', 'tradeLedger:append', entry),

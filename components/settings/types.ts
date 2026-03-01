@@ -169,6 +169,11 @@ export interface BrokerAdapterSectionCtx {
   tlBridgeAvailable: boolean;
   tlEncryptionAvailable: boolean;
   tlLastError?: string | null;
+  tlProbePath?: string | null;
+  tlProbeHealthyAtMs?: number | null;
+  tlProbeLastError?: string | null;
+  tlReconcileAtMs?: number | null;
+  tlReconcileLagMs?: number | null;
   tlActiveProfileId: string;
   handleTradeLockerProfileSelect: (id: string) => void;
   tlProfiles: Array<{ id: string; label: string; accountId?: number | null; accNum?: number | null }>;

@@ -2308,6 +2308,16 @@ export const ACTION_CATALOG: Record<string, ActionDefinition> = {
     auditEventType: 'tradelocker_refresh_accounts',
     defaultTimeoutMs: 8000
   },
+  'tradelocker.reconcile_account_state': {
+    id: 'tradelocker.reconcile_account_state',
+    domain: 'broker',
+    owner: 'agent',
+    summary: 'Reconcile TradeLocker account state from broker routes.',
+    requiresBroker: true,
+    safety: { gates: ['permissions'], requiresConfirmation: false },
+    auditEventType: 'tradelocker_reconcile_account_state',
+    defaultTimeoutMs: 30_000
+  },
   'tradelocker.clear_secrets': {
     id: 'tradelocker.clear_secrets',
     domain: 'broker',

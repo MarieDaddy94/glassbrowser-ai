@@ -20,6 +20,11 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
     tlBridgeAvailable,
     tlEncryptionAvailable,
     tlLastError,
+    tlProbePath,
+    tlProbeHealthyAtMs,
+    tlProbeLastError,
+    tlReconcileAtMs,
+    tlReconcileLagMs,
     tlActiveProfileId,
     handleTradeLockerProfileSelect,
     tlProfiles,
@@ -193,6 +198,15 @@ const BrokerAdapterSection: React.FC<BrokerAdapterSectionProps> = ({ ctx }) => {
 
         {tlLastError && (
           <div className="text-[10px] text-red-400/90 font-mono bg-black/20 border border-red-500/20 rounded-lg p-2">{tlLastError}</div>
+        )}
+        {(tlProbePath || tlProbeLastError || tlReconcileAtMs || tlReconcileLagMs) && (
+          <div className="text-[10px] text-gray-500 font-mono bg-black/20 border border-white/10 rounded-lg p-2 space-y-1">
+            {tlProbePath ? <div>Account probe: {tlProbePath}</div> : null}
+            {tlProbeHealthyAtMs ? <div>Probe healthy: {new Date(tlProbeHealthyAtMs).toLocaleTimeString()}</div> : null}
+            {tlProbeLastError ? <div className="text-red-400/90">Probe error: {tlProbeLastError}</div> : null}
+            {tlReconcileAtMs ? <div>Last reconcile: {new Date(tlReconcileAtMs).toLocaleTimeString()}</div> : null}
+            {tlReconcileLagMs != null ? <div>Reconcile lag: {Math.max(0, Math.round(Number(tlReconcileLagMs) / 1000))}s</div> : null}
+          </div>
         )}
 
         <div className="rounded-lg border border-white/10 bg-black/20 p-3 space-y-2">

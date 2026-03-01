@@ -41084,6 +41084,9 @@ const App: React.FC = () => {
                           brokerQuotesError={tlQuotesError}
                           accountMetrics={tlAccountMetrics}
                           accountMetricsError={tlAccountMetricsError}
+                          accountProbePath={tlStatusMeta?.accountProbePath ?? null}
+                          accountProbeLastError={tlStatusMeta?.accountProbeLastError ?? null}
+                          reconcileLagMs={tlStatusMeta?.reconcileLagMs ?? null}
                           snapshotUpdatedAtMs={tlSnapshotUpdatedAtMs}
                           defaultSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
                           accounts={tlAccounts}

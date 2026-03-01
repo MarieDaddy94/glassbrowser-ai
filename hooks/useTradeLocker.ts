@@ -4,8 +4,25 @@ import { normalizeSymbolKey, normalizeSymbolLoose } from "../services/symbols";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { GLASS_EVENT } from "../services/glassEvents";
+import {
+  buildTradeLockerProfileBaseId,
+  parseTradeLockerAccountNumber,
+  parseTradeLockerProfileId
+} from "../services/tradeLockerIdentity";
 
 export type TradeLockerConnectionStatus = "disconnected" | "connecting" | "connected" | "degraded_account_auth" | "error";
+
+const TL_PROFILES_KEY = "glass_tradelocker_profiles_v1";
+const TL_ACTIVE_PROFILE_KEY = "glass_tradelocker_active_profile_v1";
+
+type TradeLockerAutoRestoreProfile = {
+  env: "demo" | "live";
+  server: string;
+  email: string;
+  accountId: number | null;
+  accNum: number | null;
+  profileKey: string;
+};
 
 export interface TradeLockerAccount {
   id: number;
@@ -81,6 +98,49 @@ function toOrderType(value: any): TradeLockerOrder["type"] {
   if (raw === "stop") return "stop";
   return "market";
 }
+
+const loadActiveTradeLockerAutoRestoreProfile = (): TradeLockerAutoRestoreProfile | null => {
+  try {
+    const activeProfileId = String(localStorage.getItem(TL_ACTIVE_PROFILE_KEY) || "").trim();
+    if (!activeProfileId) return null;
+    const rawProfiles = localStorage.getItem(TL_PROFILES_KEY);
+    if (!rawProfiles) return null;
+    const profiles = JSON.parse(rawProfiles);
+    if (!Array.isArray(profiles)) return null;
+    const profile = profiles.find((entry) => String(entry?.id || "").trim() === activeProfileId);
+    if (!profile) return null;
+
+    const parsedProfile = parseTradeLockerProfileId(String(profile?.id || ""));
+    const baseParts = String(parsedProfile?.baseId || "")
+      .split(":")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean);
+    const inferredEnv = baseParts[0] === "live" || baseParts[0] === "demo" ? baseParts[0] : "";
+    const envRaw = String(profile?.env || "").trim().toLowerCase();
+    const env =
+      envRaw === "live" || envRaw === "demo"
+        ? envRaw
+        : inferredEnv === "live" || inferredEnv === "demo"
+          ? inferredEnv
+          : "";
+    const server = String(profile?.server || baseParts[1] || "").trim();
+    const email = String(profile?.email || (baseParts.length > 2 ? baseParts.slice(2).join(":") : "") || "").trim();
+    if (!env || !server || !email) return null;
+
+    const accountId = parseTradeLockerAccountNumber(profile?.accountId ?? parsedProfile?.accountId);
+    const accNum = parseTradeLockerAccountNumber(profile?.accNum ?? parsedProfile?.accNum);
+    return {
+      env: env === "live" ? "live" : "demo",
+      server,
+      email,
+      accountId: accountId != null ? accountId : null,
+      accNum: accNum != null ? accNum : null,
+      profileKey: buildTradeLockerProfileBaseId(env, server, email)
+    };
+  } catch {
+    return null;
+  }
+};
 
 function readNumber(value: any): number | null {
   if (value == null || value === "") return null;
@@ -604,10 +664,16 @@ export function useTradeLocker(
     tokenConnected?: boolean | null;
     accountContextReady?: boolean | null;
     accountRouteHealthy?: boolean | null;
+    accountRouteProbeOk?: boolean | null;
+    accountProbePath?: string | null;
+    accountProbeHealthyAtMs?: number | null;
+    accountProbeLastError?: string | null;
     connectionState?: 'disconnected' | 'connected' | 'degraded_account_auth' | 'error' | null;
     degradedReason?: string | null;
     lastAccountAuthError?: string | null;
     lastAccountAuthAtMs?: number | null;
+    reconcileAtMs?: number | null;
+    reconcileLagMs?: number | null;
   } | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
 
@@ -676,6 +742,7 @@ export function useTradeLocker(
   });
   const metricsTimerRef = useRef<(() => void) | null>(null);
   const metricsInFlightRef = useRef(false);
+  const reconcileTimerRef = useRef<(() => void) | null>(null);
   const quotesTimerRef = useRef<(() => void) | null>(null);
   const quotesInFlightRef = useRef(false);
   const quotesFlushTimerRef = useRef<number | null>(null);
@@ -1023,6 +1090,10 @@ export function useTradeLocker(
           tokenConnected: res?.tokenConnected === true,
           accountContextReady: res?.accountContextReady === true,
           accountRouteHealthy: res?.accountRouteHealthy === true,
+          accountRouteProbeOk: res?.accountRouteProbeOk === true,
+          accountProbePath: res?.accountProbePath ? String(res.accountProbePath) : null,
+          accountProbeHealthyAtMs: readNumber(res?.accountProbeHealthyAtMs),
+          accountProbeLastError: res?.accountProbeLastError ? String(res.accountProbeLastError) : null,
           connectionState:
             rawConnectionState === 'connected' ||
             rawConnectionState === 'degraded_account_auth' ||
@@ -1032,7 +1103,9 @@ export function useTradeLocker(
               : null,
           degradedReason: res?.degradedReason ? String(res.degradedReason) : null,
           lastAccountAuthError: res?.lastAccountAuthError ? String(res.lastAccountAuthError) : null,
-          lastAccountAuthAtMs: readNumber(res?.lastAccountAuthAtMs)
+          lastAccountAuthAtMs: readNumber(res?.lastAccountAuthAtMs),
+          reconcileAtMs: readNumber(res?.reconcileAtMs),
+          reconcileLagMs: readNumber(res?.reconcileLagMs)
         });
         return res;
       } catch (e: any) {
@@ -1420,6 +1493,35 @@ export function useTradeLocker(
     }
   }, [api, accountBusyRef, formatRetryIn, isActive, noteRateLimit, rateLimitedUntilMs, runWithLock, shouldSuppressRateLimit]);
 
+  const reconcileAccountState = useCallback(async (opts?: { reason?: string; force?: boolean }) => {
+    const bridge = requireBridge('tradelocker.reconcile_account_state');
+    if (!bridge.ok) return { ok: false, error: bridge.error };
+    if (!api?.reconcileAccountState) return { ok: false, error: 'TradeLocker API not available' };
+    try {
+      const res = await runWithLock(() => api.reconcileAccountState({
+        reason: opts?.reason || 'hook',
+        force: opts?.force === true
+      }));
+      if (!res?.ok) {
+        const err = res?.error ? String(res.error) : 'TradeLocker reconcile failed.';
+        setLastError(err);
+        return { ok: false, error: err, code: res?.code ? String(res.code) : undefined };
+      }
+      if (res?.checkpoint?.lastReconciledAtMs != null) {
+        setStatusMeta((prev) => ({
+          ...(prev || {}),
+          reconcileAtMs: readNumber(res?.checkpoint?.lastReconciledAtMs),
+          reconcileLagMs: 0
+        }));
+      }
+      return { ok: true, data: res };
+    } catch (e: any) {
+      const err = e?.message ? String(e.message) : 'TradeLocker reconcile failed.';
+      setLastError(err);
+      return { ok: false, error: err };
+    }
+  }, [api, runWithLock]);
+
   const scheduleBurstRefresh = useCallback((opts?: { snapshot?: boolean; orders?: boolean; metrics?: boolean }) => {
     const state = burstRefreshRef.current;
     if (opts?.snapshot === true) state.snapshot = true;
@@ -1474,6 +1576,9 @@ export function useTradeLocker(
               : "TradeLocker connected token but account context is not ready.";
         return { ok: false, error: degradedError, code: statusRes?.connectionState || "degraded_account_auth" };
       }
+      if (api?.reconcileAccountState) {
+        void reconcileAccountState({ reason: 'connect', force: true });
+      }
       return { ok: true };
     } catch (e: any) {
       const err = e?.message ? String(e.message) : "Failed to connect";
@@ -1481,7 +1586,7 @@ export function useTradeLocker(
       setLastError(err);
       return { ok: false, error: err };
     }
-  }, [api, refreshSavedConfig, refreshStatus]);
+  }, [api, reconcileAccountState, refreshSavedConfig, refreshStatus]);
 
   const disconnect = useCallback(async () => {
     const bridge = requireBridge('tradelocker.disconnect');
@@ -1535,6 +1640,9 @@ export function useTradeLocker(
       await refreshSavedConfig();
       await refreshAccounts();
       await refreshStatus();
+      if (api?.reconcileAccountState) {
+        void reconcileAccountState({ reason: 'switch', force: true });
+      }
       try {
         dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
           accountId: parsedAccountId,
@@ -1555,7 +1663,7 @@ export function useTradeLocker(
     } catch (err: any) {
       return { ok: false, error: err?.message ? String(err.message) : 'Failed to switch TradeLocker account.' };
     }
-  }, [api, refreshAccountMetrics, refreshAccounts, refreshOrders, refreshQuotes, refreshSavedConfig, refreshSnapshot, refreshStatus, status]);
+  }, [api, reconcileAccountState, refreshAccountMetrics, refreshAccounts, refreshOrders, refreshQuotes, refreshSavedConfig, refreshSnapshot, refreshStatus, status]);
 
   const setTradingOptions = useCallback(async (options: any) => {
     const bridge = requireBridge('tradelocker.set_trading_options');
@@ -1708,11 +1816,15 @@ export function useTradeLocker(
     if (!startupBridgeReady) return;
     if (startupPhase === "booting") return;
     if (status === "connected" || status === "connecting") return;
-    if (!savedConfig?.hasSavedPassword) return;
+    const activeProfile = loadActiveTradeLockerAutoRestoreProfile();
+    if (!savedConfig?.hasSavedPassword && !activeProfile) return;
 
-    const server = String(savedConfig?.server || "").trim();
-    const email = String(savedConfig?.email || "").trim();
-    if (!server || !email || savedConfig?.accountId == null) return;
+    const env = activeProfile?.env || (savedConfig?.env === "live" ? "live" : "demo");
+    const server = String(activeProfile?.server || savedConfig?.server || "").trim();
+    const email = String(activeProfile?.email || savedConfig?.email || "").trim();
+    const accountId = activeProfile?.accountId ?? savedConfig?.accountId ?? null;
+    const accNum = activeProfile?.accNum ?? savedConfig?.accNum ?? null;
+    if (!server || !email || (accountId == null && accNum == null)) return;
 
     autoConnectAttemptedRef.current = true;
     setStartupAutoRestore({
@@ -1722,12 +1834,16 @@ export function useTradeLocker(
       atMs: Date.now()
     });
     void connect({
-      env: savedConfig.env,
+      env,
       server,
       email,
       password: "",
+      profileKey: activeProfile?.profileKey || undefined,
+      profileScoped: !!activeProfile?.profileKey,
       rememberPassword: false,
-      rememberDeveloperApiKey: false
+      rememberDeveloperApiKey: false,
+      accountId: accountId ?? undefined,
+      accNum: accNum ?? undefined
     }).then((res) => {
       setStartupAutoRestore((prev) => ({
         attempted: true,
@@ -2015,6 +2131,34 @@ export function useTradeLocker(
   }, [adaptiveMinIntervalMs, adaptivePressure, isActive, positions.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshAccountMetrics, runtimeScheduler, startupBridgeOperational, status, streamStatus]);
 
   useEffect(() => {
+    if (reconcileTimerRef.current) {
+      reconcileTimerRef.current();
+      reconcileTimerRef.current = null;
+    }
+    if (!startupBridgeOperational) return;
+    if (status !== 'connected') return;
+    if (!api?.reconcileAccountState) return;
+    if (switchShieldActive) return;
+
+    const intervalMs = isActive ? 60_000 : 180_000;
+    reconcileTimerRef.current = runtimeScheduler.registerTask({
+      id: 'tradelocker.reconcile.refresh',
+      groupId: 'broker',
+      intervalMs,
+      jitterPct: 0.15,
+      visibilityMode: 'always',
+      priority: 'low',
+      run: async () => {
+        await reconcileAccountState({ reason: 'scheduled', force: false });
+      }
+    });
+    return () => {
+      if (reconcileTimerRef.current) reconcileTimerRef.current();
+      reconcileTimerRef.current = null;
+    };
+  }, [api, isActive, reconcileAccountState, runtimeScheduler, startupBridgeOperational, status, switchShieldActive]);
+
+  useEffect(() => {
     if (quotesTimerRef.current) {
       quotesTimerRef.current();
       quotesTimerRef.current = null;
@@ -2022,6 +2166,7 @@ export function useTradeLocker(
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
+    if (switchShieldActive) return;
 
     const hasTargets = positionsRaw.length > 0 || orders.length > 0 || watchSymbols.length > 0;
     const isRl = rateLimitedUntilMs > Date.now();
@@ -2327,6 +2472,7 @@ export function useTradeLocker(
     refreshAccounts,
     refreshSnapshot,
     refreshAccountMetrics,
+    reconcileAccountState,
     connect,
     disconnect,
     setActiveAccount,

@@ -760,6 +760,15 @@ export const IPC_CONTRACT = {
       "inPreload": true
     },
     {
+      "name": "tradelocker:cancelAllOrders",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "tradelocker:cancelOrder",
       "domain": "tradelocker",
       "scopes": [
@@ -995,6 +1004,15 @@ export const IPC_CONTRACT = {
     },
     {
       "name": "tradelocker:placeOrder",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "tradelocker:reconcileAccountState",
       "domain": "tradelocker",
       "scopes": [
         "tradelocker"

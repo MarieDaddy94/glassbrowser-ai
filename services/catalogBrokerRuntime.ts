@@ -216,6 +216,14 @@ export async function runCatalogBrokerRuntime(
     }
 
     if (actionId === 'tradelocker.cancel_all_orders') {
+      const tl = window.glass?.tradelocker;
+      if (tl?.cancelAllOrders) {
+        const direct = await tl.cancelAllOrders({
+          reason: payload.reason != null ? String(payload.reason) : undefined
+        });
+        if (!direct?.ok) return { ok: false, error: direct?.error ? String(direct.error) : 'Cancel failed.' };
+        return { ok: true, data: direct ?? null };
+      }
       const orderIds = Array.isArray(payload.orderIds || payload.ids)
         ? (payload.orderIds || payload.ids).map((id: any) => String(id || '').trim()).filter(Boolean)
         : undefined;
@@ -406,6 +414,17 @@ export async function runCatalogBrokerRuntime(
       if (!tl?.getAccounts) return { ok: false, error: 'TradeLocker bridge unavailable.' };
       const res = await tl.getAccounts();
       if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to fetch accounts.' };
+      return { ok: true, data: res ?? null };
+    }
+
+    if (actionId === 'tradelocker.reconcile_account_state') {
+      const tl = window.glass?.tradelocker;
+      if (!tl?.reconcileAccountState) return { ok: false, error: 'TradeLocker bridge unavailable.' };
+      const res = await tl.reconcileAccountState({
+        reason: payload.reason ? String(payload.reason) : 'action_catalog',
+        force: payload.force === true
+      });
+      if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to reconcile account state.' };
       return { ok: true, data: res ?? null };
     }
 

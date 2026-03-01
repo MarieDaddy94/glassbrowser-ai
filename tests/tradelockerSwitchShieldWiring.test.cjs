@@ -24,6 +24,7 @@ test('useTradeLocker consumes switch shield events and gates noncritical refresh
   const source = fs.readFileSync(useTradeLockerPath, 'utf8');
   assert.match(source, /const eventName = GLASS_EVENT\.TRADELOCKER_SWITCH_SHIELD/);
   assert.match(source, /if \(switchShieldActive\) return;\s*\n\s*if \(!api\?\.getOrdersHistory\) return;/);
+  assert.match(source, /if \(switchShieldActive\) return;\s*\n\s*const hasTargets = positionsRaw\.length > 0 \|\| orders\.length > 0 \|\| watchSymbols\.length > 0;/);
   assert.match(source, /if \(switchShieldActive\) return;\s*\n\s*if \(watchSymbols\.length === 0\) return;/);
   assert.match(source, /if \(switchShieldUntilRef\.current > Date\.now\(\) && opts\?\.bypassSwitchShield !== true\) return;/);
 });

@@ -2942,6 +2942,10 @@ app.whenReady().then(async () => {
     if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
     return tradeLockerClient.cancelOrder(args || {});
   });
+  ipcMain.handle('tradelocker:cancelAllOrders', async (evt, args) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    return tradeLockerClient.cancelAllOrders(args || {});
+  });
   ipcMain.handle('tradelocker:modifyOrder', async (evt, args) => {
     if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
     return tradeLockerClient.modifyOrder(args || {});
@@ -2957,6 +2961,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('tradelocker:placeOrder', async (evt, args) => {
     if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
     return tradeLockerClient.placeOrder(args || {});
+  });
+  ipcMain.handle('tradelocker:reconcileAccountState', async (evt, args) => {
+    if (!isTrustedSender(evt)) return { ok: false, error: 'Untrusted renderer.' };
+    return tradeLockerClient.reconcileAccountState(args || {});
   });
 
   // --- News ---

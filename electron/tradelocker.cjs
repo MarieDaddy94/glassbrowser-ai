@@ -88,6 +88,8 @@ const RATE_LIMIT_ACCOUNT_CAP =
 const RATE_LIMIT_PROFILE_DEFAULT = String(
   process.env.GLASS_TRADELOCKER_RATE_PROFILE || 'balanced'
 ).trim().toLowerCase();
+const CONFIG_TTL_MS =
+  toPositiveInt(process.env.GLASS_TRADELOCKER_CONFIG_TTL_MS, 20 * 60_000);
 
 const RATE_LIMIT_PROFILES = Object.freeze({
   safe: Object.freeze({
@@ -209,6 +211,7 @@ const DEFAULT_STATE = Object.freeze({
   streamingAutoReconnect: true,
   streamingSubscribe: '',
   debug: { ...DEFAULT_DEBUG },
+  reconcileCheckpoints: {},
   secrets: {
     password: null, // base64 encrypted
     developerApiKey: null, // base64 encrypted
@@ -464,6 +467,9 @@ function loadPersistedState() {
     }
     if (!merged.secrets.profiles || typeof merged.secrets.profiles !== 'object' || Array.isArray(merged.secrets.profiles)) {
       merged.secrets.profiles = {};
+    }
+    if (!merged.reconcileCheckpoints || typeof merged.reconcileCheckpoints !== 'object' || Array.isArray(merged.reconcileCheckpoints)) {
+      merged.reconcileCheckpoints = {};
     }
     merged.debug = normalizeDebugSettings(merged.debug);
     merged.accountId = parseAccountIdentifier(merged.accountId);
@@ -1936,6 +1942,103 @@ function parseSessionOpen(status) {
   return null;
 }
 
+function boolFromLoose(value) {
+  if (typeof value === 'boolean') return value;
+  if (value == null) return null;
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value > 0;
+    return null;
+  }
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (['true', '1', 'yes', 'allowed', 'enabled', 'open', 'active'].includes(raw)) return true;
+  if (['false', '0', 'no', 'denied', 'disabled', 'closed', 'inactive'].includes(raw)) return false;
+  return null;
+}
+
+function normalizeOrderTypeToken(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'market' || raw === 'mkt') return 'market';
+  if (raw === 'limit' || raw === 'lmt') return 'limit';
+  if (raw === 'stop' || raw === 'stp' || raw === 'stop_market' || raw === 'stopmarket') return 'stop';
+  return null;
+}
+
+function extractSessionOrderTypeCapabilities(sessionStatus) {
+  if (!sessionStatus || typeof sessionStatus !== 'object') {
+    return { market: null, limit: null, stop: null };
+  }
+
+  const readCapability = (keys) => {
+    for (const key of keys) {
+      const parsed = boolFromLoose(sessionStatus?.[key]);
+      if (parsed != null) return parsed;
+    }
+    return null;
+  };
+
+  const out = {
+    market: readCapability([
+      'marketOrderAllowed',
+      'isMarketOrderAllowed',
+      'allowMarketOrders',
+      'marketAllowed',
+      'marketEnabled',
+      'marketOpen',
+      'canPlaceMarketOrders'
+    ]),
+    limit: readCapability([
+      'limitOrderAllowed',
+      'isLimitOrderAllowed',
+      'allowLimitOrders',
+      'limitAllowed',
+      'limitEnabled',
+      'canPlaceLimitOrders'
+    ]),
+    stop: readCapability([
+      'stopOrderAllowed',
+      'isStopOrderAllowed',
+      'allowStopOrders',
+      'stopAllowed',
+      'stopEnabled',
+      'canPlaceStopOrders'
+    ])
+  };
+
+  const applyList = (value, allow = true) => {
+    if (!Array.isArray(value)) return;
+    const tokens = new Set(value.map((entry) => normalizeOrderTypeToken(entry)).filter(Boolean));
+    if (tokens.size === 0) return;
+    if (tokens.has('market')) out.market = allow;
+    if (tokens.has('limit')) out.limit = allow;
+    if (tokens.has('stop')) out.stop = allow;
+  };
+
+  applyList(sessionStatus?.allowedOrderTypes, true);
+  applyList(sessionStatus?.supportedOrderTypes, true);
+  applyList(sessionStatus?.orderTypesAllowed, true);
+  applyList(sessionStatus?.deniedOrderTypes, false);
+  applyList(sessionStatus?.orderTypesDenied, false);
+
+  return out;
+}
+
+function buildPositionsFingerprint(positions) {
+  if (!Array.isArray(positions) || positions.length === 0) return '';
+  const rows = positions
+    .map((entry) => {
+      const id = String(entry?.id || '').trim();
+      const symbol = String(entry?.symbol || '').trim().toUpperCase();
+      const side = String(entry?.type || '').trim().toUpperCase();
+      const size = parseNumberLoose(entry?.size);
+      const entryPrice = parseNumberLoose(entry?.entryPrice);
+      return `${id}|${symbol}|${side}|${size == null ? '' : size}|${entryPrice == null ? '' : entryPrice}`;
+    })
+    .sort();
+  return rows.join(';');
+}
+
 function validateStopDistances({ stopLoss, takeProfit, refPrice, minStopDistance }) {
   const minDist = Number(minStopDistance);
   const price = Number(refPrice);
@@ -2247,7 +2350,7 @@ class TradeLockerClient {
     this.instruments = null;
     this.instrumentsByTradableId = new Map();
     this.instrumentsByNameLower = new Map();
-    this.accountsCache = { accounts: [], fetchedAtMs: 0 };
+    this.accountsCache = { accounts: [], fetchedAtMs: 0, env: null, server: null, email: null };
     this.refreshInFlight = null;
     this.rateLimitedUntilMs = 0;
     this.upstreamFailureCount = 0;
@@ -2284,6 +2387,18 @@ class TradeLockerClient {
     this.accountRouteDegradedReason = 'account_not_ready';
     this.lastAccountAuthError = null;
     this.lastAccountAuthAtMs = null;
+    this.accountProbePath = null;
+    this.accountProbeHealthyAtMs = null;
+    this.accountProbeLastError = null;
+    this.configFetchedAtMs = 0;
+    this.reconcileCheckpointByAccountKey =
+      this.state && this.state.reconcileCheckpoints && typeof this.state.reconcileCheckpoints === 'object'
+        ? { ...this.state.reconcileCheckpoints }
+        : {};
+    this.lastReconcileAtMs = null;
+    this.historyNoDataCount = 0;
+    this.historyNbJumps = 0;
+    this.historyCursorStallRecoveries = 0;
     this.streamTokensCache = { tokens: [], fetchedAtMs: 0, minExpireAtMs: 0 };
     this.streamTokensInFlight = null;
     this.stream = { status: STREAM_STATUS.DISCONNECTED, lastError: null, lastMessageAtMs: 0, url: null, reason: null, detail: null };
@@ -2362,6 +2477,9 @@ class TradeLockerClient {
     this.accountRouteDegradedReason = reason || 'account_not_ready';
     this.lastAccountAuthError = null;
     this.lastAccountAuthAtMs = null;
+    this.accountProbePath = null;
+    this.accountProbeHealthyAtMs = null;
+    this.accountProbeLastError = null;
   }
 
   noteAccountRouteHealthy() {
@@ -2369,6 +2487,7 @@ class TradeLockerClient {
     this.accountRouteDegradedReason = null;
     this.lastAccountAuthError = null;
     this.lastAccountAuthAtMs = nowMs();
+    this.accountProbeLastError = null;
   }
 
   noteAccountRouteFailure(reason, errorMessage = null) {
@@ -2376,6 +2495,7 @@ class TradeLockerClient {
     this.accountRouteDegradedReason = String(reason || 'account_auth_invalid');
     this.lastAccountAuthError = errorMessage ? redactErrorMessage(String(errorMessage)) : null;
     this.lastAccountAuthAtMs = nowMs();
+    this.accountProbeLastError = errorMessage ? redactErrorMessage(String(errorMessage)) : null;
   }
 
   getConnectionStateSnapshot() {
@@ -2408,6 +2528,35 @@ class TradeLockerClient {
       connectionState,
       degradedReason
     };
+  }
+
+  getActiveAccountKey() {
+    const env = normalizeEnv(this.state?.env || 'demo');
+    const server = String(this.state?.server || '').trim().toUpperCase() || 'NA';
+    const accountId = parseAccountIdentifier(this.state?.accountId);
+    const accNum = parseAccountIdentifier(this.state?.accNum);
+    if (accountId == null || accNum == null) return null;
+    return `${env}:${server}:${accountId}:${accNum}`;
+  }
+
+  getReconcileCheckpoint(accountKey = null) {
+    const key = String(accountKey || this.getActiveAccountKey() || '').trim();
+    if (!key) return null;
+    const entry = this.reconcileCheckpointByAccountKey?.[key];
+    if (!entry || typeof entry !== 'object') return null;
+    return { ...entry };
+  }
+
+  setReconcileCheckpoint(accountKey, checkpoint) {
+    const key = String(accountKey || '').trim();
+    if (!key || !checkpoint || typeof checkpoint !== 'object') return null;
+    if (!this.reconcileCheckpointByAccountKey || typeof this.reconcileCheckpointByAccountKey !== 'object') {
+      this.reconcileCheckpointByAccountKey = {};
+    }
+    this.reconcileCheckpointByAccountKey[key] = { ...checkpoint };
+    this.state.reconcileCheckpoints = { ...this.reconcileCheckpointByAccountKey };
+    persistState(this.state);
+    return this.reconcileCheckpointByAccountKey[key];
   }
 
   resetRateLimitTelemetryState() {
@@ -3308,6 +3457,9 @@ class TradeLockerClient {
       accountRouteHealthy: snapshot.accountRouteHealthy,
       connectionState: snapshot.connectionState,
       degradedReason: snapshot.degradedReason || undefined,
+      accountProbePath: this.accountProbePath || null,
+      accountProbeHealthyAtMs: this.accountProbeHealthyAtMs || null,
+      accountProbeLastError: this.accountProbeLastError || null,
       lastAccountAuthError: this.lastAccountAuthError || null,
       lastAccountAuthAtMs: this.lastAccountAuthAtMs || null,
       env: this.state.env,
@@ -3330,6 +3482,14 @@ class TradeLockerClient {
       requestInFlight: this.requestInFlightCount || 0,
       requestConcurrency: this.requestConcurrency,
       minRequestIntervalMs: this.minRequestIntervalMs || 0,
+      configFetchedAtMs: this.configFetchedAtMs || null,
+      configAgeMs: this.configFetchedAtMs ? Math.max(0, nowMs() - this.configFetchedAtMs) : null,
+      reconcileAtMs: this.lastReconcileAtMs || null,
+      reconcileLagMs: this.lastReconcileAtMs ? Math.max(0, nowMs() - this.lastReconcileAtMs) : null,
+      accountRouteProbeOk: snapshot.accountRouteHealthy === true,
+      historyNoDataCount: Number(this.historyNoDataCount || 0),
+      historyNbJumps: Number(this.historyNbJumps || 0),
+      historyCursorStallRecoveries: Number(this.historyCursorStallRecoveries || 0),
       rateLimitPolicy: this.rateLimitPolicy,
       rateLimitPolicies: RATE_LIMIT_PROFILE_NAMES.slice(),
       rateLimitTelemetry: this.getRateLimitTelemetrySnapshot()
@@ -4135,6 +4295,36 @@ class TradeLockerClient {
     return { ...res, ok: !!res.ok };
   }
 
+  getAccountsCacheContext() {
+    return {
+      env: normalizeEnv(this.state.env),
+      server: String(this.state.server || '').trim().toLowerCase() || null,
+      email: String(this.state.email || '').trim().toLowerCase() || null
+    };
+  }
+
+  isAccountsCacheContextMatch() {
+    const context = this.getAccountsCacheContext();
+    const cacheEnv = this.accountsCache?.env ? normalizeEnv(this.accountsCache.env) : null;
+    const cacheServer = String(this.accountsCache?.server || '').trim().toLowerCase() || null;
+    const cacheEmail = String(this.accountsCache?.email || '').trim().toLowerCase() || null;
+    return cacheEnv === context.env && cacheServer === context.server && cacheEmail === context.email;
+  }
+
+  setAccountsCache(accounts, fetchedAtMs = nowMs()) {
+    const context = this.getAccountsCacheContext();
+    const safeAccounts = normalizeAccountsList(Array.isArray(accounts) ? accounts : []);
+    const timestamp = Number.isFinite(Number(fetchedAtMs)) ? Number(fetchedAtMs) : nowMs();
+    this.accountsCache = {
+      accounts: safeAccounts,
+      fetchedAtMs: timestamp,
+      env: context.env,
+      server: context.server,
+      email: context.email
+    };
+    return this.accountsCache;
+  }
+
   async connect(opts) {
     const env = normalizeEnv(opts?.env);
     const server = String(opts?.server || this.state.server || '').trim();
@@ -4201,6 +4391,7 @@ class TradeLockerClient {
       accountId: nextAccountId,
       accNum: nextAccNum
     });
+    this.setAccountsCache([], 0);
 
     const warnings = [];
     if (rememberPassword) {
@@ -4347,6 +4538,7 @@ class TradeLockerClient {
 
       // Clear caches that depend on auth/account
       this.config = null;
+      this.configFetchedAtMs = 0;
       this.rateLimitConfig = null;
       this.rateLimitBuckets = new Map();
       this.routeRateLimitedUntilMs = new Map();
@@ -4365,7 +4557,7 @@ class TradeLockerClient {
       try {
         const accountsJson = await this.apiJson('/auth/jwt/all-accounts');
         const accounts = normalizeAccountsList(Array.isArray(accountsJson?.accounts) ? accountsJson.accounts : []);
-        this.accountsCache = { accounts, fetchedAtMs: nowMs() };
+        this.setAccountsCache(accounts, nowMs());
 
         const resolved = resolveTradeLockerAccountPair(accounts, {
           accountId: this.state.accountId,
@@ -4394,9 +4586,15 @@ class TradeLockerClient {
       }
 
       try {
-        await this.ensureConfig();
+        await this.ensureConfig({ force: true });
       } catch {
         // ignore config fetch errors
+      }
+
+      try {
+        await this.reconcileAccountState({ reason: 'connect', force: true });
+      } catch {
+        // ignore reconcile errors during connect
       }
 
       try {
@@ -4419,6 +4617,7 @@ class TradeLockerClient {
     this.lastError = null;
     this.resetAccountRouteHealth('account_not_ready');
     this.config = null;
+    this.configFetchedAtMs = 0;
     this.rateLimitConfig = null;
     this.rateLimitBuckets = new Map();
     this.routeRateLimitedUntilMs = new Map();
@@ -4426,7 +4625,7 @@ class TradeLockerClient {
     this.instruments = null;
     this.instrumentsByTradableId = new Map();
     this.instrumentsByNameLower = new Map();
-    this.accountsCache = { accounts: [], fetchedAtMs: 0 };
+    this.accountsCache = { accounts: [], fetchedAtMs: 0, env: null, server: null, email: null };
     this.refreshInFlight = null;
     this.rateLimitedUntilMs = 0;
     this.snapshotCache = null;
@@ -4445,6 +4644,7 @@ class TradeLockerClient {
     this.sessionStatusCache = new Map();
     this.infoRouteCache = new Map();
     this.sessionDeveloperApiKey = null;
+    this.lastReconcileAtMs = null;
     return { ok: true };
   }
 
@@ -4477,6 +4677,8 @@ class TradeLockerClient {
     this.dailyBarCache = new Map();
     this.historyCache = new Map();
     this.infoRouteCache = new Map();
+    this.config = null;
+    this.configFetchedAtMs = 0;
     this.resetRateLimitTelemetryState();
     this.resetAccountRouteHealth('account_not_ready');
     return { ok: true, accountId: this.state.accountId, accNum: this.state.accNum, resolvedBy: resolved.resolvedBy || 'exact' };
@@ -4969,7 +5171,7 @@ class TradeLockerClient {
     try {
       const json = await this.apiJson('/auth/jwt/all-accounts');
       const accounts = normalizeAccountsList(Array.isArray(json?.accounts) ? json.accounts : []);
-      this.accountsCache = { accounts, fetchedAtMs: nowMs() };
+      this.setAccountsCache(accounts, nowMs());
       return { ok: true, accounts };
     } catch (e) {
       const msg = redactErrorMessage(e?.message || String(e));
@@ -4979,29 +5181,38 @@ class TradeLockerClient {
   }
 
   async ensureAllAccountsCache(maxAgeMs = 60_000) {
+    const contextMatches = this.isAccountsCacheContextMatch();
     const age = nowMs() - (this.accountsCache?.fetchedAtMs || 0);
-    if (Array.isArray(this.accountsCache?.accounts) && this.accountsCache.accounts.length > 0 && age < maxAgeMs) {
+    if (contextMatches && Array.isArray(this.accountsCache?.accounts) && this.accountsCache.accounts.length > 0 && age < maxAgeMs) {
       return this.accountsCache.accounts;
     }
     try {
       const json = await this.apiJson('/auth/jwt/all-accounts');
       const accounts = normalizeAccountsList(Array.isArray(json?.accounts) ? json.accounts : []);
       if (accounts.length > 0) {
-        this.accountsCache = { accounts, fetchedAtMs: nowMs() };
+        this.setAccountsCache(accounts, nowMs());
+        return accounts;
+      }
+      if (!contextMatches) {
+        this.setAccountsCache([], 0);
         return accounts;
       }
       const fallback = normalizeAccountsList(Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : []);
       if (fallback.length > 0) {
-        this.accountsCache = { accounts: fallback, fetchedAtMs: this.accountsCache?.fetchedAtMs || nowMs() };
+        this.setAccountsCache(fallback, this.accountsCache?.fetchedAtMs || nowMs());
       }
       if (fallback.length > 0) return fallback;
       return accounts;
     } catch (e) {
       const msg = redactErrorMessage(e?.message || String(e));
       this.lastError = msg;
+      if (!contextMatches) {
+        this.setAccountsCache([], 0);
+        return [];
+      }
       const fallback = normalizeAccountsList(Array.isArray(this.accountsCache?.accounts) ? this.accountsCache.accounts : []);
       if (fallback.length > 0) {
-        this.accountsCache = { accounts: fallback, fetchedAtMs: this.accountsCache?.fetchedAtMs || nowMs() };
+        this.setAccountsCache(fallback, this.accountsCache?.fetchedAtMs || nowMs());
       }
       if (fallback.length > 0) return fallback;
       return [];
@@ -5061,7 +5272,7 @@ class TradeLockerClient {
     }) || null;
   }
 
-  async verifyActiveAccountContext({ allowRepair = true } = {}) {
+  async verifyActiveAccountContext({ allowRepair = true, probePath = null } = {}) {
     const context = await this.ensureAccountContext();
     if (!context?.ok) {
       const reason = context?.code === 'ACCOUNT_NOT_READY' || context?.code === 'account_not_ready'
@@ -5076,8 +5287,31 @@ class TradeLockerClient {
       };
     }
 
-    const probe = await this.apiRequestMeta('/trade/config', { includeAccNum: true });
+    const buildProbePath = (accountId) => {
+      const normalizedAccountId = parseAccountIdentifier(accountId);
+      if (normalizedAccountId == null) return null;
+      const fallback = `/trade/accounts/${normalizedAccountId}/state`;
+      const raw = String(probePath || '').trim();
+      if (!raw) return fallback;
+      return raw.startsWith('/') ? raw : `/${raw}`;
+    };
+
+    const probeTarget = buildProbePath(context.accountId);
+    if (!probeTarget) {
+      this.noteAccountRouteFailure('account_not_ready', 'TradeLocker account probe path is unavailable.');
+      return {
+        ok: false,
+        error: 'TradeLocker account probe path is unavailable.',
+        code: 'account_not_ready',
+        stage: 'verify'
+      };
+    }
+
+    const probe = await this.apiRequestMeta(probeTarget, { includeAccNum: true });
     if (probe?.ok) {
+      this.accountProbePath = probeTarget;
+      this.accountProbeHealthyAtMs = nowMs();
+      this.accountProbeLastError = null;
       this.noteAccountRouteHealthy();
       return { ok: true, accountId: context.accountId, accNum: context.accNum, stage: 'verify' };
     }
@@ -5093,8 +5327,14 @@ class TradeLockerClient {
         this.state.accountId = repaired.accountId;
         this.state.accNum = repaired.accNum;
         persistState(this.state);
-        const retryProbe = await this.apiRequestMeta('/trade/config', { includeAccNum: true });
+        const retryProbePath = buildProbePath(repaired.accountId);
+        const retryProbe = retryProbePath
+          ? await this.apiRequestMeta(retryProbePath, { includeAccNum: true })
+          : { ok: false, error: 'TradeLocker account probe path is unavailable.', code: 'account_not_ready', status: 400 };
         if (retryProbe?.ok) {
+          this.accountProbePath = retryProbePath;
+          this.accountProbeHealthyAtMs = nowMs();
+          this.accountProbeLastError = null;
           this.noteAccountRouteHealthy();
           return { ok: true, accountId: repaired.accountId, accNum: repaired.accNum, stage: 'verify', resolvedBy: 'reconnect_retry' };
         }
@@ -5103,6 +5343,8 @@ class TradeLockerClient {
           message: retryProbe?.error,
           code: retryProbe?.code
         }) || 'account_auth_invalid';
+        this.accountProbePath = retryProbePath || probeTarget;
+        this.accountProbeLastError = retryProbe?.error ? redactErrorMessage(String(retryProbe.error)) : null;
         this.noteAccountRouteFailure(retryReason, retryProbe?.error || 'TradeLocker account verification failed.');
         return {
           ok: false,
@@ -5118,6 +5360,8 @@ class TradeLockerClient {
       message: probe?.error,
       code: probe?.code
     }) || 'account_auth_invalid';
+    this.accountProbePath = probeTarget;
+    this.accountProbeLastError = probe?.error ? redactErrorMessage(String(probe.error)) : null;
     this.noteAccountRouteFailure(reason, probe?.error || 'TradeLocker account verification failed.');
     return {
       ok: false,
@@ -5221,10 +5465,16 @@ class TradeLockerClient {
     return best.value != null && best.score > 0 ? { value: best.value, id: best.id, score: best.score } : null;
   }
 
-  async ensureConfig() {
-    if (this.config) return this.config;
+  async ensureConfig(opts = {}) {
+    const force = opts === true ? true : opts?.force === true;
+    const ttlMs = Number.isFinite(Number(opts?.ttlMs))
+      ? Math.max(0, Number(opts.ttlMs))
+      : CONFIG_TTL_MS;
+    const ageMs = this.configFetchedAtMs ? nowMs() - this.configFetchedAtMs : Number.POSITIVE_INFINITY;
+    if (!force && this.config && ageMs <= ttlMs) return this.config;
     const json = await this.apiJson('/trade/config', { includeAccNum: true });
     this.config = json;
+    this.configFetchedAtMs = nowMs();
     this.applyRateLimitConfig(json);
     return this.config;
   }
@@ -5386,15 +5636,7 @@ class TradeLockerClient {
     // Fallback: /auth/jwt/all-accounts sometimes contains the most reliable account balance.
     try {
       const accounts = await this.ensureAllAccountsCache(60_000);
-      const activeAccountId = parseAccountIdentifier(this.state.accountId);
-      const activeAccNum = parseAccountIdentifier(this.state.accNum);
-      const selected = accounts.find((a) => {
-        const aId = readAccountIdFromEntry(a);
-        const aAccNum = readAccNumFromEntry(a);
-        if (activeAccountId != null && aId != null && aId === activeAccountId) return true;
-        if (activeAccNum != null && aAccNum != null && aAccNum === activeAccNum) return true;
-        return false;
-      });
+      const selected = this.findSelectedAccount(accounts);
       const fallbackBalance = parseNumberLoose(selected?.aaccountBalance ?? selected?.accountBalance ?? selected?.balance);
       if (fallbackBalance != null && fallbackBalance > 0) {
         if (balance == null || balance <= 0) {
@@ -5887,6 +6129,160 @@ class TradeLockerClient {
       this.lastError = msg;
       return { ok: false, error: msg };
     }
+  }
+
+  async cancelAllOrders({ reason = null } = {}) {
+    if (!this.state.tradingEnabled) return { ok: false, error: 'Trading is disabled in Settings.' };
+    if (!this.state.accountId) return { ok: false, error: 'TradeLocker accountId not set. Select an account first.' };
+    const verify = await this.verifyActiveAccountContext({ allowRepair: true });
+    if (!verify?.ok) {
+      return {
+        ok: false,
+        error: verify?.error || 'TradeLocker account context verification failed.',
+        code: verify?.code || 'account_auth_invalid',
+        stage: 'verify'
+      };
+    }
+
+    try {
+      const res = await this.apiRequestMeta(`/trade/accounts/${this.state.accountId}/orders`, {
+        method: 'DELETE',
+        includeAccNum: true
+      });
+      if (!res?.ok) {
+        const msg = res?.error ? String(res.error) : 'TradeLocker cancel-all orders request failed.';
+        this.lastError = msg;
+        return {
+          ok: false,
+          error: msg,
+          code: res?.code || classifyTradeLockerError({ status: res?.status, message: msg }) || 'cancel_all_failed'
+        };
+      }
+      const payload = res?.json?.d ?? res?.json ?? {};
+      const pendingCount = parseNumberLoose(payload?.pendingCount ?? payload?.pending ?? payload?.ordersPending);
+      const remainingCount = parseNumberLoose(payload?.remainingCount ?? payload?.remaining ?? payload?.ordersRemaining);
+      const cancelledCount = parseNumberLoose(payload?.cancelledCount ?? payload?.canceledCount ?? payload?.cancelled ?? payload?.canceled);
+      return {
+        ok: true,
+        reason: reason ? String(reason) : null,
+        pendingCount: pendingCount != null ? pendingCount : null,
+        remainingCount: remainingCount != null ? remainingCount : null,
+        cancelledCount: cancelledCount != null ? cancelledCount : null,
+        response: res?.json ?? null
+      };
+    } catch (e) {
+      const msg = redactErrorMessage(e?.message || String(e));
+      this.lastError = msg;
+      return { ok: false, error: msg, code: classifyTradeLockerError({ status: e?.status, message: msg }) || 'cancel_all_failed' };
+    }
+  }
+
+  async reconcileAccountState({ reason = 'manual', force = false } = {}) {
+    const verify = await this.verifyActiveAccountContext({ allowRepair: true });
+    if (!verify?.ok) {
+      return {
+        ok: false,
+        error: verify?.error || 'TradeLocker account context verification failed.',
+        code: verify?.code || 'account_auth_invalid',
+        stage: 'verify'
+      };
+    }
+
+    const accountKey = this.getActiveAccountKey();
+    const previousCheckpoint = this.getReconcileCheckpoint(accountKey);
+    const captureAtMs = nowMs();
+    const result = {
+      config: null,
+      orders: null,
+      ordersHistory: null,
+      positions: null,
+      metrics: null
+    };
+
+    try {
+      result.config = await this.ensureConfig({ force: force === true });
+    } catch (e) {
+      result.config = { ok: false, error: redactErrorMessage(e?.message || String(e)) };
+    }
+
+    try {
+      result.orders = await this.getOrders();
+    } catch (e) {
+      result.orders = { ok: false, error: redactErrorMessage(e?.message || String(e)) };
+    }
+    try {
+      result.ordersHistory = await this.getOrdersHistory();
+    } catch (e) {
+      result.ordersHistory = { ok: false, error: redactErrorMessage(e?.message || String(e)) };
+    }
+    try {
+      result.positions = await this.getPositions();
+    } catch (e) {
+      result.positions = { ok: false, error: redactErrorMessage(e?.message || String(e)) };
+    }
+    try {
+      result.metrics = await this.getAccountMetrics({ maxAgeMs: 0 });
+    } catch (e) {
+      result.metrics = { ok: false, error: redactErrorMessage(e?.message || String(e)) };
+    }
+
+    const extractEntryTs = (entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const keys = ['closedAt', 'submittedAt', 'openedAt', 'updatedAt', 'createdAt'];
+      let best = null;
+      for (const key of keys) {
+        const value = entry?.[key];
+        const date = parseDateLoose(value);
+        const ts = date && !Number.isNaN(date.getTime()) ? date.getTime() : null;
+        if (ts == null) continue;
+        best = best == null ? ts : Math.max(best, ts);
+      }
+      return best;
+    };
+
+    const historyList = Array.isArray(result.ordersHistory?.ordersHistory) ? result.ordersHistory.ordersHistory : [];
+    let lastOrdersHistorySeenTs = null;
+    for (const entry of historyList) {
+      const ts = extractEntryTs(entry);
+      if (ts == null) continue;
+      lastOrdersHistorySeenTs = lastOrdersHistorySeenTs == null ? ts : Math.max(lastOrdersHistorySeenTs, ts);
+    }
+
+    const positionsList = Array.isArray(result.positions?.positions) ? result.positions.positions : [];
+    const positionsHash = buildPositionsFingerprint(positionsList);
+
+    const checkpoint = {
+      accountId: parseAccountIdentifier(this.state.accountId),
+      accNum: parseAccountIdentifier(this.state.accNum),
+      lastReconciledAtMs: captureAtMs,
+      lastOrdersHistorySeenTs:
+        lastOrdersHistorySeenTs != null
+          ? Number(lastOrdersHistorySeenTs)
+          : Number(previousCheckpoint?.lastOrdersHistorySeenTs || 0) || null,
+      lastPositionsHash: positionsHash || previousCheckpoint?.lastPositionsHash || '',
+      reason: reason ? String(reason) : 'manual'
+    };
+
+    if (accountKey) {
+      this.setReconcileCheckpoint(accountKey, checkpoint);
+    }
+    this.lastReconcileAtMs = captureAtMs;
+
+    const failures = [
+      result.config?.ok === false ? { stage: 'config', error: result.config?.error || 'config_failed' } : null,
+      result.orders?.ok === false ? { stage: 'orders', error: result.orders?.error || 'orders_failed' } : null,
+      result.ordersHistory?.ok === false ? { stage: 'orders_history', error: result.ordersHistory?.error || 'orders_history_failed' } : null,
+      result.positions?.ok === false ? { stage: 'positions', error: result.positions?.error || 'positions_failed' } : null,
+      result.metrics?.ok === false ? { stage: 'metrics', error: result.metrics?.error || 'metrics_failed' } : null
+    ].filter(Boolean);
+
+    return {
+      ok: failures.length === 0,
+      reason: checkpoint.reason,
+      accountKey: accountKey || null,
+      checkpoint,
+      failures
+    };
   }
 
   async modifyOrder({ orderId, price, qty, stopLoss, takeProfit, strategyId } = {}) {
@@ -6668,6 +7064,24 @@ class TradeLockerClient {
           );
           const status = String(json?.s || '').toLowerCase();
           const details = Array.isArray(json?.d?.barDetails) ? json.d.barDetails : [];
+          if (status === 'no_data') {
+            this.historyNoDataCount = Number(this.historyNoDataCount || 0) + 1;
+            const nbValue = normalizeEpochMs(json?.d?.nb ?? json?.nb);
+            let nextCursor = chunkEnd + 1;
+            if (nbValue != null && nbValue > cursor) {
+              const jumped = Math.max(nextCursor, nbValue);
+              if (jumped > nextCursor) {
+                this.historyNbJumps = Number(this.historyNbJumps || 0) + 1;
+              }
+              nextCursor = jumped;
+            }
+            if (nextCursor <= cursor) {
+              nextCursor = cursor + 1;
+              this.historyCursorStallRecoveries = Number(this.historyCursorStallRecoveries || 0) + 1;
+            }
+            cursor = nextCursor;
+            continue;
+          }
           if (status !== 'no_data') {
             for (const bar of details) {
               const ts = normalizeEpochMs(bar?.t ?? bar?.time ?? bar?.timestamp);
@@ -6682,7 +7096,13 @@ class TradeLockerClient {
               });
             }
           }
-          cursor = chunkEnd + 1;
+          const nextCursor = chunkEnd + 1;
+          if (nextCursor <= cursor) {
+            cursor = cursor + 1;
+            this.historyCursorStallRecoveries = Number(this.historyCursorStallRecoveries || 0) + 1;
+          } else {
+            cursor = nextCursor;
+          }
         }
 
         const bars = Array.from(barsByTs.values()).sort((a, b) => a.t - b.t);
@@ -6944,7 +7364,13 @@ class TradeLockerClient {
 
   async resolveInstrumentConstraints(inst) {
     if (!inst || typeof inst !== 'object') {
-      return { minStopDistance: null, priceStep: null, sessionOpen: null, sessionStatus: null };
+      return {
+        minStopDistance: null,
+        priceStep: null,
+        sessionOpen: null,
+        sessionStatus: null,
+        orderTypeAllowed: { market: null, limit: null, stop: null }
+      };
     }
     const instrumentId = parseNumberLoose(inst?.tradableInstrumentId);
     const instConstraints = extractInstrumentConstraints(inst);
@@ -6980,12 +7406,14 @@ class TradeLockerClient {
     }
 
     const sessionOpen = parseSessionOpen(sessionStatus);
+    const orderTypeAllowed = extractSessionOrderTypeCapabilities(sessionStatus);
 
     return {
       minStopDistance,
       priceStep,
       sessionOpen,
-      sessionStatus
+      sessionStatus,
+      orderTypeAllowed
     };
   }
 
@@ -7147,6 +7575,18 @@ class TradeLockerClient {
       const constraints = await this.resolveInstrumentConstraints(inst);
       if (constraints?.sessionOpen === false && isMarket) {
         return { ok: false, error: 'Market session is closed for this instrument.' };
+      }
+      const orderTypeAllowed = constraints?.orderTypeAllowed || {};
+      const orderTypeBlocked =
+        (isMarket && orderTypeAllowed.market === false) ||
+        (isLimit && orderTypeAllowed.limit === false) ||
+        (isStop && orderTypeAllowed.stop === false);
+      if (orderTypeBlocked) {
+        return {
+          ok: false,
+          error: `Session status does not allow ${orderType.toUpperCase()} orders for this instrument.`,
+          code: 'SESSION_ORDER_TYPE_BLOCKED'
+        };
       }
 
       const quantityRequested = parseNumberLoose(qty) ?? this.state.defaultOrderQty;
