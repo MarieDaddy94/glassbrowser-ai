@@ -50,6 +50,8 @@ export interface AiKeysSectionCtx {
   setWatchedVisionIntervalMs: (value: string) => void;
   chartWatchIntervalMs: string;
   setChartWatchIntervalMs: (value: string) => void;
+  browserHomeUrl: string;
+  setBrowserHomeUrl: (value: string) => void;
   autoWatchTradingView: boolean;
   setAutoWatchTradingView: React.Dispatch<React.SetStateAction<boolean>>;
   chatTabContextMode: string;

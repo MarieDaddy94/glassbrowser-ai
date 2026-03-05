@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Send, Trash2, ImageIcon, Camera, X, Paperclip, Plus, Users, Sparkles, Video, Mic, StopCircle, Monitor, Settings, Zap, Volume2, VolumeX, Headphones, Activity, ChevronDown, Clock } from 'lucide-react';
-import { Message, Agent, TradeProposal, BrokerAction, ChartChatSnapshotStatus, ChartSession, ChartTimeframe, AgentToolAction, TaskPlaybook, TaskTreeResumeEntry, TaskTreeRunEntry, ActionFlowRecommendation, CrossPanelContext, SymbolScope } from '../types';
+import { Message, Agent, TradeProposal, BrokerAction, ChartChatSnapshotStatus, ChartSession, ChartTimeframe, AgentToolAction, TaskPlaybook, TaskTreeResumeEntry, TaskTreeRunEntry, ActionFlowRecommendation, CrossPanelContext, SymbolScope, SignalChatContextSnapshot, SignalChatThreadSummary } from '../types';
 import { computeBrokerActionIdempotencyKey } from '../services/tradeIdentity';
 import type { TaskTreeRunSummary } from '../services/taskTreeService';
 import AgentConfigModal from './AgentConfigModal';
@@ -158,6 +158,23 @@ interface ChatInterfaceProps {
   onUpdateSymbolScope?: (symbol: string, opts?: { timeframes?: string[]; source?: string }) => void;
   onClearSymbolScope?: () => void;
   onSearchSymbols?: (query: string) => Promise<Array<{ symbol: string; label?: string; raw?: any }>> | Array<{ symbol: string; label?: string; raw?: any }>;
+  signalThreads?: SignalChatThreadSummary[];
+  activeSignalThreadId?: string | null;
+  onSelectSignalThread?: (signalId: string | null) => void;
+  signalContextById?: Record<string, SignalChatContextSnapshot>;
+  onExecuteSignalFromChat?: (signalId: string) => void;
+  onRejectSignalFromChat?: (signalId: string) => void;
+  onCancelSignalOrderFromChat?: (signalId: string) => void;
+  onAskAgentAboutSignal?: (signalId: string, promptKind: 'status' | 'risk' | 'thesis' | 'exit') => void;
+  onOpenSignalFromChat?: (signalId: string) => void;
+  onOpenAcademyCaseFromChat?: (signalId: string) => void;
+  onOpenChartFromSignalChat?: (signalId: string) => void;
+  contextInspector?: {
+    sections: Array<{ id: string; title: string; chars: number; approxTokens: number; truncated: boolean; text: string }>;
+    totalApproxTokens: number;
+    generatedAtMs: number;
+    threadId: string | null;
+  };
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({ 
@@ -231,7 +248,19 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   crossPanelContext = null,
   onUpdateSymbolScope,
   onClearSymbolScope,
-  onSearchSymbols
+  onSearchSymbols,
+  signalThreads = [],
+  activeSignalThreadId = null,
+  onSelectSignalThread,
+  signalContextById = {},
+  onExecuteSignalFromChat,
+  onRejectSignalFromChat,
+  onCancelSignalOrderFromChat,
+  onAskAgentAboutSignal,
+  onOpenSignalFromChat,
+  onOpenAcademyCaseFromChat,
+  onOpenChartFromSignalChat,
+  contextInspector
 }) => {
   // Unified chat surface: route all chat channels to chart chat.
   const normalizedChannel: 'chat' | 'chart' = 'chart';
@@ -245,14 +274,31 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     },
     [onRunActionCatalog, normalizedChannel]
   );
+  const activeSignalIdForThread = String(activeSignalThreadId || '').trim();
+  const activeThreadKind: 'global' | 'signal' = activeSignalIdForThread ? 'signal' : 'global';
+  const activeThreadId = activeSignalIdForThread ? `signal:${activeSignalIdForThread}` : 'global';
+  const activeThreadLabel = activeSignalIdForThread
+    ? `${signalContextById?.[activeSignalIdForThread]?.symbol || activeSignalIdForThread}${signalContextById?.[activeSignalIdForThread]?.timeframe ? ` ${String(signalContextById[activeSignalIdForThread].timeframe).toUpperCase()}` : ''}`
+    : 'Global';
   const sendMessageViaAction = useCallback(
     (
       text: string,
       image?: string | Array<{ dataUrl?: string; label?: string; meta?: any }> | null
     ) => {
-      runChatActionOr('chat.send', { text, image }, () => onSendMessage(text, image));
+      runChatActionOr(
+        'chat.send',
+        {
+          text,
+          image,
+          threadKind: activeThreadKind,
+          threadId: activeThreadId,
+          threadLabel: activeThreadLabel,
+          signalId: activeSignalIdForThread || null
+        },
+        () => onSendMessage(text, image)
+      );
     },
-    [onSendMessage, runChatActionOr]
+    [activeSignalIdForThread, activeThreadId, activeThreadKind, activeThreadLabel, onSendMessage, runChatActionOr]
   );
   const [input, setInput] = useState('');
   const [symbolInput, setSymbolInput] = useState('');
@@ -377,10 +423,31 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const [unreadCount, setUnreadCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const lastMessageCountRef = useRef<number>(messages.length);
+  const [showContextInspector, setShowContextInspector] = useState(false);
+  const resolveMessageThread = useCallback((msg: Message) => {
+    const signalId = String((msg as any)?.signalId || '').trim()
+      || (String((msg as any)?.threadId || '').startsWith('signal:')
+        ? String((msg as any)?.threadId || '').slice('signal:'.length).trim()
+        : '');
+    const kindRaw = String((msg as any)?.threadKind || '').trim().toLowerCase();
+    const threadKind: 'global' | 'signal' = kindRaw === 'signal' && signalId ? 'signal' : 'global';
+    const threadId = threadKind === 'signal' ? `signal:${signalId}` : 'global';
+    return { threadKind, threadId, signalId: threadKind === 'signal' ? signalId : '' };
+  }, []);
+  const threadScopedMessages = React.useMemo(() => {
+    const activeSignalId = activeSignalIdForThread;
+    return (messages || []).filter((msg) => {
+      const thread = resolveMessageThread(msg);
+      if (activeSignalId) {
+        return thread.threadKind === 'signal' && thread.signalId === activeSignalId;
+      }
+      return thread.threadKind === 'global';
+    });
+  }, [activeSignalIdForThread, messages, resolveMessageThread]);
+  const lastMessageCountRef = useRef<number>(threadScopedMessages.length);
   const symbolSearchTokenRef = useRef(0);
-  const renderMessages = messages.length > MAX_RENDER_MESSAGES ? messages.slice(messages.length - MAX_RENDER_MESSAGES) : messages;
-  const trimmedCount = Math.max(0, messages.length - renderMessages.length);
+  const renderMessages = threadScopedMessages.length > MAX_RENDER_MESSAGES ? threadScopedMessages.slice(threadScopedMessages.length - MAX_RENDER_MESSAGES) : threadScopedMessages;
+  const trimmedCount = Math.max(0, threadScopedMessages.length - renderMessages.length);
   const nowMs = Date.now();
   const playbookOptions = Array.isArray(playbooks) && playbooks.length > 0
     ? playbooks
@@ -803,7 +870,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
   // Auto-scroll only if the user is already at the bottom; otherwise show a "new messages" affordance.
   useEffect(() => {
     const prevCount = lastMessageCountRef.current;
-    const nextCount = messages.length;
+    const nextCount = threadScopedMessages.length;
     if (nextCount === prevCount) return;
     lastMessageCountRef.current = nextCount;
 
@@ -815,7 +882,13 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
     if (isScrolledToBottom()) scrollToBottom();
     else setUnreadCount((c) => c + (nextCount - prevCount));
-  }, [messages.length]);
+  }, [threadScopedMessages.length]);
+
+  useEffect(() => {
+    lastMessageCountRef.current = threadScopedMessages.length;
+    setUnreadCount(0);
+    setIsAtBottom(true);
+  }, [activeSignalIdForThread, threadScopedMessages.length]);
 
   // Keep the viewport pinned while live/typing only if already at bottom.
   useEffect(() => {
@@ -1064,8 +1137,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   // Find active agent object for UI coloring
   const activeAgent = agents.find(a => a.id === activeAgentId) || agents[0];
-  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const lastMessage = renderMessages.length > 0 ? renderMessages[renderMessages.length - 1] : null;
   const isStreamingReply = !!(lastMessage && lastMessage.isStreaming);
+  const focusedSignalId = activeSignalIdForThread || null;
+  const focusedSignalContext = focusedSignalId ? signalContextById?.[focusedSignalId] || null : null;
+  const focusedSignalStatus = String(focusedSignalContext?.status || '').trim().toUpperCase();
+  const canExecuteFocusedSignal = !!(focusedSignalId && !focusedSignalContext?.archived && !['SUBMITTING', 'PENDING', 'EXECUTED', 'REJECTED', 'EXPIRED', 'WIN', 'LOSS', 'FAILED'].includes(focusedSignalStatus));
+  const canRejectFocusedSignal = !!(focusedSignalId && !focusedSignalContext?.archived && !['SUBMITTING', 'PENDING', 'EXECUTED', 'REJECTED', 'EXPIRED', 'WIN', 'LOSS', 'FAILED'].includes(focusedSignalStatus));
+  const canCancelFocusedSignal = !!(focusedSignalId && !focusedSignalContext?.archived && focusedSignalStatus === 'PENDING');
   const timelineRun = activePlaybookRun || (Array.isArray(recentPlaybookRuns) ? recentPlaybookRuns[0] : null);
   const timelineSteps = Array.isArray(timelineRun?.steps) ? timelineRun?.steps || [] : [];
   const blockedStep = timelineSteps.slice().reverse().find((step) => step.status === 'blocked') || null;
@@ -1998,6 +2077,122 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {/* Messages Area */}
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar relative">
+        {(signalThreads.length > 0 || activeSignalIdForThread) && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3 space-y-2">
+            <div className="text-[10px] uppercase tracking-wider text-gray-400">Signal Threads</div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onSelectSignalThread?.(null)}
+                className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-semibold ${
+                  !activeSignalIdForThread
+                    ? 'bg-sky-500/20 border-sky-500/40 text-sky-100'
+                    : 'bg-black/20 border-white/10 text-gray-300 hover:bg-white/10'
+                }`}
+              >
+                Global
+              </button>
+              {signalThreads.slice(0, 16).map((thread) => {
+                const selected = activeSignalIdForThread === thread.signalId;
+                return (
+                  <button
+                    key={`signal_thread_${thread.signalId}`}
+                    type="button"
+                    onClick={() => onSelectSignalThread?.(thread.signalId)}
+                    className={`px-2.5 py-1.5 rounded-lg border text-[10px] font-semibold inline-flex items-center gap-1.5 ${
+                      selected
+                        ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-100'
+                        : 'bg-black/20 border-white/10 text-gray-300 hover:bg-white/10'
+                    }`}
+                    title={`${thread.symbol}${thread.timeframe ? ` ${String(thread.timeframe).toUpperCase()}` : ''} • ${thread.status}`}
+                  >
+                    <span>{thread.symbol || thread.signalId}</span>
+                    {thread.unreadCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200">
+                        {thread.unreadCount}
+                      </span>
+                    )}
+                    {thread.hasPendingAction && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/40 text-blue-200">!</span>
+                    )}
+                    {(thread as any).archived && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-white/10 border border-white/15 text-gray-300">Archived</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {focusedSignalId && focusedSignalContext && (
+          <div className={`rounded-xl border p-3 space-y-2 ${focusedSignalContext.archived ? 'border-amber-500/30 bg-amber-500/10' : 'border-emerald-500/30 bg-emerald-500/10'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold text-gray-100 uppercase tracking-wider">
+                {focusedSignalContext.symbol}
+                {focusedSignalContext.timeframe ? ` ${String(focusedSignalContext.timeframe).toUpperCase()}` : ''}
+                {' • '}
+                {focusedSignalContext.action || 'N/A'}
+                {' • '}
+                {focusedSignalContext.status || 'UNKNOWN'}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSelectSignalThread?.(null)}
+                  className="px-2 py-1 rounded-md text-[10px] bg-white/10 hover:bg-white/20 text-gray-200"
+                >
+                  Back to Global
+                </button>
+                {focusedSignalContext.archived && (
+                  <span className="px-2 py-0.5 rounded-full border border-amber-500/40 text-[10px] text-amber-200">Archived</span>
+                )}
+              </div>
+            </div>
+            <div className="text-[10px] text-gray-300">
+              Entry {focusedSignalContext.entryPrice ?? 'n/a'} | SL {focusedSignalContext.stopLoss ?? 'n/a'} | TP {focusedSignalContext.takeProfit ?? 'n/a'} | Prob {focusedSignalContext.probability ?? 'n/a'}
+            </div>
+            {focusedSignalContext.latestReport && (
+              <div className="text-[10px] text-blue-100">
+                Report {String(focusedSignalContext.latestReport.verdict || '').toUpperCase() || 'N/A'} • {focusedSignalContext.latestReport.commentary || 'No commentary'} • {formatAge(focusedSignalContext.latestReport.createdAtMs)} ago
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => onAskAgentAboutSignal?.(focusedSignalId, 'status')} className="px-2 py-1 rounded-md text-[10px] bg-white/10 hover:bg-white/20 text-gray-200">Status now</button>
+              <button type="button" onClick={() => onAskAgentAboutSignal?.(focusedSignalId, 'risk')} className="px-2 py-1 rounded-md text-[10px] bg-white/10 hover:bg-white/20 text-gray-200">Risk check</button>
+              <button type="button" onClick={() => onAskAgentAboutSignal?.(focusedSignalId, 'thesis')} className="px-2 py-1 rounded-md text-[10px] bg-white/10 hover:bg-white/20 text-gray-200">Thesis check</button>
+              <button type="button" onClick={() => onAskAgentAboutSignal?.(focusedSignalId, 'exit')} className="px-2 py-1 rounded-md text-[10px] bg-white/10 hover:bg-white/20 text-gray-200">Exit plan</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={!canExecuteFocusedSignal} onClick={() => onExecuteSignalFromChat?.(focusedSignalId)} className={`px-2.5 py-1 rounded-md text-[10px] border ${canExecuteFocusedSignal ? 'border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/20' : 'border-white/10 text-gray-500 cursor-not-allowed'}`}>Execute</button>
+              <button type="button" disabled={!canRejectFocusedSignal} onClick={() => onRejectSignalFromChat?.(focusedSignalId)} className={`px-2.5 py-1 rounded-md text-[10px] border ${canRejectFocusedSignal ? 'border-white/20 text-gray-200 hover:bg-white/10' : 'border-white/10 text-gray-500 cursor-not-allowed'}`}>Reject</button>
+              <button type="button" disabled={!canCancelFocusedSignal} onClick={() => onCancelSignalOrderFromChat?.(focusedSignalId)} className={`px-2.5 py-1 rounded-md text-[10px] border ${canCancelFocusedSignal ? 'border-amber-500/40 text-amber-200 hover:bg-amber-500/20' : 'border-white/10 text-gray-500 cursor-not-allowed'}`}>Cancel Pending</button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => onOpenSignalFromChat?.(focusedSignalId)} className="px-2 py-1 rounded-md text-[10px] bg-black/20 border border-white/10 text-gray-300 hover:bg-white/10">Open Signal</button>
+              <button type="button" onClick={() => onOpenAcademyCaseFromChat?.(focusedSignalId)} className="px-2 py-1 rounded-md text-[10px] bg-black/20 border border-white/10 text-gray-300 hover:bg-white/10">Open Academy</button>
+              <button type="button" onClick={() => onOpenChartFromSignalChat?.(focusedSignalId)} className="px-2 py-1 rounded-md text-[10px] bg-black/20 border border-white/10 text-gray-300 hover:bg-white/10">Open Chart</button>
+            </div>
+          </div>
+        )}
+
+        {contextInspector && (
+          <details open={showContextInspector} onToggle={(e) => setShowContextInspector((e.target as HTMLDetailsElement).open)} className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
+            <summary className="cursor-pointer text-[11px] font-semibold text-gray-200 uppercase tracking-wider">
+              Context Inspector ({contextInspector.totalApproxTokens} tok est)
+            </summary>
+            <div className="mt-2 space-y-2">
+              {contextInspector.sections.map((section) => (
+                <div key={`ctx_${section.id}`} className="rounded-lg border border-white/10 bg-black/20 p-2">
+                  <div className="text-[10px] text-gray-200">
+                    {section.title} • {section.chars} chars • {section.approxTokens} tok{section.truncated ? ' • truncated' : ''}
+                  </div>
+                  <pre className="mt-1 text-[10px] text-gray-400 whitespace-pre-wrap">{section.text}</pre>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         
         {/* Live Video Preview Overlay */}
         {isLive && liveMode !== 'audio' && (
@@ -2781,6 +2976,44 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
               )}
 
               {msg.text && <p className="whitespace-pre-wrap">{msg.text}</p>}
+
+              {(msg.agentToolAction || msg.brokerAction || msg.tradeProposal) && msg.role === 'model' && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {msg.agentToolAction && (
+                    <span className={`px-2 py-0.5 rounded-full border text-[10px] ${
+                      msg.agentToolAction.status === 'EXECUTED'
+                        ? 'border-emerald-500/40 text-emerald-200'
+                        : msg.agentToolAction.status === 'FAILED'
+                          ? 'border-red-500/40 text-red-200'
+                          : 'border-amber-500/40 text-amber-200'
+                    }`}>
+                      Tool {msg.agentToolAction.type} • {msg.agentToolAction.status}
+                      {msg.agentToolAction.executedAtMs && msg.timestamp
+                        ? ` • ${Math.max(0, Math.round((Number(msg.agentToolAction.executedAtMs) - msg.timestamp.getTime()) / 1000))}s`
+                        : ''}
+                    </span>
+                  )}
+                  {msg.brokerAction && (
+                    <span className={`px-2 py-0.5 rounded-full border text-[10px] ${
+                      msg.brokerAction.status === 'EXECUTED'
+                        ? 'border-emerald-500/40 text-emerald-200'
+                        : msg.brokerAction.status === 'REJECTED'
+                          ? 'border-red-500/40 text-red-200'
+                          : 'border-amber-500/40 text-amber-200'
+                    }`}>
+                      Broker {msg.brokerAction.type} • {msg.brokerAction.status}
+                      {msg.brokerAction.executedAtMs && msg.timestamp
+                        ? ` • ${Math.max(0, Math.round((Number(msg.brokerAction.executedAtMs) - msg.timestamp.getTime()) / 1000))}s`
+                        : ''}
+                    </span>
+                  )}
+                  {msg.tradeProposal && (
+                    <span className="px-2 py-0.5 rounded-full border border-sky-500/40 text-sky-200 text-[10px]">
+                      Proposal {String(msg.tradeProposal.status || 'PENDING')}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {msg.contextTabs && msg.contextTabs.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">

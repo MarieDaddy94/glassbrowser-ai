@@ -3,8 +3,10 @@ import { Tab } from '../types';
 import { coerceUrlString } from '../services/url';
 
 const STORAGE = {
-  autoWatchTradingView: 'glass_auto_watch_tradingview'
+  autoWatchTradingView: 'glass_auto_watch_tradingview',
+  browserHomeUrl: 'glass_browser_home_url_v1'
 };
+const DEFAULT_BROWSER_HOME_URL = 'https://tradingview.com';
 
 const detectElectron = () => {
   try {
@@ -38,8 +40,24 @@ const isTradingViewUrl = (url: string) => {
 export const useTabs = (initialUrl: string) => {
   const isElectron = useMemo(detectElectron, []);
   const normalizedInitialUrl = useMemo(() => coerceUrlString(initialUrl) || 'about:blank', [initialUrl]);
+  const normalizeStartUrl = useCallback((raw: string): string => {
+    const trimmed = String(coerceUrlString(raw) || '').trim();
+    if (!trimmed) return normalizedInitialUrl;
+    if (/^about:/i.test(trimmed)) return trimmed;
+    if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(trimmed)) return trimmed;
+    return `https://${trimmed}`;
+  }, [normalizedInitialUrl]);
+  const resolveHomeUrl = useCallback((): string => {
+    try {
+      const stored = String(localStorage.getItem(STORAGE.browserHomeUrl) || '').trim();
+      if (stored) return normalizeStartUrl(stored);
+    } catch {
+      // ignore
+    }
+    return normalizeStartUrl(DEFAULT_BROWSER_HOME_URL);
+  }, [normalizeStartUrl]);
   const [tabs, setTabs] = useState<Tab[]>([
-    { id: '1', title: 'New Tab', url: normalizedInitialUrl, isLoading: true, isWatched: false }
+    { id: '1', title: 'New Tab', url: resolveHomeUrl(), isLoading: true, isWatched: false }
   ]);
   const [activeTabId, setActiveTabId] = useState('1');
 
@@ -98,8 +116,8 @@ export const useTabs = (initialUrl: string) => {
       ));
   }, []);
 
-  const addTab = useCallback((rawUrl: string = normalizedInitialUrl) => {
-    const url = coerceUrlString(rawUrl) || normalizedInitialUrl;
+  const addTab = useCallback((rawUrl: string = resolveHomeUrl()) => {
+    const url = normalizeStartUrl(rawUrl);
     const id = Date.now().toString();
     const newTab: Tab = {
       id,
@@ -111,14 +129,14 @@ export const useTabs = (initialUrl: string) => {
     setTabs(prev => [...prev, applyAutoWatch(newTab)]);
     setActiveTabId(id);
     return id;
-  }, [applyAutoWatch, normalizedInitialUrl]);
+  }, [applyAutoWatch, normalizeStartUrl, resolveHomeUrl]);
 
   const closeTab = useCallback((tabId: string) => {
     setTabs(prev => {
       const next = prev.filter(t => t.id !== tabId);
       if (next.length === 0) {
         const id = Date.now().toString();
-        const fallback: Tab = { id, title: 'New Tab', url: normalizedInitialUrl, isLoading: true, isWatched: false };
+        const fallback: Tab = { id, title: 'New Tab', url: resolveHomeUrl(), isLoading: true, isWatched: false };
         setActiveTabId(id);
         return [applyAutoWatch(fallback)];
       }
@@ -127,7 +145,7 @@ export const useTabs = (initialUrl: string) => {
       }
       return next;
     });
-  }, [activeTabId, applyAutoWatch, normalizedInitialUrl]);
+  }, [activeTabId, applyAutoWatch, resolveHomeUrl]);
 
   const updateTab = useCallback((tabId: string, patch: Partial<Tab>) => {
     setTabs(prev => prev.map(tab => {

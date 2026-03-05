@@ -6,7 +6,11 @@ on:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,13 +25,37 @@ jobs:
         run: npm run release:validate
       - name: Test
         run: npm test
+      - name: Electron E2E Smoke
+        if: matrix.os == 'windows-latest'
+        run: npm run test:e2e:electron
+      - name: Enterprise Baseline
+        run: npm run audit:baseline
       - name: Upload Validation Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-artifacts
+          name: validation-artifacts-${{ matrix.os }}
           path: |
             artifacts/bundle-stats.json
             artifacts/release-pack-smoke.json
             artifacts/renderer-deps-check.json
+            artifacts/enterprise-baseline.json
           if-no-files-found: warn
+
+  python-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python CI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-ci.txt
+      - name: Python Tests
+        run: npm run test:python
+      - name: Python Dependency Audit
+        run: python -m pip_audit -r backend/requirements-ci.txt

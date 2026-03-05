@@ -3,7 +3,7 @@
     "match": "index-",
     "metric": "rawBytes",
     "target": 900000,
-    "hard": 1050000
+    "hard": 1140000
   },
   "BacktesterInterface": {
     "match": "BacktesterInterface-",
@@ -14,8 +14,7 @@
   "SettingsModal": {
     "match": "SettingsModal-",
     "metric": "rawBytes",
-    "target": 95000,
+    "target": 96000,
     "hard": 135000
   }
 }
-

@@ -1,12 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import BrowserChrome from './components/BrowserChrome';
-import BrowserView, { type BrowserControls } from './components/BrowserView';
-import WindowFrame from './components/WindowFrame';
-import SidebarFrame from './components/SidebarFrame';
-import ToastContainer from './components/ToastContainer';
-import ErrorBoundary from './components/ErrorBoundary';
-import CommandPalette, { CommandAction } from './components/CommandPalette';
+import AppOrchestrator from './components/app/AppOrchestrator';
 import OnboardingGate from './components/OnboardingGate';
+import type { BrowserControls } from './components/BrowserView';
+import type { CommandAction } from './components/CommandPalette';
 
 const loadChatInterface = () => import('./components/ChatInterface');
 const loadNotesInterface = () => import('./components/NotesInterface');
@@ -460,6 +456,32 @@ import { useTradeLocker } from './hooks/useTradeLocker';
 import { useStartupReadiness } from './hooks/useStartupReadiness';
 import { useChartSessions } from './hooks/useChartSessions';
 import { useBrokerLinkEngine } from './hooks/useBrokerLinkEngine';
+import { useChatWorkspaceState } from './hooks/migration/useChatWorkspaceState';
+import { useSignalWorkspaceState } from './hooks/migration/useSignalWorkspaceState';
+import { useTradeLockerWorkspaceState } from './hooks/migration/useTradeLockerWorkspaceState';
+import { useChatWorkspaceOrchestrator } from './hooks/orchestrators/useChatWorkspaceOrchestrator';
+import { useSignalWorkspaceOrchestrator } from './hooks/orchestrators/useSignalWorkspaceOrchestrator';
+import { useTradeLockerWorkspaceOrchestrator } from './hooks/orchestrators/useTradeLockerWorkspaceOrchestrator';
+import { useTradeLockerAccountSelectorRuntime } from './hooks/orchestrators/useTradeLockerAccountSelectorRuntime';
+import { useTradeLockerRuntimeSync } from './hooks/orchestrators/useTradeLockerRuntimeSync';
+import { useCommandAndChartActions } from './hooks/orchestrators/useCommandAndChartActions';
+import { useTelegramCommandHelpers } from './hooks/orchestrators/useTelegramCommandHelpers';
+import { useTelegramAutomationRuntime } from './hooks/orchestrators/useTelegramAutomationRuntime';
+import { useEnterpriseDiagnosticsPolling } from './hooks/orchestrators/useEnterpriseDiagnosticsPolling';
+import { useMt5TelemetryPolling } from './hooks/orchestrators/useMt5TelemetryPolling';
+import { useHealthSnapshotRuntime } from './hooks/orchestrators/useHealthSnapshotRuntime';
+import { useTradeLockerOrderRuntime } from './hooks/orchestrators/useTradeLockerOrderRuntime';
+import { createChatWorkspaceActionBundle } from './orchestrators/chatWorkspaceOrchestrator';
+import { createSignalWorkspaceActionBundle } from './orchestrators/signalWorkspaceOrchestrator';
+import { buildChatPanelModel } from './orchestrators/app/builders/buildChatPanelModel';
+import { buildSignalPanelModel } from './orchestrators/app/builders/buildSignalPanelModel';
+import { buildTradeLockerPanelModel } from './orchestrators/app/builders/buildTradeLockerPanelModel';
+import { buildShellContentModel } from './orchestrators/app/builders/buildShellContentModel';
+import { buildOutsideShellModel } from './orchestrators/app/builders/buildOutsideShellModel';
+import { buildSidebarPanelsModel } from './orchestrators/app/builders/buildSidebarPanelsModel';
+import { buildSidebarLegacyPanelModel } from './orchestrators/app/builders/buildSidebarLegacyPanelModel';
+import { buildAppOrchestratorDeps } from './orchestrators/app/builders/buildAppOrchestratorDeps';
+import { buildCommandActionsModel } from './orchestrators/app/builders/buildCommandActionsModel';
 import { playSound } from './services/audioService';
 import { formatTradingViewIntervalLabel, getTradingViewLine, getTradingViewParams, isTradingViewUrl } from './services/tradingView';
 import { hashStringSampled } from './services/stringHash';
@@ -471,6 +493,11 @@ import { createQueueMetrics } from './services/queueMetrics';
 import { getBrokerRequestCoordinator } from './services/brokerRequestCoordinator';
 import { getRuntimeScheduler } from './services/runtimeScheduler';
 import { getDiagnosticsRateLimiter } from './services/diagnosticsRateLimiter';
+import {
+  getEnterpriseFeatureFlags,
+  setEnterpriseFeatureFlags,
+  type EnterpriseFeatureFlags
+} from './services/enterpriseFeatureFlags';
 import { registerBrokerRequestExecutor } from './services/brokerRequestBridge';
 import { instrumentTradeLedger, recordLedgerHealth, getPersistenceHealthSnapshot } from './services/persistenceHealth';
 import { createAgentRunner } from './services/agentRunnerService';
@@ -574,6 +601,10 @@ import { evaluateAutoPilotState, mergeAutoPilotState } from './services/autopilo
 import { normalizeAgentCapabilities } from './services/agentCapabilities';
 import { getTechAgentLogs } from './services/techAgentLog';
 import { getCacheBudgetManager } from './services/cacheBudgetManager';
+import {
+  createMigrationParitySnapshot,
+  recordParityMismatch
+} from './services/migrationParity';
 import { lockCase as lockAcademyCase, listLocks as listAcademyCaseLocks, type AcademyCaseLockRecord } from './services/academyCaseLockService';
 import {
   buildSnapshotScopeKey,
@@ -626,7 +657,7 @@ import {
 } from './services/runtimeOpsPolicy';
 import { RuntimeOpsController } from './services/runtimeOpsController';
 import { normalizeRuntimeOpsEvent, pushRuntimeOpsEvent } from './services/runtimeOpsEventStream';
-import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, Message, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, RuntimeOpsActionRecord, RuntimeOpsControllerState, RuntimeOpsEvent, RuntimeOpsMode, RuntimeOpsPolicy, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalIntent, SignalIntentChatTurn, SignalIntentRun, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerAccountShardState, TradeLockerMarketSubscriptionState, TradeLockerQuote, TradeLockerStrategyMatrixRow, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
+import { ActionFlowRecommendation, AcademyCase, AcademyCaseEvent, AcademyCaseSnapshot, AcademyLesson, AcademySymbolLearning, Agent, AgentTestRun, AgentTestScenario, AgentToolAction, AgentToolResult, AutoPilotStateSnapshot, BrokerAction, BrokerActionType, CalendarPnlSnapshot, CalendarRule, ChartChatSnapshotStatus, ChartSnapshotReasonCode, CrossPanelContext, ExecutionPlaybook, HealthSnapshot, Notification, Message, OutcomeFeedConsistencyState, OutcomeFeedCursor, PanelFreshnessState, RegimeBlockState, RegimeSnapshot, ReviewAnnotation, RuntimeOpsActionRecord, RuntimeOpsControllerState, RuntimeOpsEvent, RuntimeOpsMode, RuntimeOpsPolicy, ShadowAccountSnapshot, ShadowProfile, ShadowTradeCompareSummary, ShadowTradeStats, ShadowTradeView, SignalChatContextSnapshot, SignalChatThreadSummary, SignalIntent, SignalIntentChatTurn, SignalIntentRun, SignalMarketStatusVerdict, SignalStatusReportEntry, SignalStatusReportMap, TaskPlaybook, TaskPlaybookMode, TaskPlaybookRun, TaskPlaybookRunStep, TaskPlaybookStep, TaskTreeResumeEntry, TaskTreeRunEntry, TradeLockerAccountSelectorItem, TradeLockerAccountSelectorSnapshot, TradeLockerAccountShardState, TradeLockerMarketSubscriptionState, TradeLockerQuote, TradeLockerStrategyMatrixRow, TradeProposal, TradeBlockInfo, SidebarMode, SetupLibraryEntry, SetupPerformance, SetupSignal, SetupSignalTransition, SetupWatcher, SignalHistoryEntry, SystemStateSnapshot, TruthEventRecord, TruthProjection, TruthReplay, WatchProfile, SymbolScope, ChartTimeframe, NewsSnapshot } from './types';
 import type { NativeChartHandle, NativeChartMeta } from './components/NativeChartInterface';
 import type { BacktesterHandle, BacktesterOptimizationApply } from './components/BacktesterInterface';
 import type { SignalEntry, SignalEntryStatus, SignalExecutionTarget, SignalSessionWindow, SignalSnapshotStatus, SignalStrategyMode } from './components/SignalInterface';
@@ -738,6 +769,12 @@ const TL_PROFILES_KEY = 'glass_tradelocker_profiles_v1';
 const TL_STRATEGY_ASSIGNMENTS_KEY = 'glass_tl_strategy_assignments_v1';
 const TL_TENANT_RUNTIME_STATE_KEY = 'glass_tl_tenant_runtime_state_v1';
 const TL_SHARD_SCHEDULER_STATE_KEY = 'glass_tl_shard_scheduler_state_v1';
+const TL_ACCOUNT_SELECTOR_SEARCH_KEY = 'glass_tl_account_selector_search_v1';
+const TL_ACCOUNT_SELECTOR_FRESH_MS = 120_000;
+const TL_ACCOUNT_SELECTOR_STALE_MS = 10 * 60_000;
+const TL_ACCOUNT_SELECTOR_RECENT_USAGE_MS = 2 * 60_000;
+const TL_ACCOUNT_SELECTOR_NORMAL_REFRESH_MS = 90_000;
+const TL_ACCOUNT_SELECTOR_GUARDED_REFRESH_MS = 240_000;
 const LEGACY_TL_SUBMISSION_FLAG_KEY = 'execution.useLegacyTradeLockerSubmission';
 const TL_NORMALIZE_WINDOW = 120;
 const TL_NORMALIZE_MIN_SAMPLES = 30;
@@ -768,6 +805,12 @@ const ACADEMY_COMPANION_FULL_RECONCILE_MS = 20 * 60 * 1000;
 const PRE_TRADE_QUANT_LATENCY_BUDGET_MS = 150;
 const RUNTIME_OPS_FLAGS_KEY = 'glass_runtime_ops_flags_v1';
 const RUNTIME_OPS_EVENT_LIMIT = 800;
+const PHASE4_SLICE_MISMATCH_AUTO_FALLBACK_THRESHOLD = 8;
+const PHASE4_MIGRATION_SLICE_FLAG_MAP: Record<'chat' | 'signal' | 'tradeLocker', keyof EnterpriseFeatureFlags> = {
+  chat: 'zustandChatSliceV1',
+  signal: 'zustandSignalSliceV1',
+  tradeLocker: 'zustandTradeLockerSliceV1'
+};
 
 const readLegacyTradeLockerSubmissionFlag = () => {
   try {
@@ -3006,6 +3049,16 @@ const DEFAULT_SIGNAL_EXPIRY_MINUTES = 180;
 const DEFAULT_SIGNAL_MEMORY_MODE: 'inject' | 'tool' | 'both' = 'both';
 const DEFAULT_SIGNAL_MEMORY_LIMIT = 8;
 const DEFAULT_SIGNAL_SHADOW_FOLLOW = false;
+const SIGNAL_STATUS_REPORT_GLOBAL_THROTTLE_MS = 30_000;
+const SIGNAL_STATUS_REPORT_SIGNAL_FRESHNESS_MS = 60_000;
+const SIGNAL_STATUS_REPORT_HISTORY_LIMIT = 3;
+const SIGNAL_STATUS_REPORT_TELEGRAM_SAME_VERDICT_COOLDOWN_MS = 5 * 60_000;
+const SIGNAL_STATUS_REPORT_ELIGIBLE_STATUSES = new Set([
+  'PROPOSED',
+  'SUBMITTING',
+  'PENDING',
+  'EXECUTED'
+]);
 const SIGNAL_TELEGRAM_STATUS_OPTIONS: SignalEntryStatus[] = [
   'PROPOSED',
   'SUBMITTING',
@@ -3031,6 +3084,10 @@ const hasSignalTradeDefinition = (entry: any) => {
     Number.isFinite(stopLoss) && stopLoss > 0 &&
     Number.isFinite(takeProfit) && takeProfit > 0
   );
+};
+const isSignalStatusReportEligible = (status?: string | null) => {
+  const raw = String(status || '').trim().toUpperCase();
+  return SIGNAL_STATUS_REPORT_ELIGIBLE_STATUSES.has(raw);
 };
 const PATTERN_SETTINGS_STORAGE_KEY = 'glass_patterns_panel_v1';
 const PATTERN_SETTINGS_HARMONIC_UPGRADE_KEY = 'glass_patterns_harmonic_upgrade_v1';
@@ -3693,6 +3750,14 @@ const App: React.FC = () => {
     truncated: 0
   });
   const [signalHistory, setSignalHistory] = useState<SignalHistoryEntry[]>([]);
+  const [activeSignalThreadId, setActiveSignalThreadId] = useState<string | null>(null);
+  const [legacySignalThreadUnreadCountsState, setLegacySignalThreadUnreadCountsState] = useState<Record<string, number>>({});
+  const [legacyChatContextInspectorState, setLegacyChatContextInspectorState] = useState<{
+    sections: Array<{ id: string; title: string; chars: number; approxTokens: number; truncated: boolean; text: string }>;
+    totalApproxTokens: number;
+    generatedAtMs: number;
+    threadId: string | null;
+  } | null>(null);
   const [crossPanelContext, setCrossPanelContext] = useState<CrossPanelContext | null>(() =>
     crossPanelContextEngine.getContext()
   );
@@ -3739,11 +3804,128 @@ const App: React.FC = () => {
   const [calendarRules, setCalendarRules] = useState<CalendarRule[]>([]);
   const [calendarRulesUpdatedAtMs, setCalendarRulesUpdatedAtMs] = useState<number | null>(null);
   const [signalRunning, setSignalRunning] = useState(false);
+  const [legacySignalStatusReportRunning, setLegacySignalStatusReportRunning] = useState(false);
+  const [legacySignalStatusReportPending, setLegacySignalStatusReportPending] = useState<'manual' | 'chart_update' | null>(null);
+  const [legacySignalThreadArchivedBySignalId, setLegacySignalThreadArchivedBySignalId] = useState<Record<string, boolean>>({});
+  const [signalStatusReportsBySignalId, setSignalStatusReportsBySignalId] = useState<SignalStatusReportMap>({});
   const [signalLastRunAtMs, setSignalLastRunAtMs] = useState<number | null>(null);
   const [signalLastAttemptAtMs, setSignalLastAttemptAtMs] = useState<number | null>(null);
   const [signalLastError, setSignalLastError] = useState<string | null>(null);
   const [signalLastParseError, setSignalLastParseError] = useState<string | null>(null);
   const [signalLastParseAtMs, setSignalLastParseAtMs] = useState<number | null>(null);
+  const enterpriseFeatureFlags = React.useMemo(() => getEnterpriseFeatureFlags(), []);
+  const enterpriseFeatureFlagsRef = React.useRef(enterpriseFeatureFlags);
+  const migrationParityRef = React.useRef(createMigrationParitySnapshot());
+  const [migrationParityState, setMigrationParityState] = useState(createMigrationParitySnapshot);
+  const recordMigrationParityMismatch = useCallback((
+    slice: 'chat' | 'signal' | 'tradeLocker',
+    field: string,
+    legacyValue: any,
+    storeValue: any
+  ) => {
+    const atMs = Date.now();
+    const next = recordParityMismatch(migrationParityRef.current, slice, atMs);
+    migrationParityRef.current = next;
+    setMigrationParityState(next);
+    const mismatchCount =
+      slice === 'chat'
+        ? Number(next.chatMismatches || 0)
+        : slice === 'signal'
+          ? Number(next.signalMismatches || 0)
+          : Number(next.tradeLockerMismatches || 0);
+    const sliceFlagKey = PHASE4_MIGRATION_SLICE_FLAG_MAP[slice];
+    const activeFlags = enterpriseFeatureFlagsRef.current;
+    if (
+      activeFlags.zustandMigrationV1 &&
+      activeFlags[sliceFlagKey] === true &&
+      mismatchCount >= PHASE4_SLICE_MISMATCH_AUTO_FALLBACK_THRESHOLD
+    ) {
+      const disablePatch = { [sliceFlagKey]: false } as Partial<EnterpriseFeatureFlags>;
+      const nextFlags: EnterpriseFeatureFlags = {
+        ...activeFlags,
+        ...disablePatch
+      };
+      enterpriseFeatureFlagsRef.current = nextFlags;
+      setEnterpriseFeatureFlags(disablePatch);
+      console.warn('[phase4-cutover-auto-fallback]', {
+        slice,
+        flag: sliceFlagKey,
+        mismatchCount,
+        threshold: PHASE4_SLICE_MISMATCH_AUTO_FALLBACK_THRESHOLD
+      });
+      dispatchGlassEvent(GLASS_EVENT.RUNTIME_EVENT, {
+        source: 'phase4.migration',
+        action: 'slice_auto_fallback',
+        slice,
+        flag: sliceFlagKey,
+        mismatchCount,
+        threshold: PHASE4_SLICE_MISMATCH_AUTO_FALLBACK_THRESHOLD,
+        atMs
+      });
+    }
+    if (enterpriseFeatureFlagsRef.current.phase4ParityAuditV1) {
+      console.warn('[phase4-parity-mismatch]', { slice, field, atMs, legacyValue, storeValue });
+    }
+  }, []);
+
+  useEffect(() => {
+    enterpriseFeatureFlagsRef.current = enterpriseFeatureFlags;
+  }, [enterpriseFeatureFlags]);
+
+  const chatWorkspaceState = useChatWorkspaceState({
+    flags: enterpriseFeatureFlagsRef.current,
+    legacyActiveSignalThreadId: activeSignalThreadId,
+    setLegacyActiveSignalThreadId: setActiveSignalThreadId,
+    legacySignalThreadUnreadCountsState,
+    setLegacySignalThreadUnreadCountsState,
+    legacyChatContextInspectorState,
+    setLegacyChatContextInspectorState,
+    onParityMismatch: recordMigrationParityMismatch
+  });
+
+  const {
+    activeSignalThreadId: chatWorkspaceActiveSignalThreadId,
+    setActiveSignalThreadId: setChatWorkspaceActiveSignalThreadId,
+    signalThreadUnreadCountsState,
+    setSignalThreadUnreadCountsState,
+    chatContextInspectorState,
+    setChatContextInspectorState
+  } = chatWorkspaceState;
+
+  const signalWorkspaceState = useSignalWorkspaceState({
+    flags: enterpriseFeatureFlagsRef.current,
+    legacyActiveSignalThreadId: chatWorkspaceActiveSignalThreadId,
+    setLegacyActiveSignalThreadId: setChatWorkspaceActiveSignalThreadId,
+    legacyThreadArchivedBySignalId: legacySignalThreadArchivedBySignalId,
+    setLegacyThreadArchivedBySignalId: setLegacySignalThreadArchivedBySignalId,
+    legacySignalStatusReportRunning,
+    setLegacySignalStatusReportRunning,
+    legacySignalStatusReportPending,
+    setLegacySignalStatusReportPending,
+    onParityMismatch: recordMigrationParityMismatch
+  });
+
+  const signalStatusReportRunning = signalWorkspaceState.signalStatusReportRunning;
+  const setSignalStatusReportRunning = signalWorkspaceState.setSignalStatusReportRunning;
+  const signalStatusReportPending = signalWorkspaceState.signalStatusReportPending;
+  const setSignalStatusReportPending = signalWorkspaceState.setSignalStatusReportPending;
+  const setSignalThreadArchivedBySignalId = signalWorkspaceState.setThreadArchivedBySignalId;
+
+  const chatWorkspaceOrchestratorOptions = React.useMemo(() => ({
+    listThreads: () => []
+  }), []);
+  const signalWorkspaceOrchestratorOptions = React.useMemo(() => ({
+    resolveSignalThread: () => null
+  }), []);
+  const tradeLockerWorkspaceOrchestratorOptions = React.useMemo(() => ({
+    listAccounts: () => [],
+    switchAccount: async () => ({ ok: false, error: 'TradeLocker account switch handler unavailable.' })
+  }), []);
+
+  useChatWorkspaceOrchestrator(chatWorkspaceOrchestratorOptions);
+  useSignalWorkspaceOrchestrator(signalWorkspaceOrchestratorOptions);
+  useTradeLockerWorkspaceOrchestrator(tradeLockerWorkspaceOrchestratorOptions);
+
   useEffect(() => {
     persistLeaderboardFilter(leaderboardFilter);
   }, [leaderboardFilter]);
@@ -4183,6 +4365,34 @@ const App: React.FC = () => {
     return lines.join('\n');
   }, [formatSignalPrice, formatTimeframeLabel]);
 
+  const buildSignalStatusReportTelegramText = useCallback((
+    entry: SignalEntry,
+    report: SignalStatusReportEntry
+  ) => {
+    if (!entry || !report) return '';
+    const tfLabel = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
+    const verdict = String(report.verdict || 'no_data')
+      .trim()
+      .toLowerCase()
+      .split('_')
+      .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+      .join(' ');
+    const confidence = Number(report.confidence);
+    const confidenceLabel = Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : '--';
+    const sourceLabel = report.source === 'chart_update' ? 'Chart Update' : 'Manual';
+    const commentary = String(report.commentary || '').trim();
+    const lines = [
+      'Signal Status Report',
+      `${entry.action} ${entry.symbol}${tfLabel ? ` • ${tfLabel}` : ''}`,
+      `Lifecycle ${String(entry.status || 'PROPOSED').toUpperCase()} • Verdict ${verdict} (${confidenceLabel})`,
+      `Ref ${formatSignalPrice(report.referencePrice)} | EntryΔ ${formatSignalPrice(report.distanceToEntry)} | TPΔ ${formatSignalPrice(report.distanceToTp)} | SLΔ ${formatSignalPrice(report.distanceToSl)}`,
+      `Progress ${Number.isFinite(Number(report.progressPct)) ? `${Number(report.progressPct).toFixed(1)}%` : '--'} | RR Rem ${Number.isFinite(Number(report.rrRemaining)) ? Number(report.rrRemaining).toFixed(2) : '--'}`,
+      `Source ${sourceLabel}${report.agentName ? ` • Agent ${report.agentName}` : ''}`,
+      commentary ? `Commentary: ${commentary.slice(0, 280)}` : null
+    ].filter(Boolean) as string[];
+    return lines.join('\n');
+  }, [formatSignalPrice, formatTimeframeLabel]);
+
   const symbolScopeTimeframesLabel = React.useMemo(() => {
     return symbolScopeTimeframes.map((tf) => formatTimeframeLabel(tf)).filter(Boolean).join('/');
   }, [formatTimeframeLabel, symbolScopeTimeframes]);
@@ -4486,6 +4696,14 @@ const App: React.FC = () => {
   }, [signalEntries]);
 
   useEffect(() => {
+    signalStatusReportsRef.current = signalStatusReportsBySignalId;
+  }, [signalStatusReportsBySignalId]);
+
+  useEffect(() => {
+    signalStatusReportPendingRef.current = signalStatusReportPending;
+  }, [signalStatusReportPending]);
+
+  useEffect(() => {
     signalHistoryRef.current = signalHistory;
   }, [signalHistory]);
 
@@ -4509,6 +4727,7 @@ const App: React.FC = () => {
     signalTelegramSentRef.current.clear();
     signalTelegramWarmStartRef.current = true;
     signalTelegramAlertSentRef.current.clear();
+    signalStatusReportTelegramSentRef.current.clear();
     telegramConfidenceRef.current.clear();
     telegramConfidenceSeenRef.current.clear();
     telegramPendingActionsRef.current.clear();
@@ -6325,7 +6544,14 @@ const App: React.FC = () => {
       context?: any,
       monitored?: string[],
       image?: any,
-      options?: { symbol?: string; timeframes?: string[] }
+      options?: {
+        symbol?: string;
+        timeframes?: string[];
+        threadKind?: 'global' | 'signal';
+        threadId?: string | null;
+        threadLabel?: string | null;
+        signalId?: string | null;
+      }
     ) => Promise<void> | void;
     clearChat?: () => void;
     setReplyMode?: (mode: any) => void;
@@ -6395,6 +6621,7 @@ const App: React.FC = () => {
   const signalTelegramSentRef = React.useRef<Map<string, Set<string>>>(new Map());
   const signalTelegramWarmStartRef = React.useRef(true);
   const signalTelegramAlertSentRef = React.useRef<Map<string, Set<string>>>(new Map());
+  const signalStatusReportTelegramSentRef = React.useRef<Map<string, { reportId: string; verdict: string; sentAtMs: number }>>(new Map());
   const telegramPendingActionsRef = React.useRef<Map<string, TelegramPendingAction>>(new Map());
   const telegramPendingCleanupAtRef = React.useRef<number>(0);
   const telegramConfidenceRef = React.useRef<Map<string, number>>(new Map());
@@ -6602,6 +6829,10 @@ const App: React.FC = () => {
   const setupWatcherLastEvalAtRef = React.useRef<number | null>(null);
   const setupWatcherLastSignalAtRef = React.useRef<number | null>(null);
   const healthSnapshotRef = React.useRef<HealthSnapshot | null>(null);
+  const securityAuditSnapshotRef = React.useRef<HealthSnapshot['securityAudit']>(null);
+  const bridgeLifecycleSnapshotRef = React.useRef<HealthSnapshot['bridgeLifecycle']>(null);
+  const renderPerfSnapshotRef = React.useRef<HealthSnapshot['renderPerf']>(null);
+  const ciValidationSnapshotRef = React.useRef<HealthSnapshot['ciValidation']>(null);
   const lastSuccessfulSignalScanAtRef = React.useRef<number | null>(null);
   const schedulerCircuitPausedRef = React.useRef<boolean>(false);
   const agentDriftReportsRef = React.useRef<ReturnType<typeof computeAgentDriftReports>>([]);
@@ -6635,6 +6866,22 @@ const App: React.FC = () => {
   const brokerRateLimitLastMessageRef = React.useRef<string | null>(null);
   const truthChartSessionAtRef = React.useRef<Map<string, number>>(new Map());
   const signalOutcomeTriggerRef = React.useRef<(() => void) | null>(null);
+  const signalStatusReportTriggerRef = React.useRef<(() => void) | null>(null);
+  const signalStatusReportLastAtRef = React.useRef(0);
+  const signalStatusReportInFlightRef = React.useRef(false);
+  const signalStatusReportPendingRef = React.useRef<'manual' | 'chart_update' | null>(null);
+  const signalStatusReportStatsRef = React.useRef<{
+    runs: number;
+    errors: number;
+    skipped: number;
+    lastAtMs: number | null;
+  }>({
+    runs: 0,
+    errors: 0,
+    skipped: 0,
+    lastAtMs: null
+  });
+  const signalStatusReportsRef = React.useRef<SignalStatusReportMap>({});
   const resolveTradeLockerSymbolRef = React.useRef<((symbol: string) => Promise<string>) | null>(null);
   const brokerSymbolCacheRef = React.useRef<Map<string, { value: string; atMs: number }>>(new Map());
   const activeBrokerIdRef = React.useRef<{ id: BrokerId | null; updatedAtMs: number } | null>(null);
@@ -7401,6 +7648,14 @@ const App: React.FC = () => {
         // ignore
       }
     }
+    const statusReportTrigger = signalStatusReportTriggerRef.current;
+    if (statusReportTrigger) {
+      try {
+        statusReportTrigger();
+      } catch {
+        // ignore
+      }
+    }
   }, [resolveActiveRunContext]);
 
   const chartHistorySeriesFetcher = React.useMemo(() => {
@@ -7756,6 +8011,13 @@ const App: React.FC = () => {
   const sidebarModeRef = React.useRef<SidebarMode>('chartchat');
   const sidebarStateRef = React.useRef<{ isOpen: boolean; mode: SidebarMode }>({ isOpen: false, mode: 'chartchat' });
   const liveStatusRef = React.useRef({ isLive: false, chartChatIsLive: false });
+  const signalThreadAutoFocusRef = React.useRef<{ signalId: string; atMs: number } | null>(null);
+  const signalThreadUnreadBaselineRef = React.useRef<Record<string, number>>({});
+  const chatSignalActionTelemetryRef = React.useRef<{ attempts: number; success: number; failure: number }>({
+    attempts: 0,
+    success: 0,
+    failure: 0
+  });
   useEffect(() => {
     lastTradeBlockRef.current = lastTradeBlock;
   }, [lastTradeBlock]);
@@ -7803,6 +8065,12 @@ const App: React.FC = () => {
     lastMessageAtMs: number | null;
     chartChatMessagesCount: number;
     chartChatLastMessageAtMs: number | null;
+    chatSignalActiveThreadId: string | null;
+    chatSignalThreadMessageCounts: Record<string, number>;
+    chatSignalThreadUnreadCounts: Record<string, number>;
+    chatSignalActionAttempts: number;
+    chatSignalActionSuccess: number;
+    chatSignalActionFailure: number;
   }>({
     isThinking: false,
     replyMode: null,
@@ -7823,7 +8091,13 @@ const App: React.FC = () => {
     messagesCount: 0,
     lastMessageAtMs: null,
     chartChatMessagesCount: 0,
-    chartChatLastMessageAtMs: null
+    chartChatLastMessageAtMs: null,
+    chatSignalActiveThreadId: null,
+    chatSignalThreadMessageCounts: {},
+    chatSignalThreadUnreadCounts: {},
+    chatSignalActionAttempts: 0,
+    chatSignalActionSuccess: 0,
+    chatSignalActionFailure: 0
   });
   const setupRegimesRef = React.useRef<Record<string, RegimeSnapshot>>(setupRegimes);
   const setupWatcherStateRef = React.useRef<Map<string, any>>(new Map());
@@ -11814,13 +12088,120 @@ const App: React.FC = () => {
     return lines.join('\n');
   }, []);
 
+  const signalEntriesById = React.useMemo(() => {
+    const map = new Map<string, SignalEntry>();
+    for (const entry of signalEntries || []) {
+      const id = String(entry?.id || '').trim();
+      if (!id) continue;
+      map.set(id, entry);
+    }
+    return map;
+  }, [signalEntries]);
+
+  const latestSignalStatusReportById = React.useMemo(() => {
+    const map: Record<string, SignalStatusReportEntry | null> = {};
+    for (const [signalId, reports] of Object.entries(signalStatusReportsBySignalId || {})) {
+      const id = String(signalId || '').trim();
+      if (!id) continue;
+      const ordered = Array.isArray(reports)
+        ? [...reports].sort((a, b) => Number(b?.createdAtMs || 0) - Number(a?.createdAtMs || 0))
+        : [];
+      map[id] = ordered[0] || null;
+    }
+    return map;
+  }, [signalStatusReportsBySignalId]);
+
+  const latestSignalHistoryById = React.useMemo(() => {
+    const map: Record<string, SignalHistoryEntry | null> = {};
+    for (const entry of signalHistory || []) {
+      const signalId = String(entry?.signalId || '').trim();
+      if (!signalId) continue;
+      const current = map[signalId];
+      const entryTs = Number(entry?.resolvedAtMs || entry?.executedAtMs || 0);
+      const currentTs = Number(current?.resolvedAtMs || current?.executedAtMs || 0);
+      if (!current || entryTs >= currentTs) {
+        map[signalId] = entry;
+      }
+    }
+    return map;
+  }, [signalHistory]);
+
+  const resolveSignalThreadKey = useCallback((signalId?: string | null) => {
+    const id = String(signalId || '').trim();
+    return id ? `signal:${id}` : 'global';
+  }, []);
+
+  const buildSignalThreadContext = useCallback((signalIdInput?: string | null) => {
+    const signalId = String(signalIdInput || '').trim();
+    if (!signalId) return null;
+    const entry = signalEntriesById.get(signalId) || null;
+    const reports = Array.isArray(signalStatusReportsBySignalId?.[signalId]) ? signalStatusReportsBySignalId[signalId] : [];
+    const orderedReports = [...reports].sort((a, b) => Number(b?.createdAtMs || 0) - Number(a?.createdAtMs || 0));
+    const latestReport = orderedReports[0] || null;
+    const previousReportCount = Math.max(0, orderedReports.length - 1);
+    const latestHistory = latestSignalHistoryById[signalId] || null;
+    const now = Date.now();
+    const createdAtMs = Number(entry?.createdAtMs || latestReport?.createdAtMs || latestHistory?.executedAtMs || 0) || null;
+    const ageMs = createdAtMs ? Math.max(0, now - createdAtMs) : null;
+    const symbol = String(entry?.symbol || latestHistory?.symbol || latestReport?.symbol || '').trim();
+    const timeframe = String(entry?.timeframe || latestHistory?.timeframe || latestReport?.timeframe || '').trim() || null;
+    const action = String(entry?.action || latestHistory?.action || latestReport?.action || '').trim().toUpperCase() || null;
+    const status = String(entry?.status || latestHistory?.status || (entry ? 'PROPOSED' : '') || '').trim().toUpperCase() || (entry ? 'PROPOSED' : 'ARCHIVED');
+    const fallbackAgentId = String(crossPanelContext?.agentId || '').trim() || null;
+    const signalAgentId = String(entry?.agentId || latestHistory?.agentId || latestReport?.agentId || '').trim() || null;
+    const signalAgentName = String(entry?.agentName || latestHistory?.agentName || latestReport?.agentName || '').trim() || null;
+    const snapshot: SignalChatContextSnapshot = {
+      signalId,
+      symbol: symbol || `SIGNAL_${signalId}`,
+      timeframe,
+      action: action || null,
+      status: status || null,
+      entryPrice: entry?.entryPrice ?? latestHistory?.entryPrice ?? latestReport?.entryPrice ?? null,
+      stopLoss: entry?.stopLoss ?? latestHistory?.stopLoss ?? latestReport?.stopLoss ?? null,
+      takeProfit: entry?.takeProfit ?? latestHistory?.takeProfit ?? latestReport?.takeProfit ?? null,
+      probability: entry?.probability ?? latestHistory?.probability ?? null,
+      strategyMode: entry?.strategyMode || latestHistory?.strategyMode || null,
+      reason: entry?.reason || latestHistory?.reason || latestReport?.commentary || null,
+      createdAtMs,
+      ageMs,
+      agentId: signalAgentId,
+      agentName: signalAgentName,
+      fallbackAgentId,
+      latestReport: latestReport || null,
+      previousReportCount,
+      latestHistory: latestHistory || null,
+      executionOrderId: entry?.executionOrderId ?? latestHistory?.orderId ?? null,
+      executionPositionId: entry?.executionPositionId ?? latestHistory?.positionId ?? null,
+      executionStatus: entry?.executionOrderStatus ?? latestHistory?.status ?? null,
+      executionSource: entry?.executionSource ?? latestHistory?.executionSource ?? null,
+      executionBroker: entry?.executionBroker ?? latestHistory?.executionBroker ?? null,
+      archived: !entry
+    };
+    const lines = [
+      `Signal ${snapshot.signalId}${snapshot.archived ? ' (ARCHIVED)' : ''}`,
+      `- ${snapshot.symbol}${snapshot.timeframe ? ` ${String(snapshot.timeframe).toUpperCase()}` : ''} | ${snapshot.action || 'N/A'} | Status ${snapshot.status || 'UNKNOWN'}`,
+      `- Entry ${snapshot.entryPrice ?? 'n/a'} | SL ${snapshot.stopLoss ?? 'n/a'} | TP ${snapshot.takeProfit ?? 'n/a'} | Prob ${snapshot.probability ?? 'n/a'}`,
+      `- Agent ${snapshot.agentName || snapshot.agentId || 'unknown'}${!snapshot.agentId && snapshot.fallbackAgentId ? ` (fallback ${snapshot.fallbackAgentId})` : ''}`,
+      `- Report ${snapshot.latestReport ? String(snapshot.latestReport.verdict || 'available') : 'none'} | Previous ${snapshot.previousReportCount || 0}`,
+      `- History ${snapshot.latestHistory ? (snapshot.latestHistory.outcome || snapshot.latestHistory.status || 'available') : 'none'} | Order ${snapshot.executionOrderId || 'n/a'} | Position ${snapshot.executionPositionId || 'n/a'}`
+    ];
+    if (snapshot.latestReport?.commentary) {
+      lines.push(`- Report notes: ${snapshot.latestReport.commentary}`);
+    }
+    if (snapshot.reason) {
+      lines.push(`- Thesis: ${snapshot.reason}`);
+    }
+    return { snapshot, lines };
+  }, [crossPanelContext?.agentId, latestSignalHistoryById, signalEntriesById, signalStatusReportsBySignalId]);
+
   const buildSymbolScopeContext = useCallback(() => {
     if (!symbolScopeSymbol) return '';
     const tfLabel = symbolScopeTimeframesLabel || '5m/15m/1H/4H';
     return `SYMBOL SCOPE: ${symbolScopeSymbol} | Timeframes ${tfLabel}`;
   }, [symbolScopeSymbol, symbolScopeTimeframesLabel]);
 
-  const getContextPack = useCallback(() => {
+  const buildChatContextPack = useCallback((opts?: { focusedSignalId?: string | null }) => {
+    const focusedSignalId = String(opts?.focusedSignalId || '').trim();
     const broker = getBrokerContext();
     const memory = buildAgentMemoryContext();
     const flows = buildActionFlowContext();
@@ -11831,19 +12212,76 @@ const App: React.FC = () => {
     const health = buildHealthContext();
     const chartContext = chartEngine.buildContextPack({ barsLimit: 50, eventsLimit: 20 });
     const academyLessons = academyAutoApplyEnabled ? (academyLessonContextRef.current || '') : '';
-    const sections = [];
-    if (broker) sections.push(`BROKER SNAPSHOT:\n${broker}`);
-    if (health) sections.push(health);
-    if (symbolScopeContext) sections.push(symbolScopeContext);
-    if (chartContext) sections.push(chartContext);
-    if (guardrails) sections.push(guardrails);
-    if (playbooks) sections.push(playbooks);
-    if (setups) sections.push(setups);
-    if (flows) sections.push(flows);
-    if (academyLessons) sections.push(academyLessons);
-    if (memory) sections.push(memory);
-    return sections.join('\n\n');
-  }, [academyAutoApplyEnabled, buildActionFlowContext, buildAgentMemoryContext, buildGuardrailContext, buildHealthContext, buildPlaybookContext, buildSetupContext, buildSymbolScopeContext, chartEngine, getBrokerContext]);
+    const sections: Array<{ id: string; title: string; text: string; truncated: boolean }> = [];
+    if (broker) sections.push({ id: 'broker', title: 'BROKER SNAPSHOT', text: broker, truncated: false });
+    if (health) sections.push({ id: 'health', title: 'HEALTH', text: health, truncated: false });
+    if (symbolScopeContext) sections.push({ id: 'scope', title: 'SYMBOL SCOPE', text: symbolScopeContext, truncated: false });
+    if (chartContext) sections.push({ id: 'chart', title: 'CHART CONTEXT', text: chartContext, truncated: false });
+    if (guardrails) sections.push({ id: 'guardrails', title: 'GUARDRAILS', text: guardrails, truncated: false });
+    if (playbooks) sections.push({ id: 'playbooks', title: 'PLAYBOOKS', text: playbooks, truncated: false });
+    if (setups) sections.push({ id: 'setups', title: 'SETUPS', text: setups, truncated: false });
+    if (flows) sections.push({ id: 'flows', title: 'ACTION FLOWS', text: flows, truncated: false });
+    if (academyLessons) sections.push({ id: 'academy', title: 'ACADEMY', text: academyLessons, truncated: false });
+    if (memory) sections.push({ id: 'memory', title: 'MEMORY', text: memory, truncated: false });
+    if (focusedSignalId) {
+      const signalCtx = buildSignalThreadContext(focusedSignalId);
+      if (signalCtx) {
+        sections.push({
+          id: 'focused_signal',
+          title: 'FOCUSED SIGNAL CONTEXT',
+          text: signalCtx.lines.join('\n'),
+          truncated: false
+        });
+        void appendAuditEvent({
+          eventType: 'chat_signal_context_injected',
+          symbol: signalCtx.snapshot.symbol || null,
+          payload: { signalId: focusedSignalId }
+        });
+      } else {
+        void appendAuditEvent({
+          eventType: 'chat_signal_context_missing',
+          level: 'warn',
+          payload: { signalId: focusedSignalId }
+        });
+      }
+    }
+    const inspectorSections = sections.map((section) => {
+      const text = String(section.text || '');
+      const chars = text.length;
+      return {
+        id: section.id,
+        title: section.title,
+        chars,
+        approxTokens: Math.ceil(chars / 4),
+        truncated: !!section.truncated,
+        text
+      };
+    });
+    const totalApproxTokens = inspectorSections.reduce((sum, section) => sum + section.approxTokens, 0);
+    const text = inspectorSections.map((section) => `${section.title}:\n${section.text}`).join('\n\n');
+    return {
+      text,
+      sections: inspectorSections,
+      totalApproxTokens
+    };
+  }, [academyAutoApplyEnabled, appendAuditEvent, buildActionFlowContext, buildAgentMemoryContext, buildGuardrailContext, buildHealthContext, buildPlaybookContext, buildSetupContext, buildSignalThreadContext, buildSymbolScopeContext, chartEngine, getBrokerContext]);
+
+  const getContextPack = useCallback(() => {
+    const focusedSignalId = String(activeSignalThreadId || '').trim();
+    const isFocusedSignalAvailable = focusedSignalId ? signalEntriesById.has(focusedSignalId) : false;
+    const effectiveFocusedSignalId = focusedSignalId && isFocusedSignalAvailable ? focusedSignalId : '';
+    if (focusedSignalId && !isFocusedSignalAvailable) {
+      setActiveSignalThreadId(null);
+    }
+    const pack = buildChatContextPack({ focusedSignalId: effectiveFocusedSignalId || null });
+    setChatContextInspectorState({
+      sections: pack.sections,
+      totalApproxTokens: pack.totalApproxTokens,
+      generatedAtMs: Date.now(),
+      threadId: effectiveFocusedSignalId ? resolveSignalThreadKey(effectiveFocusedSignalId) : 'global'
+    });
+    return pack.text;
+  }, [activeSignalThreadId, buildChatContextPack, resolveSignalThreadKey, signalEntriesById]);
 
   useEffect(() => {
     getContextPackRef.current = getContextPack;
@@ -20788,6 +21226,7 @@ const App: React.FC = () => {
       probabilityMaxOverride?: number | null;
       targetPointsOverride?: number | null;
       forceSuggestOnly?: boolean;
+      bypassOutcomeGate?: boolean;
       intentMeta?: { intentId: string; intentRunId: string; intentLabel?: string | null } | null;
     }
   ) => {
@@ -20837,6 +21276,7 @@ const App: React.FC = () => {
     const targetPointsMin = Number.isFinite(Number(opts?.targetPointsOverride))
       ? Math.max(0, Number(opts?.targetPointsOverride))
       : null;
+    const bypassOutcomeGate = opts?.bypassOutcomeGate === true;
     const intentMeta = opts?.intentMeta || null;
     const primarySymbol = signalPrimarySymbol || symbolList[0] || null;
     const primaryScopeKey = primarySymbol ? buildSnapshotScopeKey(primarySymbol, timeframes) : null;
@@ -21019,7 +21459,7 @@ const App: React.FC = () => {
         });
         return;
       }
-      if (outcomeGateEnabled) {
+      if (outcomeGateEnabled && !bypassOutcomeGate) {
         const openCounts = new Map<string, number>();
         const entriesNow = Array.isArray(signalEntriesRef.current) ? signalEntriesRef.current : [];
         for (const entry of entriesNow) {
@@ -21564,6 +22004,479 @@ const App: React.FC = () => {
     runSignalScanAutoRef.current = runSignalScan;
   }, [runSignalScan]);
 
+  const runSignalScanForce = useCallback(() => {
+    void appendTruthEvent({
+      eventType: 'signal_scan_forced_bypass_requested',
+      payload: {
+        source: 'signal_panel'
+      }
+    });
+    void runSignalScan('manual', { bypassOutcomeGate: true });
+  }, [appendTruthEvent, runSignalScan]);
+
+  const appendSignalStatusReport = useCallback((entry: SignalStatusReportEntry) => {
+    const signalId = String(entry?.signalId || '').trim();
+    if (!signalId) return;
+    setSignalStatusReportsBySignalId((prev) => {
+      const existing = Array.isArray(prev[signalId]) ? prev[signalId] : [];
+      const deduped = [entry, ...existing.filter((item) => String(item?.id || '') !== entry.id)];
+      return {
+        ...prev,
+        [signalId]: deduped.slice(0, SIGNAL_STATUS_REPORT_HISTORY_LIMIT)
+      };
+    });
+  }, []);
+
+  const summarizeSignalStatusDeterministic = useCallback((
+    signal: SignalEntry,
+    referencePrice: number | null
+  ): {
+    verdict: SignalMarketStatusVerdict;
+    confidence: number;
+    distanceToEntry: number | null;
+    distanceToTp: number | null;
+    distanceToSl: number | null;
+    progressPct: number | null;
+    rrRemaining: number | null;
+  } => {
+    const entryPrice = Number(signal?.entryPrice);
+    const stopLoss = Number(signal?.stopLoss);
+    const takeProfit = Number(signal?.takeProfit);
+    const ref = Number(referencePrice);
+    if (!Number.isFinite(entryPrice) || !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit) || !Number.isFinite(ref)) {
+      return {
+        verdict: 'no_data',
+        confidence: 0.2,
+        distanceToEntry: null,
+        distanceToTp: null,
+        distanceToSl: null,
+        progressPct: null,
+        rrRemaining: null
+      };
+    }
+
+    const now = Date.now();
+    const expiresAtMs = Number(signal?.expiresAtMs || 0);
+    if (Number.isFinite(expiresAtMs) && expiresAtMs > 0 && expiresAtMs <= now) {
+      return {
+        verdict: 'expired',
+        confidence: 0.95,
+        distanceToEntry: Math.abs(ref - entryPrice),
+        distanceToTp: Math.abs(takeProfit - ref),
+        distanceToSl: Math.abs(stopLoss - ref),
+        progressPct: null,
+        rrRemaining: null
+      };
+    }
+
+    const isBuy = String(signal?.action || '').toUpperCase() !== 'SELL';
+    const entered = isBuy ? ref >= entryPrice : ref <= entryPrice;
+    const tpReached = isBuy ? ref >= takeProfit : ref <= takeProfit;
+    const slBreached = isBuy ? ref <= stopLoss : ref >= stopLoss;
+    const totalToTp = isBuy ? takeProfit - entryPrice : entryPrice - takeProfit;
+    const movedFromEntry = isBuy ? ref - entryPrice : entryPrice - ref;
+    const progressPctRaw = totalToTp > 0 ? (movedFromEntry / totalToTp) * 100 : null;
+    const progressPct = Number.isFinite(progressPctRaw) ? Math.max(-100, Math.min(200, Number(progressPctRaw))) : null;
+
+    const rewardDistance = Math.max(isBuy ? takeProfit - ref : ref - takeProfit, 0);
+    const riskDistance = Math.max(isBuy ? ref - stopLoss : stopLoss - ref, 0);
+    const rrRemaining = riskDistance > 0 ? rewardDistance / riskDistance : null;
+
+    const distanceToEntry = Math.abs(ref - entryPrice);
+    const distanceToTp = Math.abs(takeProfit - ref);
+    const distanceToSl = Math.abs(stopLoss - ref);
+
+    const tpRange = Math.abs(totalToTp);
+    const riskRange = Math.abs(isBuy ? entryPrice - stopLoss : stopLoss - entryPrice);
+    const entryNearThreshold = Math.max(tpRange * 0.12, Math.abs(entryPrice) * 0.0002);
+    const tpNearThreshold = Math.max(tpRange * 0.15, Math.abs(entryPrice) * 0.0002);
+    const slNearThreshold = Math.max(riskRange * 0.2, Math.abs(entryPrice) * 0.0002);
+
+    let verdict: SignalMarketStatusVerdict = 'watching';
+    let confidence = 0.55;
+    if (slBreached) {
+      verdict = 'invalidated';
+      confidence = 0.95;
+    } else if (!entered) {
+      if (distanceToEntry <= entryNearThreshold) {
+        verdict = 'entry_zone';
+        confidence = 0.84;
+      } else if (distanceToEntry <= Math.max(entryNearThreshold * 2, riskRange * 0.75)) {
+        verdict = 'approaching_entry';
+        confidence = 0.72;
+      } else {
+        verdict = 'watching';
+        confidence = 0.58;
+      }
+    } else if (tpReached) {
+      verdict = 'approaching_tp';
+      confidence = 0.9;
+    } else if (distanceToSl <= slNearThreshold) {
+      verdict = 'approaching_sl';
+      confidence = 0.82;
+    } else if (distanceToTp <= tpNearThreshold) {
+      verdict = 'approaching_tp';
+      confidence = 0.83;
+    } else {
+      verdict = movedFromEntry >= 0 ? 'in_profit' : 'at_risk';
+      confidence = movedFromEntry >= 0 ? 0.74 : 0.68;
+    }
+
+    return {
+      verdict,
+      confidence,
+      distanceToEntry,
+      distanceToTp,
+      distanceToSl,
+      progressPct,
+      rrRemaining: Number.isFinite(Number(rrRemaining)) ? Number(rrRemaining) : null
+    };
+  }, []);
+
+  const runSignalStatusReport = useCallback(async (source: 'manual' | 'chart_update') => {
+    const now = Date.now();
+    if (source === 'chart_update' && now - signalStatusReportLastAtRef.current < SIGNAL_STATUS_REPORT_GLOBAL_THROTTLE_MS) {
+      signalStatusReportStatsRef.current.skipped += 1;
+      return;
+    }
+    if (signalStatusReportInFlightRef.current) {
+      const pending = signalStatusReportPendingRef.current;
+      const nextPending = source === 'manual' ? 'manual' : (pending || 'chart_update');
+      signalStatusReportPendingRef.current = nextPending;
+      setSignalStatusReportPending(nextPending);
+      return;
+    }
+
+    signalStatusReportInFlightRef.current = true;
+    signalStatusReportLastAtRef.current = now;
+    signalStatusReportStatsRef.current.runs += 1;
+    signalStatusReportStatsRef.current.lastAtMs = now;
+    setSignalStatusReportRunning(true);
+
+    const toFixed = (value: number | null | undefined, digits: number = 5) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return null;
+      return Number(n.toFixed(digits));
+    };
+    const parseObject = (text: string) => {
+      const clean = String(text || '').trim();
+      if (!clean) return null;
+      const parsed = parseSignalPayload(clean);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, any>;
+      return null;
+    };
+    const extractSnapshotClose = (snapshotBundle: any) => {
+      const payloadFrames = Array.isArray(snapshotBundle?.payload?.frames) ? snapshotBundle.payload.frames : [];
+      const statusFrames = Array.isArray(snapshotBundle?.status?.frames) ? snapshotBundle.status.frames : [];
+      const frames = payloadFrames.length > 0 ? payloadFrames : statusFrames;
+      for (const frame of frames) {
+        const candles = Array.isArray(frame?.candles) ? frame.candles : [];
+        for (let index = candles.length - 1; index >= 0; index -= 1) {
+          const candle = candles[index];
+          const close = Number(candle?.c ?? candle?.close ?? candle?.o ?? candle?.open);
+          if (Number.isFinite(close)) return close;
+        }
+      }
+      return null;
+    };
+    const buildFallbackCommentary = (entry: SignalEntry, verdict: SignalMarketStatusVerdict, referencePrice: number | null) => {
+      const symbol = String(entry.symbol || '').trim() || 'Unknown';
+      const tf = String(entry.timeframe || '').trim() || 'n/a';
+      const action = String(entry.action || '').trim().toUpperCase() || 'N/A';
+      const refLabel = Number.isFinite(Number(referencePrice)) ? Number(referencePrice).toFixed(5) : 'n/a';
+      return `${symbol} ${tf} ${action}: ${verdict.replace(/_/g, ' ')} at ${refLabel}.`;
+    };
+
+    const allSignals = Array.isArray(signalEntriesRef.current) ? signalEntriesRef.current : [];
+    const eligible = allSignals.filter((entry) => {
+      if (!entry) return false;
+      if (!isSignalStatusReportEligible(entry.status)) return false;
+      if (isFinalSignalStatus(entry.status)) return false;
+      return hasSignalTradeDefinition(entry);
+    });
+
+    void appendTruthEvent({
+      eventType: 'signal_status_report_requested',
+      payload: {
+        source,
+        eligible: eligible.length
+      }
+    });
+
+    const chartAgents = chartChatAgentsRef.current || [];
+    const appAgents = agentsRef.current || [];
+    const mergedAgents = [...chartAgents, ...appAgents].filter(Boolean);
+    const quoteCache = new Map<string, any>();
+    const snapshotCache = new Map<string, any>();
+    let generated = 0;
+    let skipped = 0;
+
+    const resolveOriginatingAgent = (entry: SignalEntry) => {
+      const agentId = String(entry?.agentId || '').trim();
+      const agentName = String(entry?.agentName || '').trim().toLowerCase();
+      if (agentId) {
+        const byId = mergedAgents.find((agent) => String(agent?.id || '').trim() === agentId);
+        if (byId) return byId;
+      }
+      if (agentName) {
+        const byName = mergedAgents.find((agent) => String(agent?.name || '').trim().toLowerCase() === agentName);
+        if (byName) return byName;
+      }
+      return null;
+    };
+
+    const persistSignalStatusReport = async (report: SignalStatusReportEntry) => {
+      const ledger = window.glass?.tradeLedger;
+      if (!ledger?.upsertAgentMemory) return;
+      const symbol = String(report.symbol || '').trim() || null;
+      const timeframe = String(report.timeframe || '').trim() || null;
+      const summary = `${symbol || 'signal'} ${String(report.verdict || 'no_data').replace(/_/g, ' ')} (${report.source})`;
+      await ledger.upsertAgentMemory({
+        key: `signal_status_report:${report.signalId}:${report.createdAtMs}`,
+        familyKey: `signal_status_report:${symbol || 'unknown'}:${timeframe || 'na'}`,
+        scope: 'shared',
+        category: 'signal',
+        subcategory: 'status_report',
+        kind: 'signal_status_report',
+        symbol,
+        timeframe,
+        summary,
+        payload: report,
+        tags: [
+          report.signalId,
+          report.source,
+          report.verdict,
+          report.agentId ? `agent:${report.agentId}` : null
+        ].filter(Boolean)
+      });
+    };
+
+    try {
+      for (const signal of eligible) {
+        const signalId = String(signal.id || '').trim();
+        if (!signalId) continue;
+
+        const latest = signalStatusReportsRef.current[signalId]?.[0] || null;
+        const latestAt = Number(latest?.createdAtMs || 0);
+        if (
+          source === 'chart_update' &&
+          Number.isFinite(latestAt) &&
+          latestAt > 0 &&
+          now - latestAt < SIGNAL_STATUS_REPORT_SIGNAL_FRESHNESS_MS
+        ) {
+          skipped += 1;
+          continue;
+        }
+
+        const symbol = String(signal.symbol || '').trim().toUpperCase();
+        let quote = quoteCache.has(symbol) ? quoteCache.get(symbol) : undefined;
+        if (quote === undefined) {
+          quote = getBrokerQuoteForSymbol(symbol) || null;
+          if (!quote) {
+            try {
+              const quoteRes = await fetchBrokerQuoteForSymbol(symbol, { maxAgeMs: 0 });
+              quote = quoteRes?.quote || null;
+            } catch {
+              quote = null;
+            }
+          }
+          quoteCache.set(symbol, quote);
+        }
+
+        let referencePrice = quote ? getBrokerReferencePriceFromQuote(quote) : null;
+        if (!Number.isFinite(Number(referencePrice))) {
+          let snapshot = snapshotCache.has(symbol) ? snapshotCache.get(symbol) : undefined;
+          if (snapshot === undefined) {
+            const tf = normalizeTimeframeKey(signal.timeframe) || '5m';
+            try {
+              snapshot = await captureChartChatSnapshot(
+                `signal_status_report_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+                { symbol, timeframes: [tf], requireFullFrames: false }
+              );
+            } catch {
+              snapshot = null;
+            }
+            snapshotCache.set(symbol, snapshot);
+          }
+          referencePrice = extractSnapshotClose(snapshot);
+        }
+
+        const deterministic = summarizeSignalStatusDeterministic(signal, Number.isFinite(Number(referencePrice)) ? Number(referencePrice) : null);
+        const originAgent = resolveOriginatingAgent(signal);
+        let verdict = deterministic.verdict;
+        let confidence = deterministic.confidence;
+        let commentary = buildFallbackCommentary(signal, deterministic.verdict, Number.isFinite(Number(referencePrice)) ? Number(referencePrice) : null);
+        let rawModelText: string | null = null;
+        let error: string | null = null;
+
+        if (originAgent) {
+          try {
+            const modelRes = await sendMessageToOpenAI(
+              [],
+              [
+                `Signal: ${signal.symbol} ${signal.timeframe || 'n/a'} ${signal.action}`,
+                `Entry: ${signal.entryPrice} Stop: ${signal.stopLoss} TakeProfit: ${signal.takeProfit}`,
+                `Reference: ${Number.isFinite(Number(referencePrice)) ? Number(referencePrice) : 'n/a'}`,
+                `DistanceToEntry: ${toFixed(deterministic.distanceToEntry) ?? 'n/a'}`,
+                `DistanceToTp: ${toFixed(deterministic.distanceToTp) ?? 'n/a'}`,
+                `DistanceToSl: ${toFixed(deterministic.distanceToSl) ?? 'n/a'}`,
+                `ProgressPct: ${toFixed(deterministic.progressPct, 2) ?? 'n/a'}`,
+                `RRRemaining: ${toFixed(deterministic.rrRemaining, 3) ?? 'n/a'}`,
+                `DeterministicVerdict: ${deterministic.verdict}`,
+                'Return JSON only: {"verdict":"watching|approaching_entry|entry_zone|in_profit|at_risk|approaching_tp|approaching_sl|invalidated|expired|no_data","confidence":0-1,"commentary":"<=2 concise sentences"}'
+              ].join('\n'),
+              'You are the originating signal agent issuing a report-only market status update. Never place trades and never mutate lifecycle status.',
+              null,
+              mergedAgents,
+              [],
+              [],
+              { agent: originAgent }
+            );
+            rawModelText = String(modelRes?.text || '').trim() || null;
+            const parsed = parseObject(rawModelText || '');
+            const modelVerdict = String(parsed?.verdict || '').trim() as SignalMarketStatusVerdict;
+            const allowedVerdicts: SignalMarketStatusVerdict[] = [
+              'watching',
+              'approaching_entry',
+              'entry_zone',
+              'in_profit',
+              'at_risk',
+              'approaching_tp',
+              'approaching_sl',
+              'invalidated',
+              'expired',
+              'no_data'
+            ];
+            if (allowedVerdicts.includes(modelVerdict)) {
+              verdict = modelVerdict;
+            }
+            const parsedConfidence = Number(parsed?.confidence);
+            if (Number.isFinite(parsedConfidence)) {
+              confidence = Math.max(0, Math.min(1, parsedConfidence));
+            }
+            const parsedCommentary = String(parsed?.commentary || '').trim();
+            if (parsedCommentary) {
+              commentary = parsedCommentary;
+            } else if (rawModelText) {
+              commentary = rawModelText;
+            }
+          } catch (err: any) {
+            error = err?.message ? String(err.message) : 'agent_commentary_failed';
+            signalStatusReportStatsRef.current.errors += 1;
+          }
+        } else {
+          commentary = `${commentary} Agent commentary unavailable; deterministic metrics only.`;
+        }
+
+        // Report-only path: never mutate signal.status in this pipeline.
+        const createdAtMs = Date.now();
+        const report: SignalStatusReportEntry = {
+          id: `signal_status_report_${createdAtMs}_${Math.random().toString(16).slice(2, 8)}`,
+          signalId,
+          agentId: originAgent?.id || signal.agentId || null,
+          agentName: originAgent?.name || signal.agentName || null,
+          createdAtMs,
+          source,
+          symbol: signal.symbol || null,
+          timeframe: signal.timeframe || null,
+          action: signal.action || null,
+          entryPrice: Number.isFinite(Number(signal.entryPrice)) ? Number(signal.entryPrice) : null,
+          stopLoss: Number.isFinite(Number(signal.stopLoss)) ? Number(signal.stopLoss) : null,
+          takeProfit: Number.isFinite(Number(signal.takeProfit)) ? Number(signal.takeProfit) : null,
+          referencePrice: Number.isFinite(Number(referencePrice)) ? Number(referencePrice) : null,
+          distanceToEntry: toFixed(deterministic.distanceToEntry),
+          distanceToTp: toFixed(deterministic.distanceToTp),
+          distanceToSl: toFixed(deterministic.distanceToSl),
+          progressPct: toFixed(deterministic.progressPct, 2),
+          rrRemaining: toFixed(deterministic.rrRemaining, 3),
+          verdict,
+          confidence: toFixed(confidence, 3),
+          commentary,
+          rawModelText,
+          error
+        };
+
+        appendSignalStatusReport(report);
+        generated += 1;
+        signalStatusReportStatsRef.current.lastAtMs = createdAtMs;
+        void appendTruthEvent({
+          eventType: 'signal_status_report_generated',
+          symbol: signal.symbol || null,
+          payload: {
+            signalId,
+            source,
+            verdict: report.verdict,
+            confidence: report.confidence,
+            agentId: report.agentId || null,
+            error: report.error || null
+          }
+        });
+        void persistSignalStatusReport(report).catch(() => null);
+      }
+
+      if (generated === 0) {
+        skipped += 1;
+      }
+      if (skipped > 0) {
+        signalStatusReportStatsRef.current.skipped += skipped;
+      }
+    } catch (err: any) {
+      const message = err?.message ? String(err.message) : 'Signal status report run failed.';
+      signalStatusReportStatsRef.current.errors += 1;
+      appendLiveError({
+        source: 'signal.status_report',
+        level: 'warn',
+        message,
+        detail: err && typeof err === 'object' ? err : null
+      });
+      void appendTruthEvent({
+        eventType: 'signal_status_report_failed',
+        payload: {
+          source,
+          error: message
+        }
+      });
+    } finally {
+      signalStatusReportInFlightRef.current = false;
+      setSignalStatusReportRunning(false);
+      const pending = signalStatusReportPendingRef.current;
+      signalStatusReportPendingRef.current = null;
+      setSignalStatusReportPending(null);
+      if (pending) {
+        void runSignalStatusReport(pending);
+      }
+    }
+  }, [
+    appendLiveError,
+    appendSignalStatusReport,
+    appendTruthEvent,
+    captureChartChatSnapshot,
+    fetchBrokerQuoteForSymbol,
+    getBrokerQuoteForSymbol,
+    getBrokerReferencePriceFromQuote,
+    normalizeTimeframeKey,
+    parseSignalPayload,
+    setSignalStatusReportPending,
+    setSignalStatusReportRunning,
+    summarizeSignalStatusDeterministic
+  ]);
+
+  useEffect(() => {
+    const trigger = () => {
+      void runSignalStatusReport('chart_update');
+    };
+    signalStatusReportTriggerRef.current = trigger;
+    return () => {
+      if (signalStatusReportTriggerRef.current === trigger) {
+        signalStatusReportTriggerRef.current = null;
+      }
+    };
+  }, [runSignalStatusReport]);
+
+  const refreshSignalStatusesNow = useCallback(() => {
+    void runSignalStatusReport('manual');
+  }, [runSignalStatusReport]);
+
   const runSignalIntent = useCallback(async (intent: SignalIntent, slotKey: string) => {
     const intentId = String(intent?.id || '').trim();
     if (!intentId || signalIntentInFlightRef.current.has(intentId)) return;
@@ -21935,11 +22848,14 @@ const App: React.FC = () => {
 
   const clearSignalEntries = useCallback(async () => {
     setSignalEntries([]);
+    setSignalStatusReportsBySignalId({});
     setSignalSimulatedOutcomes({});
     simulatedOutcomeRef.current.clear();
+    signalStatusReportsRef.current = {};
     signalEntriesPersistedRef.current.clear();
     signalTelegramSentRef.current.clear();
     signalTelegramWarmStartRef.current = true;
+    signalStatusReportTelegramSentRef.current.clear();
     const ledger = window.glass?.tradeLedger;
     if (!ledger?.listAgentMemory || !ledger?.deleteAgentMemory) return;
     try {
@@ -24301,6 +25217,9 @@ const App: React.FC = () => {
         capturedAtMs,
         detail,
         health,
+        migrationParity: {
+          ...migrationParityRef.current
+        },
         truth: {
           projection: truthProjectionRef.current || truthProjection || null,
           updatedAtMs: truthProjectionUpdatedAtRef.current || null
@@ -24329,7 +25248,13 @@ const App: React.FC = () => {
           chartWatchSnoozedUntilMs: chatMeta.chartWatchSnoozedUntilMs ?? null,
           postTradeReviewEnabled: chatMeta.postTradeReviewEnabled ?? null,
           postTradeReviewAgentId: chatMeta.postTradeReviewAgentId ?? null,
-          chartWatchLeadAgentId: chatMeta.chartWatchLeadAgentId ?? null
+          chartWatchLeadAgentId: chatMeta.chartWatchLeadAgentId ?? null,
+          chatSignalActiveThreadId: chatMeta.chatSignalActiveThreadId ?? null,
+          chatSignalThreadMessageCounts: { ...(chatMeta.chatSignalThreadMessageCounts || {}) },
+          chatSignalThreadUnreadCounts: { ...(chatMeta.chatSignalThreadUnreadCounts || {}) },
+          chatSignalActionAttempts: Number(chatMeta.chatSignalActionAttempts || 0),
+          chatSignalActionSuccess: Number(chatMeta.chatSignalActionSuccess || 0),
+          chatSignalActionFailure: Number(chatMeta.chatSignalActionFailure || 0)
         },
         agents: agentsList,
         tabs: {
@@ -24391,7 +25316,48 @@ const App: React.FC = () => {
           quotesError: tlMeta.quotesError ?? null,
           quotesBySymbolCount: tlMeta.quotesBySymbol ? Object.keys(tlMeta.quotesBySymbol).length : null,
           snapshotUpdatedAtMs: tlMeta.snapshotUpdatedAtMs ?? null,
-          rateLimitSuppressUntilMs: brokerRateLimitSuppressUntilMs || null
+          rateLimitSuppressUntilMs: brokerRateLimitSuppressUntilMs || null,
+          accountSelector: tradeLockerAccountSelectorSnapshot || null,
+          securityAudit: securityAuditSnapshotRef.current
+            ? {
+                generatedAtMs: Number(securityAuditSnapshotRef.current.generatedAtMs || capturedAtMs),
+                isPackaged: securityAuditSnapshotRef.current.isPackaged ?? null,
+                csp: securityAuditSnapshotRef.current.csp
+                  ? { ...securityAuditSnapshotRef.current.csp }
+                  : null,
+                windows: Array.isArray(securityAuditSnapshotRef.current.windows)
+                  ? securityAuditSnapshotRef.current.windows.map((entry) => ({
+                      ...(entry || {}),
+                      webPreferences: entry?.webPreferences ? { ...entry.webPreferences } : null
+                    }))
+                  : null,
+                lastError: securityAuditSnapshotRef.current.lastError ?? null
+              }
+            : null,
+          bridgeLifecycle: bridgeLifecycleSnapshotRef.current
+            ? {
+                ...bridgeLifecycleSnapshotRef.current,
+                generatedAtMs: Number(bridgeLifecycleSnapshotRef.current.generatedAtMs || capturedAtMs)
+              }
+            : null,
+          renderPerf: renderPerfSnapshotRef.current
+            ? {
+                ...renderPerfSnapshotRef.current,
+                generatedAtMs: Number(renderPerfSnapshotRef.current.generatedAtMs || capturedAtMs),
+                memory: renderPerfSnapshotRef.current.memory
+                  ? { ...renderPerfSnapshotRef.current.memory }
+                  : null,
+                runtime: renderPerfSnapshotRef.current.runtime
+                  ? { ...renderPerfSnapshotRef.current.runtime }
+                  : null
+              }
+            : null,
+          ciValidation: ciValidationSnapshotRef.current
+            ? {
+                ...ciValidationSnapshotRef.current,
+                generatedAtMs: Number(ciValidationSnapshotRef.current.generatedAtMs || capturedAtMs)
+              }
+            : null
         },
         mt5: {
           bridgeAvailable: mt5BridgeAvailable ?? null,
@@ -32355,556 +33321,15 @@ const App: React.FC = () => {
     return executeBrokerCommand({ kind: 'bulk_close_positions', ...input });
   }, [executeBrokerCommand]);
 
-  const parseTelegramChatIds = useCallback((raw: string) => {
-    const text = String(raw || '').trim();
-    if (!text) return [] as string[];
-    return text.split(/[,\s]+/g).map((entry) => entry.trim()).filter(Boolean);
-  }, []);
-
-  const sendTelegramText = useCallback(async (text: string, chatIdOverride?: string, opts?: { replyMarkup?: any }) => {
-    const sender = window.glass?.telegram?.sendMessage;
-    if (!sender) return { ok: false, error: 'Telegram relay unavailable.' };
-    const chatId = String(chatIdOverride || signalTelegramChatId || '').trim();
-    const clean = String(text || '').trim();
-    if (!signalTelegramBotToken || !chatId || !clean) {
-      return { ok: false, error: 'Telegram bot token, chat id, and text are required.' };
-    }
-    const res = await sender({ botToken: signalTelegramBotToken, chatId, text: clean, replyMarkup: opts?.replyMarkup });
-    if (!res?.ok) {
-      const err = res?.error ? String(res.error) : 'Telegram send failed.';
-      addNotification('Telegram Relay', err, 'error');
-    }
-    return res;
-  }, [addNotification, signalTelegramBotToken, signalTelegramChatId]);
-
-  const sendTelegramPhoto = useCallback(async (dataUrl: string, caption?: string, chatIdOverride?: string) => {
-    const sender = window.glass?.telegram?.sendPhoto;
-    if (!sender) return { ok: false, error: 'Telegram relay unavailable.' };
-    const chatId = String(chatIdOverride || signalTelegramChatId || '').trim();
-    const clean = String(dataUrl || '').trim();
-    if (!signalTelegramBotToken || !chatId || !clean) {
-      return { ok: false, error: 'Telegram bot token, chat id, and image are required.' };
-    }
-    const res = await sender({ botToken: signalTelegramBotToken, chatId, dataUrl: clean, caption });
-    if (!res?.ok) {
-      const err = res?.error ? String(res.error) : 'Telegram send failed.';
-      addNotification('Telegram Relay', err, 'error');
-    }
-    return res;
-  }, [addNotification, signalTelegramBotToken, signalTelegramChatId]);
-
-  const answerTelegramCallback = useCallback(async (callbackId: string, text?: string) => {
-    const responder = window.glass?.telegram?.answerCallback;
-    if (!responder) return { ok: false, error: 'Telegram callback unavailable.' };
-    const clean = String(text || '').trim();
-    if (!signalTelegramBotToken || !callbackId) {
-      return { ok: false, error: 'Telegram bot token and callback id are required.' };
-    }
-    return responder({ botToken: signalTelegramBotToken, callbackId, text: clean || undefined });
-  }, [signalTelegramBotToken]);
-
-  const sendTelegramAlert = useCallback(async (title: string, message: string, chatIdOverride?: string) => {
-    if (!telegramAlertsActive) return { ok: false, skipped: true };
-    const header = String(title || '').trim();
-    const body = String(message || '').trim();
-    const text = header ? [header, body].filter(Boolean).join('\n') : body;
-    if (!text) return { ok: false, error: 'Alert payload empty.' };
-    return sendTelegramText(text, chatIdOverride);
-  }, [sendTelegramText, telegramAlertsActive]);
-
-  const telegramSymbolCandidates = React.useMemo(() => {
-    const list: string[] = [];
-    const seen = new Set<string>();
-    const push = (value: any) => {
-      const sym = String(value || '').trim();
-      if (!sym) return;
-      const key = normalizeSymbolKeyShared(sym);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      list.push(sym);
-    };
-    push(symbolScopeSymbol);
-    push(activeBrokerSymbol);
-    signalSymbols.forEach(push);
-    brokerWatchSymbols.forEach(push);
-    patternSymbols.forEach(push);
-    const map = brokerLinkConfig?.symbolMap || [];
-    for (const entry of map) {
-      if (!entry) continue;
-      push(entry.canonical);
-      push(entry.mt5);
-      push(entry.tradelocker);
-    }
-    return list;
-  }, [activeBrokerSymbol, brokerLinkConfig, brokerWatchSymbols, patternSymbols, signalSymbols, symbolScopeSymbol]);
-
-  const parseTelegramSymbol = useCallback((text: string) => {
-    const raw = String(text || '').trim();
-    if (!raw) return '';
-    const upper = raw.toUpperCase();
-    const lower = raw.toLowerCase();
-    const aliasMap: Array<{ keys: string[]; symbol: string }> = [
-      { keys: ['gold', 'xau'], symbol: 'XAUUSD' },
-      { keys: ['nas100', 'nas', 'us100'], symbol: 'NAS100' },
-      { keys: ['us30', 'dow', 'dj30'], symbol: 'US30' },
-      { keys: ['btc', 'bitcoin'], symbol: 'BTCUSD' }
-    ];
-    for (const alias of aliasMap) {
-      if (alias.keys.some((key) => lower.includes(key))) return alias.symbol;
-    }
-    for (const candidate of telegramSymbolCandidates) {
-      const variants = buildSymbolKeyVariantsShared(candidate).map((v) => String(v).toUpperCase());
-      if (variants.some((v) => v && upper.includes(v))) return candidate;
-    }
-    const tokenMatch = upper.match(/\b[A-Z]{2,6}[A-Z0-9]{0,6}(?:\.[A-Z0-9]+)?\b/);
-    return tokenMatch ? tokenMatch[0] : '';
-  }, [telegramSymbolCandidates]);
-
-  const parseTelegramTimeframe = useCallback((text: string) => {
-    const raw = String(text || '');
-    if (!raw) return '';
-    const lower = raw.toLowerCase();
-    const direct = lower.match(/\b(\d+)\s*(m|h|d|w)\b/);
-    if (direct) return normalizeTimeframeKey(`${direct[1]}${direct[2]}`);
-    const swapped = lower.match(/\b(m|h|d|w)\s*(\d+)\b/);
-    if (swapped) return normalizeTimeframeKey(`${swapped[2]}${swapped[1]}`);
-    const hr = lower.match(/\b(\d+)\s*(hr|hrs|hour|hours)\b/);
-    if (hr) return normalizeTimeframeKey(`${hr[1]}h`);
-    const min = lower.match(/\b(\d+)\s*(min|mins|minute|minutes)\b/);
-    if (min) return normalizeTimeframeKey(`${min[1]}m`);
-    return '';
-  }, []);
-
-  const parseTelegramBroker = useCallback((text: string) => {
-    const lower = String(text || '').toLowerCase();
-    if (/\btradelocker\b|\btrade locker\b|\blocker\b|\btl\b/.test(lower)) {
-      return 'tradelocker' as const;
-    }
-    if (lower.includes('mt5') || lower.includes('metatrader') || lower.includes('meta trader')) {
-      return 'mt5' as const;
-    }
-    return null;
-  }, []);
-
-  const parseTelegramAccountHint = useCallback((text: string) => {
-    const lower = String(text || '').toLowerCase();
-    const match = lower.match(/\b(?:acct|account)\s*[:=]\s*([a-z0-9_-]+)/i);
-    if (match && match[1]) return match[1];
-    const hashMatch = lower.match(/#(\d{2,})/);
-    if (hashMatch && hashMatch[1]) return hashMatch[1];
-    return '';
-  }, []);
-
-  const parseTelegramQtySpec = useCallback((text: string): TelegramQtySpec | null => {
-    const lower = String(text || '').toLowerCase();
-    if (lower.includes('half')) return { mode: 'fraction' as const, value: 0.5 };
-    if (lower.includes('quarter')) return { mode: 'fraction' as const, value: 0.25 };
-    const pct = lower.match(/(\d+(?:\.\d+)?)\s*%/);
-    if (pct) {
-      const value = Number(pct[1]) / 100;
-      return Number.isFinite(value) ? { mode: 'fraction' as const, value } : null;
-    }
-    const lots = lower.match(/(\d+(?:\.\d+)?)\s*(lot|lots)\b/);
-    if (lots) {
-      const value = Number(lots[1]);
-      return Number.isFinite(value) ? { mode: 'absolute' as const, value } : null;
-    }
-    const raw = lower.match(/\bclose\s+(\d+(?:\.\d+)?)\b/);
-    if (raw) {
-      const value = Number(raw[1]);
-      return Number.isFinite(value) ? { mode: 'absolute' as const, value } : null;
-    }
-    return null;
-  }, []);
-
-  const fetchTelegramNewsSnapshot = useCallback(async (symbol: string) => {
-    const api = window.glass?.news;
-    if (!api?.getSnapshot) return null;
-    try {
-      const res = await api.getSnapshot({ symbol, limit: 6, force: false });
-      if (!res?.ok) return null;
-      return (res.snapshot || null) as NewsSnapshot | null;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const formatTelegramNewsTone = useCallback((tone?: string | null, toneScore?: number | null) => {
-    const label = String(tone || '').trim().toUpperCase();
-    if (!label) return '';
-    const score = Number.isFinite(Number(toneScore)) ? Number(toneScore) : null;
-    const scoreLabel = score != null && score !== 0 ? ` ${score > 0 ? '+' : ''}${score}` : '';
-    return `${label}${scoreLabel}`;
-  }, []);
-
-  const formatTelegramSignalLine = useCallback((entry: SignalEntry) => {
-    const idShort = entry.id ? entry.id.slice(-6) : '';
-    const tf = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
-    const prob = Number.isFinite(Number(entry.probability)) ? Math.round(Number(entry.probability)) : null;
-    const parts = [idShort, entry.action, entry.symbol, tf].filter(Boolean);
-    if (prob != null) parts.push(`p${prob}`);
-    parts.push(entry.status || 'PROPOSED');
-    return parts.join(' ');
-  }, [formatTimeframeLabel]);
-
-  const resolveTelegramSignalEntry = useCallback((token: string) => {
-    const cleaned = String(token || '').trim();
-    const entries = Array.isArray(signalEntriesRef.current) ? signalEntriesRef.current : [];
-    const ordered = entries.slice().sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-    if (!cleaned) return ordered[0] || null;
-    const exact = ordered.find((entry) => entry.id === cleaned);
-    if (exact) return exact;
-    const lower = cleaned.toLowerCase();
-    const byPrefix = ordered.find((entry) => entry.id.toLowerCase().startsWith(lower));
-    if (byPrefix) return byPrefix;
-    const bySuffix = ordered.find((entry) => entry.id.toLowerCase().endsWith(lower));
-    if (bySuffix) return bySuffix;
-    const symbolKey = normalizeSymbolKeyShared(cleaned);
-    if (symbolKey) {
-      const bySymbol = ordered.find((entry) => normalizeSymbolKeyShared(entry.symbol) === symbolKey);
-      if (bySymbol) return bySymbol;
-    }
-    return null;
-  }, []);
-
-  const pruneTelegramPendingActions = useCallback(() => {
-    const now = Date.now();
-    if (now - telegramPendingCleanupAtRef.current < 3000) return;
-    telegramPendingCleanupAtRef.current = now;
-    const map = telegramPendingActionsRef.current;
-    for (const [id, action] of map.entries()) {
-      if (action.expiresAtMs <= now) map.delete(id);
-    }
-  }, []);
-
-  const resolveTelegramPendingAction = useCallback((id: string) => {
-    const key = String(id || '').trim();
-    if (!key) return null;
-    pruneTelegramPendingActions();
-    const pending = telegramPendingActionsRef.current.get(key) || null;
-    if (!pending) return null;
-    if (pending.expiresAtMs <= Date.now()) {
-      telegramPendingActionsRef.current.delete(key);
-      return null;
-    }
-    return pending;
-  }, [pruneTelegramPendingActions]);
-
-  const queueTelegramConfirmation = useCallback(async (input: {
-    chatId: string;
-    summary: string;
-    kind: TelegramPendingAction['kind'];
-    payload: TelegramPendingAction['payload'];
-  }) => {
-    if (!signalTelegramConfirmationsEnabled) return { ok: false, skipped: true };
-    const now = Date.now();
-    pruneTelegramPendingActions();
-    const id = `tg_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-    const expiresAtMs = now + signalTelegramConfirmationTimeoutSec * 1000;
-    const pending: TelegramPendingAction = {
-      id,
-      kind: input.kind,
-      payload: input.payload,
-      createdAtMs: now,
-      expiresAtMs,
-      chatId: input.chatId,
-      summary: input.summary
-    };
-    telegramPendingActionsRef.current.set(id, pending);
-    const ttlSec = Math.max(0, Math.round((expiresAtMs - now) / 1000));
-    await sendTelegramText(`Confirm: ${input.summary}\nExpires in ${ttlSec}s.`, input.chatId, {
-      replyMarkup: {
-        inline_keyboard: [
-          [
-            { text: 'Confirm', callback_data: `confirm:${id}` },
-            { text: 'Cancel', callback_data: `cancel:${id}` }
-          ]
-        ]
-      }
-    });
-    return { ok: true, id };
-  }, [pruneTelegramPendingActions, sendTelegramText, signalTelegramConfirmationTimeoutSec, signalTelegramConfirmationsEnabled]);
-
-  const runTelegramSignalAction = useCallback(async (input: {
-    type: 'execute' | 'reject' | 'cancel';
-    entry: SignalEntry;
-    chatId: string;
-    forceBroker?: BrokerId | null;
-  }) => {
-    const entry = input.entry;
-    const idLabel = entry.id ? entry.id.slice(-6) : '';
-    const brokerLabel = input.forceBroker ? ` (${input.forceBroker.toUpperCase()})` : '';
-    try {
-      if (input.type === 'execute') {
-        await executeSignalTrade(entry.id, 'manual', entry, { forceBroker: input.forceBroker ?? undefined });
-        await sendTelegramText(`Execution requested${brokerLabel}: ${entry.action} ${entry.symbol} ${idLabel}`.trim(), input.chatId);
-      } else if (input.type === 'reject') {
-        await rejectSignalEntry(entry.id);
-        await sendTelegramText(`Rejected signal ${idLabel}.`, input.chatId);
-      } else {
-        await cancelSignalOrder(entry.id);
-        await sendTelegramText(`Cancel requested for ${idLabel}.`, input.chatId);
-      }
-      void appendAuditEvent({
-        eventType: 'telegram_action',
-        symbol: entry.symbol,
-        payload: {
-          action: input.type,
-          signalId: entry.id,
-          broker: input.forceBroker || null,
-          chatId: input.chatId
-        }
-      });
-    } catch (err: any) {
-      const msg = err?.message ? String(err.message) : 'Telegram action failed.';
-      await sendTelegramText(msg, input.chatId);
-    }
-  }, [appendAuditEvent, cancelSignalOrder, executeSignalTrade, rejectSignalEntry, sendTelegramText]);
-
-  const runTelegramManageAction = useCallback(async (input: {
-    chatId: string;
-    broker: 'mt5' | 'tradelocker';
-    requestedSymbol?: string | null;
-    isBreakeven?: boolean;
-    qtySpec?: TelegramQtySpec | null;
-    accountHint?: string | null;
-  }) => {
-    const chatId = input.chatId;
-    const requestedSymbol = input.requestedSymbol || '';
-    const qtySpec = input.qtySpec || null;
-    void appendAuditEvent({
-      eventType: 'telegram_action',
-      symbol: requestedSymbol || null,
-      payload: {
-        action: input.isBreakeven ? 'breakeven' : 'close',
-        broker: input.broker,
-        chatId
-      }
-    });
-    if (input.broker === 'tradelocker') {
-      let positions = Array.isArray(tlPositionsRef.current) ? tlPositionsRef.current : [];
-      const accountHint = input.accountHint ? String(input.accountHint).trim() : '';
-      if (accountHint) {
-        const api = window.glass?.tradelocker;
-        if (!api?.getAccounts || !api?.setActiveAccount) {
-          await sendTelegramText('TradeLocker account switching unavailable.', chatId);
-          return;
-        }
-        const res = await api.getAccounts();
-        const accounts = Array.isArray(res?.accounts) ? res.accounts : [];
-        const match = accounts.find((acc) => {
-          const id = acc?.id != null ? String(acc.id) : '';
-          const accNum = acc?.accNum != null ? String(acc.accNum) : '';
-          return id === accountHint || accNum === accountHint;
-        });
-        if (!match) {
-          await sendTelegramText(`TradeLocker account ${accountHint} not found.`, chatId);
-          return;
-        }
-        const switchRes = await api.setActiveAccount({ accountId: Number(match.id), accNum: Number(match.accNum) });
-        if (switchRes?.ok === false) {
-          await sendTelegramText(switchRes?.error ? String(switchRes.error) : 'Failed to switch TradeLocker account.', chatId);
-          return;
-        }
-        try {
-          dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED, {
-            accountId: Number(match.id),
-            accNum: Number(match.accNum),
-            source: 'telegram',
-            atMs: Date.now()
-          });
-        } catch {
-          // ignore renderer event dispatch failures
-        }
-        if (api?.getSnapshot) {
-          const snapRes = await api.getSnapshot({ includeOrders: false });
-          if (snapRes?.ok && Array.isArray(snapRes.positions)) {
-            positions = snapRes.positions
-              .map((p: any) => ({
-                id: String(p?.id || ''),
-                symbol: String(p?.symbol || ''),
-                size: Number(p?.size),
-                entryPrice: Number(p?.entryPrice)
-              }))
-              .filter((p: any) => p.id && p.symbol);
-          }
-        }
-      }
-      const matches = (symbol: string) => {
-        if (!requestedSymbol) return true;
-        const targetKeys = buildSymbolKeyVariantsShared(requestedSymbol).map((v) => String(v).toUpperCase());
-        const posKeys = buildSymbolKeyVariantsShared(symbol).map((v) => String(v).toUpperCase());
-        return posKeys.some((key) => targetKeys.includes(key));
-      };
-      let targets = positions.filter((pos) => pos?.symbol && matches(String(pos.symbol)));
-      if (!requestedSymbol && targets.length !== 1) {
-        await sendTelegramText('Multiple TradeLocker positions open. Specify a symbol.', chatId);
-        return;
-      }
-      if (targets.length === 0) {
-        await sendTelegramText('No matching TradeLocker positions found.', chatId);
-        return;
-      }
-
-      if (input.isBreakeven) {
-        const results: Array<{ ok: boolean; error?: string }> = [];
-        for (const pos of targets) {
-          const entry = Number(pos?.entryPrice);
-          if (!Number.isFinite(entry) || entry <= 0) {
-            results.push({ ok: false, error: 'Missing entry price.' });
-            continue;
-          }
-          const res = await executeBrokerActionViaApi({
-            type: 'MODIFY_POSITION',
-            positionId: String(pos.id),
-            symbol: String(pos.symbol || ''),
-            stopLoss: entry,
-            source: 'telegram',
-            reason: 'Telegram breakeven'
-          });
-          results.push({ ok: !!res?.ok, error: res?.error });
-        }
-        const okCount = results.filter((r) => r.ok).length;
-        const failCount = results.length - okCount;
-        await sendTelegramText(
-          `TradeLocker breakeven: ${okCount}/${results.length} updated${failCount ? `, ${failCount} failed` : ''}.`,
-          chatId
-        );
-        return;
-      }
-
-      const results: Array<{ ok: boolean; error?: string }> = [];
-      for (const pos of targets) {
-        const size = Number(pos?.size);
-        let qty = 0;
-        if (qtySpec && Number.isFinite(size) && size > 0) {
-          if (qtySpec.mode === 'fraction') {
-            qty = Math.max(0, size * qtySpec.value);
-          } else {
-            qty = Math.max(0, qtySpec.value);
-          }
-          if (qty >= size) qty = 0;
-        }
-        const res = await executeBrokerActionViaApi({
-          type: 'CLOSE_POSITION',
-          positionId: String(pos.id),
-          symbol: String(pos.symbol || ''),
-          qty: qty > 0 ? qty : undefined,
-          source: 'telegram',
-          reason: 'Telegram close'
-        });
-        results.push({ ok: !!res?.ok, error: res?.error });
-      }
-      const okCount = results.filter((r) => r.ok).length;
-      const failCount = results.length - okCount;
-      await sendTelegramText(
-        `TradeLocker close: ${okCount}/${results.length} sent${failCount ? `, ${failCount} failed` : ''}.`,
-        chatId
-      );
-      return;
-    }
-
-    const mt5PositionsRes = await fetchMt5('/positions');
-    const mt5Positions = Array.isArray(mt5PositionsRes.data?.positions) ? mt5PositionsRes.data.positions : [];
-    const matches = (symbol: string) => {
-      if (!requestedSymbol) return true;
-      const targetKey = normalizeSymbolKeyShared(requestedSymbol);
-      const posKey = normalizeSymbolKeyShared(symbol);
-      return targetKey && posKey === targetKey;
-    };
-    let targets = mt5Positions.filter((pos) => pos?.symbol && matches(String(pos.symbol)));
-    if (!requestedSymbol && targets.length !== 1) {
-      await sendTelegramText('Multiple MT5 positions open. Specify a symbol.', chatId);
-      return;
-    }
-    if (targets.length === 0) {
-      await sendTelegramText('No matching MT5 positions found.', chatId);
-      return;
-    }
-
-    if (input.isBreakeven) {
-      const results: Array<{ ok: boolean; error?: string }> = [];
-      for (const pos of targets) {
-        const entry = Number(pos?.price_open ?? pos?.price);
-        if (!Number.isFinite(entry) || entry <= 0) {
-          results.push({ ok: false, error: 'Missing entry price.' });
-          continue;
-        }
-        const res = await fetchMt5('/position/modify', {
-          method: 'POST',
-          body: JSON.stringify({ position: pos?.ticket ?? pos?.position ?? pos?.id, sl: entry })
-        });
-        results.push({ ok: !!res?.ok, error: res?.error });
-      }
-      const okCount = results.filter((r) => r.ok).length;
-      const failCount = results.length - okCount;
-      await sendTelegramText(`MT5 breakeven: ${okCount}/${results.length} updated${failCount ? `, ${failCount} failed` : ''}.`, chatId);
-      return;
-    }
-
-    const results: Array<{ ok: boolean; error?: string }> = [];
-    for (const pos of targets) {
-      const size = Number(pos?.volume);
-      let volume: number | null = null;
-      if (qtySpec && Number.isFinite(size) && size > 0) {
-        if (qtySpec.mode === 'fraction') {
-          volume = Math.max(0, size * qtySpec.value);
-        } else {
-          volume = Math.max(0, qtySpec.value);
-        }
-        if (volume >= size) volume = null;
-      }
-      const payload: any = { position: pos?.ticket ?? pos?.position ?? pos?.id };
-      if (volume != null && volume > 0) payload.volume = volume;
-      const res = await fetchMt5('/position/close', { method: 'POST', body: JSON.stringify(payload) });
-      results.push({ ok: !!res?.ok, error: res?.error });
-    }
-    const okCount = results.filter((r) => r.ok).length;
-    const failCount = results.length - okCount;
-    await sendTelegramText(`MT5 close: ${okCount}/${results.length} sent${failCount ? `, ${failCount} failed` : ''}.`, chatId);
-  }, [appendAuditEvent, executeBrokerActionViaApi, fetchMt5, sendTelegramText]);
-
-  const executeTelegramPendingAction = useCallback(async (pending: TelegramPendingAction) => {
-    const chatId = pending.chatId;
-    if (pending.kind === 'manage_positions') {
-      const broker = pending.payload.broker || 'mt5';
-      await runTelegramManageAction({
-        chatId,
-        broker,
-        requestedSymbol: pending.payload.requestedSymbol || null,
-        isBreakeven: !!pending.payload.isBreakeven,
-        qtySpec: pending.payload.qtySpec || null,
-        accountHint: pending.payload.accountHint || null
-      });
-      return;
-    }
-
-    const entryId = pending.payload.entryId || '';
-    const entry = resolveTelegramSignalEntry(entryId);
-    if (!entry) {
-      await sendTelegramText('Signal not found or expired.', chatId);
-      return;
-    }
-    if (pending.kind === 'signal_execute') {
-      await runTelegramSignalAction({
-        type: 'execute',
-        entry,
-        chatId,
-        forceBroker: pending.payload.forceBroker || null
-      });
-      return;
-    }
-    if (pending.kind === 'signal_reject') {
-      await runTelegramSignalAction({ type: 'reject', entry, chatId });
-      return;
-    }
-    if (pending.kind === 'signal_cancel') {
-      await runTelegramSignalAction({ type: 'cancel', entry, chatId });
-    }
-  }, [resolveTelegramSignalEntry, runTelegramManageAction, runTelegramSignalAction, sendTelegramText]);
-
-
-
+  const { parseTelegramChatIds, sendTelegramText, sendTelegramPhoto, answerTelegramCallback, sendTelegramAlert, parseTelegramSymbol, parseTelegramTimeframe, parseTelegramBroker, parseTelegramAccountHint, parseTelegramQtySpec, fetchTelegramNewsSnapshot, formatTelegramNewsTone, formatTelegramSignalLine, resolveTelegramSignalEntry, resolveTelegramPendingAction, queueTelegramConfirmation, runTelegramSignalAction, runTelegramManageAction, executeTelegramPendingAction } = useTelegramCommandHelpers({
+    addNotification, signalTelegramBotToken, signalTelegramChatId, telegramAlertsActive, signalTelegramEnabled,
+    signalTelegramAllowStatus, signalTelegramAllowManage, signalTelegramCommandMode, signalTelegramConfirmationsEnabled,
+    signalTelegramConfirmationTimeoutSec, signalEntries, signalEntriesRef, signalStatusReportsBySignalId, signalStatusReportTelegramSentRef,
+    signalTelegramAlertSentRef, signalSymbols, brokerWatchSymbols, patternSymbols, symbolScopeSymbol, activeBrokerSymbol,
+    brokerLinkConfig, normalizeSymbolKeyShared, buildSymbolKeyVariantsShared, formatTimeframeLabel, buildSignalStatusReportTelegramText,
+    executeSignalTrade, rejectSignalEntry, cancelSignalOrder, appendAuditEvent, executeBrokerActionViaApi, fetchMt5,
+    tlPositionsRef, telegramPendingActionsRef, telegramPendingCleanupAtRef
+  });
   const isVisionCapableModelName = useCallback((value: string) => {
     const model = String(value || '').trim().toLowerCase();
     if (!model) return false;
@@ -33572,6 +33997,30 @@ const App: React.FC = () => {
   const CHAT_UNIFIED_MIGRATION_KEY = 'glass_chat_panel_unified_migration_v1';
   const LEGACY_CHAT_MESSAGES_KEY = 'glass_chat_messages_v1';
   const LEGACY_CHART_CHAT_MESSAGES_KEY = 'glass_chartchat_messages_v1';
+  const CHAT_SIGNAL_WORKSPACE_FLAGS_KEY = 'glass_chat_signal_workspace_flags_v1';
+  const chatSignalWorkspaceFlags = React.useMemo(() => {
+    const defaults = {
+      chatSignalWorkspaceV1: true,
+      chatSignalWorkspaceActionsV1: true,
+      chatContextInspectorV1: true
+    };
+    try {
+      const raw = localStorage.getItem(CHAT_SIGNAL_WORKSPACE_FLAGS_KEY);
+      if (!raw) return defaults;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return defaults;
+      return {
+        chatSignalWorkspaceV1: parsed.chatSignalWorkspaceV1 !== false,
+        chatSignalWorkspaceActionsV1: parsed.chatSignalWorkspaceActionsV1 !== false,
+        chatContextInspectorV1: parsed.chatContextInspectorV1 !== false
+      };
+    } catch {
+      return defaults;
+    }
+  }, []);
+  const chatSignalWorkspaceV1 = chatSignalWorkspaceFlags.chatSignalWorkspaceV1 !== false;
+  const chatSignalWorkspaceActionsV1 = chatSignalWorkspaceFlags.chatSignalWorkspaceActionsV1 !== false;
+  const chatContextInspectorV1 = chatSignalWorkspaceFlags.chatContextInspectorV1 !== false;
 
   const loadLegacyChatMessages = useCallback((key: string): Message[] => {
     try {
@@ -35898,16 +36347,203 @@ const App: React.FC = () => {
   const rejectChartChatBrokerAction = rejectBrokerAction;
   const cancelChartChatAgentTool = cancelAgentTool;
 
+  const chartSignalThreadMetrics = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    const lastAtByThread: Record<string, number> = {};
+    for (const msg of chartChatMessages || []) {
+      const signalIdFromThread = String((msg as any)?.signalId || '').trim()
+        || (String((msg as any)?.threadId || '').startsWith('signal:')
+          ? String((msg as any)?.threadId || '').slice('signal:'.length)
+          : '');
+      const explicitKind = String((msg as any)?.threadKind || '').trim().toLowerCase();
+      const threadKind = explicitKind === 'signal' && signalIdFromThread ? 'signal' : 'global';
+      const threadId = threadKind === 'signal' ? `signal:${signalIdFromThread}` : 'global';
+      counts[threadId] = (counts[threadId] || 0) + 1;
+      const ts = msg?.timestamp instanceof Date ? msg.timestamp.getTime() : Number(msg?.timestamp || 0);
+      if (Number.isFinite(ts) && ts > (lastAtByThread[threadId] || 0)) {
+        lastAtByThread[threadId] = ts;
+      }
+    }
+    return { counts, lastAtByThread };
+  }, [chartChatMessages]);
+
+  useEffect(() => {
+    const activeKey = activeSignalThreadId ? resolveSignalThreadKey(activeSignalThreadId) : 'global';
+    signalThreadUnreadBaselineRef.current[activeKey] = Number(chartSignalThreadMetrics.counts[activeKey] || 0);
+    const nextUnread: Record<string, number> = {};
+    for (const [threadKey, count] of Object.entries(chartSignalThreadMetrics.counts || {})) {
+      const baseline = Number(signalThreadUnreadBaselineRef.current[threadKey] || 0);
+      nextUnread[threadKey] = Math.max(0, Number(count || 0) - baseline);
+    }
+    setSignalThreadUnreadCountsState((prev) => {
+      const prevKeys = Object.keys(prev || {});
+      const nextKeys = Object.keys(nextUnread || {});
+      if (prevKeys.length !== nextKeys.length) return nextUnread;
+      for (const key of nextKeys) {
+        if (Number(prev[key] || 0) !== Number(nextUnread[key] || 0)) return nextUnread;
+      }
+      return prev;
+    });
+  }, [activeSignalThreadId, chartSignalThreadMetrics.counts, resolveSignalThreadKey]);
+
+  const signalContextById = React.useMemo<Record<string, SignalChatContextSnapshot>>(() => {
+    const ids = new Set<string>();
+    for (const entry of signalEntries || []) {
+      const id = String(entry?.id || '').trim();
+      if (id) ids.add(id);
+    }
+    for (const signalId of Object.keys(signalStatusReportsBySignalId || {})) {
+      const id = String(signalId || '').trim();
+      if (id) ids.add(id);
+    }
+    for (const signalId of Object.keys(latestSignalHistoryById || {})) {
+      const id = String(signalId || '').trim();
+      if (id) ids.add(id);
+    }
+    for (const threadKey of Object.keys(chartSignalThreadMetrics.counts || {})) {
+      if (!threadKey.startsWith('signal:')) continue;
+      const id = threadKey.slice('signal:'.length).trim();
+      if (id) ids.add(id);
+    }
+    if (activeSignalThreadId) ids.add(activeSignalThreadId);
+    const map: Record<string, SignalChatContextSnapshot> = {};
+    for (const signalId of ids) {
+      const built = buildSignalThreadContext(signalId);
+      if (built?.snapshot) {
+        map[signalId] = {
+          ...built.snapshot,
+          fallbackAgentId: built.snapshot.agentId ? built.snapshot.fallbackAgentId : (activeAgentId || built.snapshot.fallbackAgentId || null)
+        };
+        continue;
+      }
+      const history = latestSignalHistoryById[signalId] || null;
+      const fallback: SignalChatContextSnapshot = {
+        signalId,
+        symbol: String(history?.symbol || `SIGNAL_${signalId}`),
+        timeframe: history?.timeframe ?? null,
+        action: history?.action ?? null,
+        status: String(history?.status || history?.outcome || 'ARCHIVED'),
+        entryPrice: history?.entryPrice ?? null,
+        stopLoss: history?.stopLoss ?? null,
+        takeProfit: history?.takeProfit ?? null,
+        probability: history?.probability ?? null,
+        strategyMode: history?.strategyMode ?? null,
+        reason: history?.reason ?? null,
+        createdAtMs: history?.executedAtMs ?? null,
+        ageMs: history?.executedAtMs ? Math.max(0, Date.now() - Number(history.executedAtMs)) : null,
+        agentId: history?.agentId ?? null,
+        agentName: history?.agentName ?? null,
+        fallbackAgentId: activeAgentId || null,
+        latestReport: latestSignalStatusReportById[signalId] || null,
+        previousReportCount: Math.max(0, (signalStatusReportsBySignalId?.[signalId]?.length || 0) - 1),
+        latestHistory: history,
+        executionOrderId: history?.orderId ?? null,
+        executionPositionId: history?.positionId ?? null,
+        executionStatus: history?.status ?? null,
+        executionSource: history?.executionSource ?? null,
+        executionBroker: history?.executionBroker ?? null,
+        archived: true
+      };
+      map[signalId] = fallback;
+    }
+    return map;
+  }, [activeAgentId, activeSignalThreadId, buildSignalThreadContext, chartSignalThreadMetrics.counts, latestSignalHistoryById, latestSignalStatusReportById, signalEntries, signalStatusReportsBySignalId]);
+
+  useEffect(() => {
+    const nextArchived: Record<string, boolean> = {};
+    for (const [signalId, snapshot] of Object.entries(signalContextById || {})) {
+      const id = String(signalId || '').trim();
+      if (!id) continue;
+      nextArchived[id] = snapshot?.archived === true;
+    }
+    setSignalThreadArchivedBySignalId((prev) => {
+      const prevKeys = Object.keys(prev || {});
+      const nextKeys = Object.keys(nextArchived || {});
+      if (prevKeys.length !== nextKeys.length) return nextArchived;
+      for (const key of nextKeys) {
+        if ((prev[key] === true) !== (nextArchived[key] === true)) return nextArchived;
+      }
+      return prev;
+    });
+  }, [setSignalThreadArchivedBySignalId, signalContextById]);
+
+  const signalThreads = React.useMemo<SignalChatThreadSummary[]>(() => {
+    if (!chatSignalWorkspaceV1) return [];
+    return Object.keys(signalContextById).map((signalId) => {
+      const ctx = signalContextById[signalId];
+      const threadKey = resolveSignalThreadKey(signalId);
+      const reportTs = Number(ctx?.latestReport?.createdAtMs || 0);
+      const historyTs = Number(ctx?.latestHistory?.resolvedAtMs || ctx?.latestHistory?.executedAtMs || 0);
+      const signalTs = Number(ctx?.createdAtMs || 0);
+      const msgTs = Number(chartSignalThreadMetrics.lastAtByThread[threadKey] || 0);
+      const updatedAtMs = Math.max(reportTs, historyTs, signalTs, msgTs, 0);
+      const status = String(ctx?.status || (ctx?.archived ? 'ARCHIVED' : 'PROPOSED'));
+      const actionable = ['PROPOSED', 'SUBMITTING', 'PENDING'].includes(status.toUpperCase());
+      return {
+        signalId,
+        symbol: String(ctx?.symbol || ''),
+        timeframe: ctx?.timeframe ?? null,
+        status,
+        agentId: ctx?.agentId || ctx?.fallbackAgentId || null,
+        updatedAtMs,
+        unreadCount: Number(signalThreadUnreadCountsState?.[threadKey] || 0),
+        hasPendingAction: actionable,
+        archived: !!ctx?.archived
+      };
+    }).sort((a, b) => Number(b.updatedAtMs || 0) - Number(a.updatedAtMs || 0));
+  }, [chartSignalThreadMetrics.lastAtByThread, chatSignalWorkspaceV1, resolveSignalThreadKey, signalContextById, signalThreadUnreadCountsState]);
+
+  const isSignalActionableStatus = useCallback((statusInput: string | null | undefined, action: 'execute' | 'reject' | 'cancel') => {
+    const status = String(statusInput || '').trim().toUpperCase();
+    if (action === 'cancel') {
+      return status === 'PENDING';
+    }
+    return !['SUBMITTING', 'PENDING', 'EXECUTED', 'REJECTED', 'EXPIRED', 'WIN', 'LOSS', 'FAILED'].includes(status);
+  }, []);
+
   const sendChartChatMessageWithSnapshot = useCallback(async (
     text: string,
     context: { url: string; title?: string },
     monitoredUrls: string[],
     imageAttachment?: string | Array<{ dataUrl?: string; label?: string; meta?: any }> | null,
-    options?: { symbol?: string; timeframes?: string[] }
+    options?: {
+      symbol?: string;
+      timeframes?: string[];
+      threadKind?: 'global' | 'signal';
+      threadId?: string | null;
+      threadLabel?: string | null;
+      signalId?: string | null;
+    }
   ) => {
     const msgId = `chart_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
     const symbol = resolveChartChatSymbol(options?.symbol);
     const timeframes = resolveChartChatTimeframes(options?.timeframes);
+    const requestedSignalId =
+      String(options?.signalId || '').trim() ||
+      (String(options?.threadId || '').startsWith('signal:')
+        ? String(options?.threadId || '').slice('signal:'.length).trim()
+        : '') ||
+      (chatSignalWorkspaceV1 ? String(activeSignalThreadId || '').trim() : '');
+    const requestedThreadKindRaw = String(options?.threadKind || '').trim().toLowerCase();
+    const shouldUseSignalThread =
+      chatSignalWorkspaceV1 &&
+      !!requestedSignalId &&
+      (requestedThreadKindRaw === 'signal' || (!requestedThreadKindRaw && !!requestedSignalId));
+    const signalCtx = shouldUseSignalThread ? signalContextById[requestedSignalId] : null;
+    const missingSignalThread = !!(shouldUseSignalThread && !signalCtx);
+    const archivedSignalThread = !!(signalCtx && signalCtx.archived);
+    if ((archivedSignalThread || missingSignalThread) && requestedSignalId && activeSignalThreadId === requestedSignalId) {
+      setActiveSignalThreadId(null);
+    }
+    const effectiveSignalId = (archivedSignalThread || missingSignalThread) ? '' : (shouldUseSignalThread ? requestedSignalId : '');
+    const effectiveThreadKind: 'global' | 'signal' = effectiveSignalId ? 'signal' : 'global';
+    const effectiveThreadId = effectiveSignalId ? resolveSignalThreadKey(effectiveSignalId) : 'global';
+    const effectiveThreadLabel = String(
+      options?.threadLabel ||
+      (effectiveSignalId
+        ? `${signalCtx?.symbol || symbol || effectiveSignalId}${signalCtx?.timeframe ? ` ${String(signalCtx.timeframe).toUpperCase()}` : ''}`
+        : 'Global')
+    ).trim();
     const preview = String(text || '').trim().slice(0, 160);
 
     logChartChatEvent('UI_SEND_CHART_CHAT', {
@@ -35915,7 +36551,9 @@ const App: React.FC = () => {
       symbol,
       activePanel: 'chart_chat',
       timeframesRequested: timeframes,
-      textPreview: preview
+      textPreview: preview,
+      threadId: effectiveThreadId,
+      signalId: effectiveSignalId || null
     });
 
     const snapshotBundle = await captureChartChatSnapshot(msgId, options);
@@ -35980,19 +36618,27 @@ const App: React.FC = () => {
       modelHint,
       hasImage: modelHint === 'vision',
       hasFrames,
-      payloadChars
+      payloadChars,
+      threadKind: effectiveThreadKind,
+      threadId: effectiveThreadId,
+      threadLabel: effectiveThreadLabel || null,
+      signalId: effectiveSignalId || null
     });
   }, [
+    activeSignalThreadId,
     activeTab?.title,
     activeTab?.url,
     activeTabId,
     captureChatTabContextImages,
     captureTabCached,
     captureChartChatSnapshot,
+    chatSignalWorkspaceV1,
     logChartChatEvent,
+    resolveSignalThreadKey,
     resolveChartChatSymbol,
     resolveChartChatTimeframes,
     sendChartChatMessage,
+    signalContextById,
     tabs
   ]);
 
@@ -36035,14 +36681,65 @@ const App: React.FC = () => {
       chartChatIsLive: !!chartChatIsLive,
       chartChatThinking: !!chartChatThinking,
       chartChatMessagesCount: Array.isArray(chartChatMessages) ? chartChatMessages.length : 0,
-      chartChatLastMessageAtMs: lastMessageAtMs
+      chartChatLastMessageAtMs: lastMessageAtMs,
+      chatSignalActiveThreadId: activeSignalThreadId || null,
+      chatSignalThreadMessageCounts: { ...(chartSignalThreadMetrics.counts || {}) },
+      chatSignalThreadUnreadCounts: { ...(signalThreadUnreadCountsState || {}) },
+      chatSignalActionAttempts: Number(chatSignalActionTelemetryRef.current.attempts || 0),
+      chatSignalActionSuccess: Number(chatSignalActionTelemetryRef.current.success || 0),
+      chatSignalActionFailure: Number(chatSignalActionTelemetryRef.current.failure || 0)
     };
-  }, [chartChatIsLive, chartChatMessages, chartChatThinking, isLive]);
+  }, [activeSignalThreadId, chartChatIsLive, chartChatMessages, chartChatThinking, chartSignalThreadMetrics.counts, isLive, signalThreadUnreadCountsState]);
 
   const chartChatContext = React.useMemo(() => ({
     url: 'chart://engine',
     title: 'Chart Engine'
   }), []);
+
+  const executeSignalFromChat = useCallback((signalId: string) => {
+    const id = String(signalId || '').trim();
+    if (!id) return;
+    const entry = signalEntriesById.get(id);
+    const status = String(entry?.status || signalContextById[id]?.status || '').toUpperCase();
+    void appendAuditEvent({ eventType: 'chat_signal_action_requested', symbol: entry?.symbol || signalContextById[id]?.symbol || null, payload: { signalId: id, action: 'execute' } });
+    if (!chatSignalWorkspaceActionsV1 || !entry || !isSignalActionableStatus(status, 'execute')) {
+      chatSignalActionTelemetryRef.current.failure += 1;
+      return;
+    }
+    chatSignalActionTelemetryRef.current.attempts += 1;
+    chatSignalActionTelemetryRef.current.success += 1;
+    void executeSignalTrade(id, 'manual');
+  }, [appendAuditEvent, chatSignalWorkspaceActionsV1, executeSignalTrade, isSignalActionableStatus, signalContextById, signalEntriesById]);
+
+  const rejectSignalFromChat = useCallback((signalId: string) => {
+    const id = String(signalId || '').trim();
+    if (!id) return;
+    const entry = signalEntriesById.get(id);
+    const status = String(entry?.status || signalContextById[id]?.status || '').toUpperCase();
+    void appendAuditEvent({ eventType: 'chat_signal_action_requested', symbol: entry?.symbol || signalContextById[id]?.symbol || null, payload: { signalId: id, action: 'reject' } });
+    if (!chatSignalWorkspaceActionsV1 || !entry || !isSignalActionableStatus(status, 'reject')) {
+      chatSignalActionTelemetryRef.current.failure += 1;
+      return;
+    }
+    chatSignalActionTelemetryRef.current.attempts += 1;
+    chatSignalActionTelemetryRef.current.success += 1;
+    void rejectSignalEntry(id, 'Rejected from chat workspace');
+  }, [appendAuditEvent, chatSignalWorkspaceActionsV1, isSignalActionableStatus, rejectSignalEntry, signalContextById, signalEntriesById]);
+
+  const cancelSignalOrderFromChat = useCallback((signalId: string) => {
+    const id = String(signalId || '').trim();
+    if (!id) return;
+    const entry = signalEntriesById.get(id);
+    const status = String(entry?.status || signalContextById[id]?.status || '').toUpperCase();
+    void appendAuditEvent({ eventType: 'chat_signal_action_requested', symbol: entry?.symbol || signalContextById[id]?.symbol || null, payload: { signalId: id, action: 'cancel_pending' } });
+    if (!chatSignalWorkspaceActionsV1 || !entry || !isSignalActionableStatus(status, 'cancel')) {
+      chatSignalActionTelemetryRef.current.failure += 1;
+      return;
+    }
+    chatSignalActionTelemetryRef.current.attempts += 1;
+    chatSignalActionTelemetryRef.current.success += 1;
+    void cancelSignalOrder(id);
+  }, [appendAuditEvent, cancelSignalOrder, chatSignalWorkspaceActionsV1, isSignalActionableStatus, signalContextById, signalEntriesById]);
 
   useEffect(() => {
     chartChatContextRef.current = chartChatContext;
@@ -36628,6 +37325,18 @@ const App: React.FC = () => {
     });
   }, [publishImmediatePanelContext]);
 
+  const signalWorkspaceActionBundle = React.useMemo(() => createSignalWorkspaceActionBundle({
+    chatSignalWorkspaceV1,
+    publishSignalSelectionContext,
+    setActiveSignalThreadId: (signalId: string) => setActiveSignalThreadId(signalId),
+    openSidebarMode: (nextMode: 'chartchat') => openSidebarMode(nextMode),
+    appendAuditEvent,
+    signalThreadAutoFocusRef
+  }), [appendAuditEvent, chatSignalWorkspaceV1, openSidebarMode, publishSignalSelectionContext]);
+
+  const openSignalThreadInChat = signalWorkspaceActionBundle.openSignalThreadInChat;
+  const handleSignalFocus = signalWorkspaceActionBundle.handleSignalFocus;
+
   const publishAcademySelectionContext = useCallback((entry: AcademyCase | null | undefined, originPanel: string = 'academy') => {
     if (!entry) return;
     publishImmediatePanelContext({
@@ -36642,9 +37351,27 @@ const App: React.FC = () => {
     });
   }, [publishImmediatePanelContext]);
 
-  const handleSignalFocus = useCallback((entry: SignalEntry) => {
-    publishSignalSelectionContext(entry, 'signal');
-  }, [publishSignalSelectionContext]);
+  useEffect(() => {
+    if (!chatSignalWorkspaceV1) return;
+    const focusedId = String(crossPanelContext?.focusSignalId || '').trim();
+    const focusedEntity = String(crossPanelContext?.focusEntity || '').trim().toLowerCase();
+    if (!focusedId || focusedEntity !== 'signal') return;
+    if (activeSignalThreadId === focusedId) return;
+    const entry = signalEntriesById.get(focusedId);
+    if (!entry) return;
+    signalWorkspaceActionBundle.openSignalThreadInChat(entry, {
+      auto: true,
+      originPanel: String(crossPanelContext?.originPanel || 'signal')
+    });
+  }, [
+    activeSignalThreadId,
+    chatSignalWorkspaceV1,
+    crossPanelContext?.focusEntity,
+    crossPanelContext?.focusSignalId,
+    crossPanelContext?.originPanel,
+    signalEntriesById,
+    signalWorkspaceActionBundle
+  ]);
 
   const handleAcademyCaseSelect = useCallback((caseId: string | null) => {
     const id = caseId ? String(caseId).trim() : '';
@@ -36890,6 +37617,43 @@ const App: React.FC = () => {
     })();
   }, [appendLiveError, ensureLockedAcademyCase, openSidebarMode, publishAcademySelectionContext, publishImmediatePanelContext, publishSignalSelectionContext]);
 
+  const chatWorkspaceActionBundle = React.useMemo(() => createChatWorkspaceActionBundle({
+    chatSignalWorkspaceV1,
+    appendAuditEvent,
+    setActiveSignalThreadId,
+    signalEntriesById,
+    signalContextById,
+    publishSignalSelectionContext,
+    signalThreadUnreadBaselineRef,
+    chartSignalThreadCounts: chartSignalThreadMetrics.counts,
+    resolveSignalThreadKey,
+    chartChatContext,
+    sendChartChatMessageWithSnapshot,
+    openSidebarMode,
+    openAcademyCaseFromSignal,
+    openSymbolPanel: (target: 'nativechart', symbol: string, timeframe?: string | null) =>
+      openSymbolPanel(target, symbol, timeframe)
+  }), [
+    appendAuditEvent,
+    chartChatContext,
+    chartSignalThreadMetrics.counts,
+    chatSignalWorkspaceV1,
+    openAcademyCaseFromSignal,
+    openSidebarMode,
+    openSymbolPanel,
+    publishSignalSelectionContext,
+    resolveSignalThreadKey,
+    sendChartChatMessageWithSnapshot,
+    setActiveSignalThreadId,
+    signalContextById,
+    signalEntriesById
+  ]);
+  const selectSignalThreadFromChat = chatWorkspaceActionBundle.selectSignalThreadFromChat;
+  const askAgentAboutSignalFromChat = chatWorkspaceActionBundle.askAgentAboutSignalFromChat;
+  const openSignalFromChat = chatWorkspaceActionBundle.openSignalFromChat;
+  const openAcademyCaseFromChat = chatWorkspaceActionBundle.openAcademyCaseFromChat;
+  const openChartFromSignalChat = chatWorkspaceActionBundle.openChartFromSignalChat;
+
   const openAcademyCase = useCallback((caseId?: string | null) => {
     const id = caseId ? String(caseId).trim() : '';
     if (id) {
@@ -36927,225 +37691,13 @@ const App: React.FC = () => {
     };
   }, [closeSidebar, handleSwitchSidebarMode, openSidebar, openSidebarMode, toggleSidebar]);
 
-  const commandActions = React.useMemo<CommandAction[]>(() => {
-    const flowActions: CommandAction[] = Array.isArray(recommendedActionFlowsState)
-      ? recommendedActionFlowsState.slice(0, 8).map((flow, index) => {
-          const label = flow.intentLabel || flow.intentKey || 'Action Flow';
-          const meta = [flow.symbol, flow.timeframe].filter(Boolean).join(' ');
-          const sequence = Array.isArray(flow.sequence) ? flow.sequence.join(' > ') : '';
-          return {
-            id: `flow-${flow.intentKey}-${index}`,
-            label: `Run Flow: ${label}`,
-            group: 'Flows',
-            hint: [meta, sequence].filter(Boolean).join(' | '),
-            onSelect: () => runRecommendedActionFlow(flow)
-          } as CommandAction;
-        })
-      : [];
-    const paletteSymbol = String(symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol || '').trim();
-    const paletteTimeframe = String(symbolScopeTimeframesLabel || activeTvTimeframeLabel || '').trim();
-    const symbolActions: CommandAction[] = paletteSymbol
-      ? [
-          {
-            id: 'open-symbol-chart',
-            label: `Open ${paletteSymbol} in Chart`,
-            group: 'Symbol',
-            hint: paletteTimeframe || undefined,
-            onSelect: () => openSymbolPanel('nativechart', paletteSymbol)
-          },
-          {
-            id: 'open-symbol-mt5',
-            label: `Open ${paletteSymbol} in MT5`,
-            group: 'Symbol',
-            hint: paletteTimeframe || undefined,
-            onSelect: () => openSymbolPanel('mt5', paletteSymbol)
-          },
-          {
-            id: 'open-symbol-tradelocker',
-            label: `Open ${paletteSymbol} in TradeLocker`,
-            group: 'Symbol',
-            hint: paletteTimeframe || undefined,
-            onSelect: () => openSymbolPanel('tradelocker', paletteSymbol)
-          }
-        ]
-      : [];
-    return [
-      { id: 'open-chat', label: 'Open Chat', group: 'Panels', onSelect: () => openSidebarMode('chartchat') },
-      { id: 'open-signal', label: 'Open Signal', group: 'Panels', onSelect: () => openSidebarMode('signal') },
-      { id: 'open-snapshot', label: 'Open Snapshot', group: 'Panels', onSelect: () => openSidebarMode('snapshot') },
-      { id: 'open-patterns', label: 'Open Patterns', group: 'Panels', onSelect: () => openSidebarMode('patterns') },
-      { id: 'open-shadow', label: 'Open Shadow', group: 'Panels', onSelect: () => openSidebarMode('shadow') },
-      { id: 'open-calendar', label: 'Open Calendar', group: 'Panels', onSelect: () => openSidebarMode('calendar') },
-      { id: 'open-notes', label: 'Open Notes', group: 'Panels', onSelect: () => openSidebarMode('notes') },
-      { id: 'open-autopilot', label: 'Open AutoPilot', group: 'Panels', onSelect: () => openSidebarMode('autopilot') },
-      { id: 'open-tradelocker', label: 'Open TradeLocker', group: 'Panels', onSelect: () => openSidebarMode('tradelocker') },
-      { id: 'open-chart', label: 'Open Native Chart', group: 'Panels', onSelect: () => openSidebarMode('nativechart') },
-      { id: 'open-backtester', label: 'Open Backtester', group: 'Panels', onSelect: () => openSidebarMode('backtester') },
-      { id: 'open-setups', label: 'Open Setups', group: 'Panels', onSelect: () => openSidebarMode('setups') },
-      { id: 'open-agent-creator', label: 'Open Agent', group: 'Panels', onSelect: () => openSidebarMode('agentcreator') },
-      { id: 'open-memory', label: 'Open Memory', group: 'Panels', onSelect: () => openSidebarMode('agentmemory') },
-      { id: 'open-agent-lab', label: 'Open Agent Lab', group: 'Panels', onSelect: () => openSidebarMode('agentlab') },
-      { id: 'open-academy', label: 'Open Academy', group: 'Panels', onSelect: () => openSidebarMode('academy') },
-      { id: 'open-monitor', label: 'Open Monitor', group: 'Panels', onSelect: () => openSidebarMode('monitor') },
-      { id: 'open-audit', label: 'Open Audit Trail', group: 'Panels', onSelect: () => openSidebarMode('audit') },
-      { id: 'open-changes', label: 'Open Changes', group: 'Panels', onSelect: () => openSidebarMode('changes') },
-      { id: 'toggle-sidebar', label: isOpen ? 'Hide Sidebar' : 'Show Sidebar', group: 'System', onSelect: () => toggleSidebar() },
-      { id: 'open-settings', label: 'Open Settings', group: 'System', shortcut: 'Ctrl+,', onSelect: () => openSettings() },
-      { id: 'toggle-fullscreen', label: 'Toggle Fullscreen', group: 'System', shortcut: 'F11', onSelect: () => toggleFullscreen() },
-      { id: 'context-pack-copy', label: 'Context Pack: Copy', group: 'Context', hint: 'Copy the agent context snapshot', onSelect: () => captureContextPack({ copy: true }) },
-      { id: 'context-pack-save', label: 'Context Pack: Save', group: 'Context', hint: 'Save to agent memory', onSelect: () => captureContextPack({ save: true }) },
-      ...symbolActions,
-      ...flowActions
-    ];
-  }, [
-    activeBrokerSymbol,
-    activeTvParams?.symbol,
-    activeTvTimeframeLabel,
-    captureContextPack,
-    isOpen,
-    openSettings,
-    openSidebarMode,
-    openSymbolPanel,
-    recommendedActionFlowsState,
-    runRecommendedActionFlow,
-    symbolScopeSymbol,
-    symbolScopeTimeframesLabel,
-    toggleFullscreen,
-    toggleSidebar
-  ]);
-
-  const focusNativeChart = useCallback(
-    (symbol?: string, timeframe?: string) => {
-      const nextSymbol = String(symbol || '').trim();
-      if (nextSymbol) {
-        setNativeChartSymbol(nextSymbol);
-        pendingChartFocusRef.current = { symbol: nextSymbol, timeframe };
-      }
-
-      const chart = nativeChartRef.current;
-      if (chart?.focusSymbol && nextSymbol) {
-        chart.focusSymbol(nextSymbol, timeframe, { revealSetups: true });
-        pendingChartFocusRef.current = null;
-      } else if (chart?.ensureFrameActive && timeframe) {
-        chart.ensureFrameActive(timeframe);
-      }
-      if (chart?.setShowSetups) {
-        chart.setShowSetups(true);
-      }
-
-      switchMode('nativechart');
-    },
-    [switchMode]
-  );
-
-  const handleExplainSetupSignal = useCallback(
-    (signalId: string, profileId?: string | null) => {
-      const id = String(signalId || '').trim();
-      if (!id) return;
-      const profile = profileId ? String(profileId).trim() : '';
-      const prompt = profile
-        ? `Explain setup signal ${id} for profile ${profile}.`
-        : `Explain setup signal ${id}.`;
-      openSidebar();
-      switchMode('chartchat');
-      sendChartChatMessageWithSnapshot(prompt, chartChatContext, [], null);
-    },
-    [chartChatContext, openSidebar, sendChartChatMessageWithSnapshot, switchMode]
-  );
-
-  const handleReplayTrade = useCallback(
-    (payload: {
-      symbol: string;
-      timeframe?: string | null;
-      entryPrice?: number | null;
-      stopLoss?: number | null;
-      takeProfit?: number | null;
-      closePrice?: number | null;
-      action?: string | null;
-      ledgerId?: string | null;
-      noteId?: string | null;
-    }) => {
-      const symbol = String(payload?.symbol || '').trim();
-      if (!symbol) return;
-      const timeframe = payload?.timeframe ? String(payload.timeframe).trim() : null;
-      const entry = Number(payload?.entryPrice);
-      const stop = Number(payload?.stopLoss);
-      const tp = Number(payload?.takeProfit);
-      const close = Number(payload?.closePrice);
-      const action = String(payload?.action || '').toUpperCase();
-      const levels = [];
-      if (Number.isFinite(entry)) {
-        levels.push({
-          price: entry,
-          label: `${action === 'SELL' ? 'SELL' : action === 'BUY' ? 'BUY' : 'Trade'} Entry`,
-          color: '#38bdf8',
-          priority: 26
-        });
-      }
-      if (Number.isFinite(stop)) {
-        levels.push({
-          price: stop,
-          label: 'Stop',
-          color: '#f97316',
-          style: 'dashed',
-          priority: 25
-        });
-      }
-      if (Number.isFinite(tp)) {
-        levels.push({
-          price: tp,
-          label: 'TP',
-          color: '#22c55e',
-          style: 'dashed',
-          priority: 25
-        });
-      }
-      if (Number.isFinite(close)) {
-        levels.push({
-          price: close,
-          label: 'Close',
-          color: '#facc15',
-          priority: 24
-        });
-      }
-      const annotation: ReviewAnnotation = {
-        id: payload?.ledgerId ? `review_${payload.ledgerId}` : `review_${Date.now()}`,
-        symbol,
-        timeframe,
-        createdAtMs: Date.now(),
-        levels,
-        note: payload?.noteId || null
-      };
-      setReviewAnnotations(levels.length > 0 ? [annotation] : []);
-      nativeChartRef.current?.setShowReviews?.(true);
-      focusNativeChart(symbol, timeframe || undefined);
-    },
-    [focusNativeChart]
-  );
-
-  useEffect(() => {
-    if (!nativeChartMounted) return;
-    const pending = pendingChartFocusRef.current;
-    if (!pending) return;
-    const chart = nativeChartRef.current;
-    if (!chart?.focusSymbol) return;
-    chart.focusSymbol(pending.symbol, pending.timeframe, { revealSetups: true });
-    chart.setShowSetups?.(true);
-    pendingChartFocusRef.current = null;
-  }, [nativeChartMounted]);
-
-  useEffect(() => {
-    if (!nativeChartMounted && mode !== 'nativechart') return;
-    const ensureConnect = ensureTradeLockerConnectedRef.current;
-    if (!ensureConnect) return;
-    void ensureConnect('native_chart_panel');
-  }, [mode, nativeChartMounted]);
-
-  useEffect(() => {
-    if (mode !== 'backtester') return;
-    flushPendingBacktestApply();
-  }, [flushPendingBacktestApply, mode]);
-
+  const { commandActions, focusNativeChart, handleExplainSetupSignal, handleReplayTrade } = useCommandAndChartActions({
+    buildCommandActionsModel, recommendedActionFlowsState, runRecommendedActionFlow, symbolScopeSymbol, activeBrokerSymbol,
+    activeTvSymbol: activeTvParams?.symbol, symbolScopeTimeframesLabel, activeTvTimeframeLabel, openSymbolPanel, openSidebarMode,
+    isOpen, toggleSidebar, openSettings, toggleFullscreen, captureContextPack, setNativeChartSymbol, pendingChartFocusRef,
+    nativeChartRef, switchMode, openSidebar, sendChartChatMessageWithSnapshot, chartChatContext, setReviewAnnotations,
+    nativeChartMounted, mode, ensureTradeLockerConnectedRef, flushPendingBacktestApply
+  });
   const keepWatchedTabsMountedRequested =
     isLive ||
     (chartWatchEnabled && isOpen && isUnifiedChatMode(mode)) ||
@@ -37228,213 +37780,64 @@ const App: React.FC = () => {
   tlOrdersHistoryRef.current = Array.isArray(tlOrdersHistory) ? tlOrdersHistory : [];
   tlPositionsRef.current = Array.isArray(tlPositions) ? tlPositions : [];
   quotesBySymbolRef.current = tlQuotesBySymbol ?? null;
-  const tlAccountsRef = React.useRef(tlAccounts);
-  useEffect(() => {
-    const accountsList = Array.isArray(tlAccounts) ? tlAccounts : [];
-    tlAccountsRef.current = accountsList;
-    const map = new Map<string, TradeLockerAccountMapEntry>();
-    const env = tlSavedConfig?.env ? String(tlSavedConfig.env).trim().toLowerCase() : '';
-    const server = tlSavedConfig?.server ? String(tlSavedConfig.server).trim().toLowerCase() : '';
-    const addNormalizedEntry = (normalized: ReturnType<typeof normalizeTradeLockerAccountRecord> | null) => {
-      if (!normalized) return;
-      const accountKey =
-        normalized.accountKey ||
-        buildTradeLockerAccountKey({
-          env,
-          server,
-          accountId: normalized.accountId,
-          accNum: normalized.accNum ?? null
-        }) ||
-        buildTradeLockerAccountKey({
-          env,
-          server,
-          accountId: normalized.accountId,
-          accNum: null
-        });
-      if (!accountKey) return;
-      const fallbackKey = buildTradeLockerAccountKey({
-        env,
-        server,
-        accountId: normalized.accountId,
-        accNum: null
-      });
-      const aliases = Array.from(
-        new Set([
-          accountKey,
-          fallbackKey,
-          ...(Array.isArray(normalized.aliases) ? normalized.aliases : [])
-        ].filter((value): value is string => !!String(value || '').trim()))
-      );
-      const entry: TradeLockerAccountMapEntry = {
-        env,
-        server,
-        accountId: normalized.accountId,
-        accNum: normalized.accNum ?? null,
-        accountKey,
-        aliases
-      };
-      for (const alias of aliases) {
-        const key = String(alias || '').trim();
-        if (!key) continue;
-        map.set(key, entry);
-      }
-    };
+  useTradeLockerRuntimeSync({
+    tlAccounts, tlSavedConfig, tlSnapshotSourceKey, setTlSnapshotSourceKey, tlNormalizeRefKey, setTlNormalizeRefKey,
+    tlAccountMapRef, normalizeTradeLockerAccountRecord, buildTradeLockerAccountKey, tlShardScheduler, tlTenantRegistry,
+    tlStrategyRuntime, tlMarketBus, setupWatchers, tlStrategyAssignments, setTlStrategyAssignments, setTlShardStates,
+    setTlStrategyMatrixRows, setTlMarketSubscriptions, tlStatusMeta, promoteTradeLockerPrimaryRouting,
+    parseTradeLockerAccountNumber, tlStatus, tlRefreshAccounts
+  });
+  const activeTradeLockerAccountKey = resolveSnapshotSourceKey();
+  const {
+    tlAccountSelectorOpen,
+    setTlAccountSelectorOpen,
+    tlAccountSelectorSearch,
+    setTlAccountSelectorSearch,
+    tlAccountSelectorRefreshState,
+    setTlAccountSelectorRefreshState,
+    tradeLockerAccountSelectorSnapshot,
+    tradeLockerAccountSelectorModel
+  } = useTradeLockerAccountSelectorRuntime({
+    mode,
+    tlStatus,
+    tlStatusMeta,
+    tlAccounts: Array.isArray(tlAccounts) ? tlAccounts : [],
+    tlSavedConfig,
+    tlBalance,
+    tlEquity,
+    tlAccountMetrics: tlAccountMetrics ? (tlAccountMetrics as Record<string, any>) : null,
+    tlRefreshAccounts,
+    tlRefreshAccountMetrics,
+    tlAccountMapRef,
+    activeTradeLockerAccountKey,
+    appendAuditEvent,
+    handleSnapshotSourceChange,
+    resolveTradeLockerAccountEntry,
+    parseTradeLockerAccountKey,
+    parseTradeLockerAccountNumber,
+    areAccountKeysEquivalent,
+    buildTradeLockerAccountKey,
+    normalizeTradeLockerAccountRecord,
+    loadFeatureControllers,
+    selectorSearchStorageKey: TL_ACCOUNT_SELECTOR_SEARCH_KEY,
+    freshMs: TL_ACCOUNT_SELECTOR_FRESH_MS,
+    staleMs: TL_ACCOUNT_SELECTOR_STALE_MS,
+    recentUsageMs: TL_ACCOUNT_SELECTOR_RECENT_USAGE_MS,
+    normalRefreshMs: TL_ACCOUNT_SELECTOR_NORMAL_REFRESH_MS,
+    guardedRefreshMs: TL_ACCOUNT_SELECTOR_GUARDED_REFRESH_MS
+  });
 
-    if (env && server) {
-      for (const acct of accountsList) {
-        addNormalizedEntry(normalizeTradeLockerAccountRecord(acct, { env, server }));
-      }
-      addNormalizedEntry(
-        normalizeTradeLockerAccountRecord(
-          {
-            accountId: tlSavedConfig?.accountId,
-            accNum: tlSavedConfig?.accNum
-          },
-          { env, server }
-        )
-      );
-    }
-    tlAccountMapRef.current = map;
-    if (map.size > 0) {
-      const canonical = Array.from(new Set(Array.from(map.values()).map((entry) => entry.accountKey).filter(Boolean)));
-      const fallback = canonical.length > 0 ? canonical[0] : null;
-      if (fallback) {
-        if (!tlSnapshotSourceKey || !map.has(tlSnapshotSourceKey)) {
-          setTlSnapshotSourceKey(fallback);
-        }
-        if (!tlNormalizeRefKey || !map.has(tlNormalizeRefKey)) {
-          setTlNormalizeRefKey(fallback);
-        }
-      }
-    }
-  }, [tlAccounts, tlSavedConfig?.env, tlSavedConfig?.server, tlSnapshotSourceKey, tlNormalizeRefKey]);
-
-  useEffect(() => {
-    const env = tlSavedConfig?.env ? String(tlSavedConfig.env).trim().toLowerCase() : '';
-    const server = tlSavedConfig?.server ? String(tlSavedConfig.server).trim().toLowerCase() : '';
-    const accountKeys = new Set<string>();
-    if (env && server) {
-      for (const acct of Array.isArray(tlAccounts) ? tlAccounts : []) {
-        const normalized = normalizeTradeLockerAccountRecord(acct, { env, server });
-        const accountKey = normalized?.accountKey || buildTradeLockerAccountKey({
-          env,
-          server,
-          accountId: normalized?.accountId,
-          accNum: normalized?.accNum ?? null
-        });
-        if (!accountKey) continue;
-        accountKeys.add(accountKey);
-        tlShardScheduler.ensureShard(accountKey);
-      }
-      const activeKey = buildTradeLockerAccountKey({
-        env,
-        server,
-        accountId: tlSavedConfig?.accountId,
-        accNum: tlSavedConfig?.accNum ?? null
-      });
-      if (activeKey) accountKeys.add(activeKey);
-    }
-
-    const activeAccountKey = buildTradeLockerAccountKey({
-      env,
-      server,
-      accountId: tlSavedConfig?.accountId,
-      accNum: tlSavedConfig?.accNum ?? null
-    });
-
-    const incomingAssignments: Record<string, string[]> = { ...tlStrategyAssignments };
-    const hasConfiguredAssignments = Object.keys(incomingAssignments).length > 0;
-    if (!hasConfiguredAssignments && activeAccountKey) {
-      incomingAssignments.manual = [activeAccountKey];
-      setTlStrategyAssignments(incomingAssignments);
-    }
-
-    for (const [strategyId, assigned] of Object.entries(incomingAssignments)) {
-      tlStrategyRuntime.assignStrategyAccounts(strategyId, assigned);
-    }
-    tlStrategyRuntime.syncFromWatchers(setupWatchers, { defaultAccountKey: activeAccountKey || null });
-
-    const shards = tlShardScheduler.getSnapshot();
-    for (const shard of shards) {
-      if (!accountKeys.has(shard.accountKey)) continue;
-      if (shard.accountKey === activeAccountKey) {
-        tlTenantRegistry.updateShard(shard.accountKey, {
-          queueDepth: Number(shard.queueDepth || 0),
-          rateBudget: Number(shard.rateBudget || 0),
-          circuitState: (shard.circuitState || 'closed') as TradeLockerAccountShardState['circuitState'],
-          lastError: shard.lastError || tlStatusMeta?.accountProbeLastError || null,
-          lastReconcileAtMs: shard.lastReconcileAtMs ?? null
-        });
-      } else {
-        tlTenantRegistry.updateShard(shard.accountKey, {
-          queueDepth: Number(shard.queueDepth || 0),
-          rateBudget: Number(shard.rateBudget || 0),
-          circuitState: (shard.circuitState || 'closed') as TradeLockerAccountShardState['circuitState'],
-          lastError: shard.lastError || null,
-          lastReconcileAtMs: shard.lastReconcileAtMs ?? null
-        });
-      }
-    }
-
-    setTlShardStates(shards.map((entry) => ({ ...entry })));
-    setTlStrategyMatrixRows(tlStrategyRuntime.listRuntimes());
-    setTlMarketSubscriptions(tlMarketBus.getSubscriptionSnapshot());
-  }, [
-    setupWatchers,
-    tlAccounts,
-    tlMarketBus,
-    tlSavedConfig?.accNum,
-    tlSavedConfig?.accountId,
-    tlSavedConfig?.env,
-    tlSavedConfig?.server,
-    tlShardScheduler,
-    tlStatusMeta?.accountProbeLastError,
-    tlStrategyAssignments,
-    tlStrategyRuntime,
-    tlTenantRegistry
-  ]);
-
-  useEffect(() => {
-    const eventName = GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED;
-    const promotableSources = new Set([
-      'settings_modal_select_direct',
-      'tradelocker_panel_direct',
-      'external_codex'
-    ]);
-    const onAccountChanged = (evt: Event) => {
-      const custom = evt as CustomEvent<any>;
-      const detail = custom?.detail && typeof custom.detail === 'object' ? custom.detail : {};
-      if (detail?.skipPrimarySync === true) return;
-      const source = String(detail?.source || '').trim().toLowerCase();
-      const shouldPromote = detail?.makePrimary === true || promotableSources.has(source);
-      if (!shouldPromote) return;
-      void promoteTradeLockerPrimaryRouting({
-        accountKey: detail?.accountKey ? String(detail.accountKey) : null,
-        accountId: parseTradeLockerAccountNumber(detail?.accountId),
-        accNum: parseTradeLockerAccountNumber(detail?.accNum),
-        source: source || 'unknown',
-        stage: detail?.stage ? String(detail.stage) : 'account_changed_event',
-        resolvedBy: detail?.resolvedBy === 'accountId_fallback' || detail?.resolvedBy === 'reconnect_retry'
-          ? detail.resolvedBy
-          : 'exact',
-        retryRefresh: true
-      });
-    };
-    window.addEventListener(eventName, onAccountChanged as EventListener);
-    return () => {
-      window.removeEventListener(eventName, onAccountChanged as EventListener);
-    };
-  }, [promoteTradeLockerPrimaryRouting]);
-
-  useEffect(() => {
-    if (tlStatus === 'connected') {
-      try {
-        tlRefreshAccounts?.();
-      } catch {
-        // ignore
-      }
-    }
-  }, [tlRefreshAccounts, tlStatus]);
+  useTradeLockerWorkspaceState({
+    flags: enterpriseFeatureFlagsRef.current,
+    activeTradeLockerAccountKey,
+    legacySelectorOpen: tlAccountSelectorOpen,
+    setLegacySelectorOpen: setTlAccountSelectorOpen,
+    legacySelectorSearch: tlAccountSelectorSearch,
+    setLegacySelectorSearch: setTlAccountSelectorSearch,
+    legacyRefreshState: tlAccountSelectorRefreshState,
+    setLegacyRefreshState: setTlAccountSelectorRefreshState,
+    onParityMismatch: recordMigrationParityMismatch
+  });
 
   useEffect(() => {
     const accountKey = getTradeLockerAccountKey();
@@ -37446,565 +37849,102 @@ const App: React.FC = () => {
     }
   }, [getTradeLockerAccountKey, tlQuotesBySymbol, upsertTradeLockerAccountQuote]);
 
-  const buildTelegramDigest = useCallback(async (windowDays: number, label: string) => {
-    const sinceMs = Date.now() - windowDays * 24 * 60 * 60 * 1000;
-    const history = Array.isArray(signalHistory) ? signalHistory : [];
-    const recent = history.filter((entry) => {
-      const ts = entry.resolvedAtMs ?? entry.executedAtMs ?? 0;
-      return ts >= sinceMs;
-    });
-    const wins = recent.filter((entry) => entry.outcome === 'WIN').length;
-    const losses = recent.filter((entry) => entry.outcome === 'LOSS').length;
-    const resolved = wins + losses;
-    const winRate = resolved > 0 ? Math.round((wins / resolved) * 100) : null;
-
-    const symbolStats = new Map<string, { total: number; wins: number }>();
-    for (const entry of recent) {
-      const symbol = String(entry.symbol || '').trim();
-      if (!symbol) continue;
-      const stat = symbolStats.get(symbol) || { total: 0, wins: 0 };
-      stat.total += 1;
-      if (entry.outcome === 'WIN') stat.wins += 1;
-      symbolStats.set(symbol, stat);
-    }
-    const topSymbols = Array.from(symbolStats.entries())
-      .sort((a, b) => b[1].total - a[1].total)
-      .slice(0, 3)
-      .map(([symbol, stat]) => {
-        const rate = stat.total > 0 ? Math.round((stat.wins / stat.total) * 100) : null;
-        return `${symbol} ${stat.total}${rate != null ? ` (${rate}% win)` : ''}`;
-      });
-
-    const fmtMoney = (value: any) => {
-      const num = Number(value);
-      return Number.isFinite(num) ? num.toFixed(2) : '--';
-    };
-
-    const lines: string[] = [];
-    lines.push(`${label} Digest`);
-    if (tlStatus === 'connected') {
-      lines.push(`TradeLocker: Equity ${fmtMoney(tlEquity)} | Balance ${fmtMoney(tlBalance)} | Pos ${tlPositions.length} | Ord ${tlOrders.length}`);
-    } else {
-      lines.push(`TradeLocker: ${tlStatus || 'offline'}`);
-    }
-
-    const mt5AccountRes = await fetchMt5('/account');
-    if (mt5AccountRes.ok && mt5AccountRes.data?.account) {
-      const account = mt5AccountRes.data.account;
-      lines.push(`MT5: Equity ${fmtMoney(account?.equity)} | Balance ${fmtMoney(account?.balance)}`);
-    } else {
-      lines.push('MT5: offline');
-    }
-
-    lines.push(
-      `Signals: ${recent.length} | Wins ${wins} | Losses ${losses}${winRate != null ? ` | Win ${winRate}%` : ''}`
-    );
-    if (topSymbols.length > 0) lines.push(`Top symbols: ${topSymbols.join(', ')}`);
-
-    const statusSymbol = symbolScopeSymbol || activeBrokerSymbol || signalPrimarySymbol;
-    if (statusSymbol) {
-      const snapshot = await fetchTelegramNewsSnapshot(statusSymbol);
-      if (snapshot?.items?.length) {
-        const top = snapshot.items[0];
-        const toneLabel = formatTelegramNewsTone(snapshot.tone, snapshot.toneScore);
-        const impactLabel = snapshot.impactLevel ? snapshot.impactLevel.toUpperCase() : '';
-        const trumpFlag = snapshot.trumpNews ? ' Trump News' : '';
-        lines.push(`News: ${top.title}${impactLabel ? ` (${impactLabel}${toneLabel ? `/${toneLabel}` : ''})` : ''}${trumpFlag}`);
-      }
-    }
-
-    return lines.join('\n');
-  }, [
+  useTelegramAutomationRuntime({
     activeBrokerSymbol,
-    fetchMt5,
-    fetchTelegramNewsSnapshot,
-    formatTelegramNewsTone,
-    signalHistory,
-    signalPrimarySymbol,
-    symbolScopeSymbol,
-    tlBalance,
-    tlEquity,
-    tlOrders,
-    tlPositions,
-    tlStatus
-  ]);
-
-  useEffect(() => {
-    if (!telegramAlertsActive || !signalTelegramAlertTpSl) return;
-    const sentMap = signalTelegramAlertSentRef.current;
-    for (const entry of signalEntries) {
-      const status = String(entry.status || '').toUpperCase();
-      if (status !== 'WIN' && status !== 'LOSS') continue;
-      const statusKey = `signal:${status}`;
-      const statusSet = sentMap.get(entry.id) || new Set();
-      if (statusSet.has(statusKey)) continue;
-      statusSet.add(statusKey);
-      sentMap.set(entry.id, statusSet);
-      const tf = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
-      const prob = Number.isFinite(Number(entry.probability)) ? Math.round(Number(entry.probability)) : null;
-      const reason = entry.reason ? String(entry.reason).slice(0, 160) : '';
-      const lines = [
-        `${entry.action} ${entry.symbol} ${tf}`.trim(),
-        `Entry ${entry.entryPrice} SL ${entry.stopLoss} TP ${entry.takeProfit}`,
-        prob != null ? `Prob ${prob}%` : '',
-        reason ? `Reason: ${reason}` : ''
-      ].filter(Boolean);
-      void sendTelegramAlert(`Signal ${status}`, lines.join('\n'));
-    }
-  }, [formatTimeframeLabel, sendTelegramAlert, signalEntries, signalTelegramAlertTpSl, telegramAlertsActive]);
-
-  useEffect(() => {
-    if (!telegramAlertsActive || !signalTelegramAlertAgentConfidence) return;
-    const seen = telegramConfidenceSeenRef.current;
-    const lastByAgent = telegramConfidenceRef.current;
-    for (const entry of signalEntries) {
-      if (!entry?.id || seen.has(entry.id)) continue;
-      seen.add(entry.id);
-      const probRaw = Number(entry.probability);
-      if (!Number.isFinite(probRaw)) continue;
-      const agentKey = entry.agentId || entry.agentName;
-      if (!agentKey) continue;
-      const prob = Math.round(probRaw);
-      const prev = lastByAgent.get(agentKey);
-      if (prev != null && prev - prob >= signalTelegramAlertConfidenceDrop) {
-        const tf = entry.timeframe ? formatTimeframeLabel(entry.timeframe) : '';
-        const label = entry.agentName || entry.agentId || 'Agent';
-        const msg = `${label}: ${entry.symbol} ${tf} ${prob}% (was ${prev}%)`.trim();
-        void sendTelegramAlert('Agent confidence drop', msg);
-      }
-      lastByAgent.set(agentKey, prob);
-    }
-  }, [
-    formatTimeframeLabel,
-    sendTelegramAlert,
-    signalEntries,
-    signalTelegramAlertAgentConfidence,
-    signalTelegramAlertConfidenceDrop,
-    telegramAlertsActive
-  ]);
-
-  useEffect(() => {
-    if (tlStatus !== 'connected') return;
-    const snapshot = telegramTlPositionSnapshotRef.current;
-    const positions = Array.isArray(tlPositions) ? tlPositions : [];
-    const nextById: Record<string, any> = {};
-    for (const pos of positions) {
-      const id = pos?.id != null ? String(pos.id).trim() : '';
-      if (!id) continue;
-      const side = String(pos?.type || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-      const symbol = String(pos?.symbol || '').trim();
-      const size = Number(pos?.size);
-      const entry = Number(pos?.entryPrice);
-      const pnl = Number(pos?.pnl);
-      nextById[id] = { id, side, symbol, size, entry, pnl };
-    }
-
-    if (!snapshot.initialized) {
-      snapshot.byId = nextById;
-      snapshot.initialized = true;
-      return;
-    }
-
-    const shouldSend = telegramAlertsActive && signalTelegramAlertTrades;
-    if (shouldSend) {
-      for (const id of Object.keys(nextById)) {
-        if (snapshot.byId[id]) continue;
-        const pos = nextById[id];
-        const sizeLabel = Number.isFinite(pos.size) ? pos.size.toFixed(2) : '--';
-        const entryLabel = Number.isFinite(pos.entry) ? pos.entry.toFixed(2) : '--';
-        const msg = `${pos.side} ${pos.symbol} ${sizeLabel} @ ${entryLabel}`.trim();
-        void sendTelegramAlert('TradeLocker Open', msg);
-      }
-      for (const id of Object.keys(snapshot.byId)) {
-        if (nextById[id]) continue;
-        const prev = snapshot.byId[id];
-        const sizeLabel = Number.isFinite(prev?.size) ? prev.size.toFixed(2) : '--';
-        const pnlLabel = Number.isFinite(prev?.pnl) ? prev.pnl.toFixed(2) : '--';
-        const msg = `${prev?.side || ''} ${prev?.symbol || ''} ${sizeLabel} pnl ${pnlLabel}`.trim();
-        void sendTelegramAlert('TradeLocker Closed', msg);
-      }
-    }
-
-    snapshot.byId = nextById;
-  }, [sendTelegramAlert, signalTelegramAlertTrades, telegramAlertsActive, tlPositions, tlStatus]);
-
-  useEffect(() => {
-    if (!telegramAlertsActive || !signalTelegramAlertTrades) return;
-    let mounted = true;
-    let stop: (() => void) | null = null;
-    let cancelled = false;
-    telegramMt5PositionSnapshotRef.current = { initialized: false, byId: {} };
-
-    const resolveMt5PositionId = (pos: any) => {
-      const raw =
-        pos?.ticket ??
-        pos?.position ??
-        pos?.id ??
-        pos?.order ??
-        null;
-      if (raw == null) return '';
-      return String(raw).trim();
-    };
-
-    const poll = async () => {
-      if (!mounted) return;
-      if (telegramMt5AlertInFlightRef.current) return;
-      telegramMt5AlertInFlightRef.current = true;
-      try {
-        const res = await fetchMt5('/positions');
-        if (!mounted) return;
-        if (!res?.ok || !Array.isArray(res.data?.positions)) return;
-        const positions = res.data.positions;
-        const nextById: Record<string, any> = {};
-        for (const pos of positions) {
-          const id = resolveMt5PositionId(pos);
-          if (!id) continue;
-          const side = Number(pos?.type) === 0 ? 'BUY' : 'SELL';
-          const symbol = String(pos?.symbol || '').trim();
-          const size = Number(pos?.volume ?? pos?.volume_current ?? pos?.volume_initial);
-          const entry = Number(pos?.price_open ?? pos?.price);
-          const pnl = Number(pos?.profit);
-          nextById[id] = { id, side, symbol, size, entry, pnl };
-        }
-
-        const snapshot = telegramMt5PositionSnapshotRef.current;
-        if (!snapshot.initialized) {
-          snapshot.byId = nextById;
-          snapshot.initialized = true;
-          return;
-        }
-
-        for (const id of Object.keys(nextById)) {
-          if (snapshot.byId[id]) continue;
-          const pos = nextById[id];
-          const sizeLabel = Number.isFinite(pos.size) ? pos.size.toFixed(2) : '--';
-          const entryLabel = Number.isFinite(pos.entry) ? pos.entry.toFixed(2) : '--';
-          const msg = `${pos.side} ${pos.symbol} ${sizeLabel} @ ${entryLabel}`.trim();
-          void sendTelegramAlert('MT5 Open', msg);
-        }
-        for (const id of Object.keys(snapshot.byId)) {
-          if (nextById[id]) continue;
-          const prev = snapshot.byId[id];
-          const sizeLabel = Number.isFinite(prev?.size) ? prev.size.toFixed(2) : '--';
-          const pnlLabel = Number.isFinite(prev?.pnl) ? prev.pnl.toFixed(2) : '--';
-          const msg = `${prev?.side || ''} ${prev?.symbol || ''} ${sizeLabel} pnl ${pnlLabel}`.trim();
-          void sendTelegramAlert('MT5 Closed', msg);
-        }
-
-        snapshot.byId = nextById;
-      } finally {
-        telegramMt5AlertInFlightRef.current = false;
-      }
-    };
-
-    void poll();
-    void loadFeatureControllers().then((mod) => {
-      if (cancelled) return;
-      stop = mod.startIntervalControllerSafe({
-        intervalMs: 15_000,
-        onTick: () => poll()
-      });
-    }).catch(() => {});
-    return () => {
-      mounted = false;
-      cancelled = true;
-      stop?.();
-    };
-  }, [fetchMt5, sendTelegramAlert, signalTelegramAlertTrades, telegramAlertsActive]);
-
-  useEffect(() => {
-    if (!telegramAlertsActive || !signalTelegramAlertDrawdown) return;
-    if (tlStatus !== 'connected') return;
-    const env = tlSavedConfig?.env || null;
-    const server = tlSavedConfig?.server || null;
-    const accountId = tlSavedConfig?.accountId ?? null;
-    const accNum = tlSavedConfig?.accNum ?? null;
-    if (!env || !server || accountId == null || accNum == null) return;
-    const equityNow =
-      tlAccountMetrics && Number.isFinite(Number(tlAccountMetrics.equity)) ? Number(tlAccountMetrics.equity) : tlEquity;
-    if (!Number.isFinite(equityNow) || equityNow <= 0) return;
-
-    const accountKey = `${String(env)}:${String(server)}:${String(accountId)}:${String(accNum)}`;
-    const dateKey = getLocalDateKey();
-    const tracker = telegramDrawdownAlertRef.current;
-    if (tracker.dateKey !== dateKey) {
-      tracker.dateKey = dateKey;
-      tracker.sent = false;
-    }
-    if (tracker.sent) return;
-    const storageKey = getDailyBaselineStorageKey(accountKey, dateKey);
-    const baseline = readLocalJson(storageKey);
-    const equityStart = baseline && Number.isFinite(Number(baseline.equityStart)) ? Number(baseline.equityStart) : null;
-    if (equityStart == null) {
-      writeLocalJson(storageKey, { equityStart: equityNow, createdAtMs: Date.now() });
-      return;
-    }
-
-    const lossAmount = Math.max(0, equityStart - equityNow);
-    if (lossAmount <= 0) return;
-    const maxDailyLossRaw = Number(autoPilotConfigRef.current?.maxDailyLoss);
-    const hasLimit = Number.isFinite(maxDailyLossRaw) && maxDailyLossRaw > 0;
-    const drawdownPct = hasLimit
-      ? (lossAmount / maxDailyLossRaw) * 100
-      : (lossAmount / equityStart) * 100;
-    if (!Number.isFinite(drawdownPct) || drawdownPct < signalTelegramAlertDrawdownPct) return;
-
-    const fmtMoney = (value: number) => value.toFixed(2);
-    const limitLabel = hasLimit ? ` of ${fmtMoney(maxDailyLossRaw)}` : '';
-    const msg = `Daily drawdown ${fmtMoney(lossAmount)} (${drawdownPct.toFixed(1)}%${limitLabel}).`;
-    tracker.sent = true;
-    void sendTelegramAlert('Drawdown Alert', msg);
-  }, [
-    sendTelegramAlert,
-    signalTelegramAlertDrawdown,
-    signalTelegramAlertDrawdownPct,
-    telegramAlertsActive,
-    tlAccountMetrics,
-    tlEquity,
-    tlSavedConfig?.accNum,
-    tlSavedConfig?.accountId,
-    tlSavedConfig?.env,
-    tlSavedConfig?.server,
-    tlStatus
-  ]);
-
-  useEffect(() => {
-    if (!signalTelegramEnabled || !signalTelegramBotToken || !signalTelegramChatId) return;
-    if (!signalTelegramDigestDailyEnabled && !signalTelegramDigestWeeklyEnabled) return;
-    let mounted = true;
-    let stop: (() => void) | null = null;
-    let cancelled = false;
-
-    const check = async () => {
-      if (!mounted) return;
-      const now = new Date();
-      const hour = now.getHours();
-      const dateKey = getLocalDateKey();
-      if (signalTelegramDigestDailyEnabled && hour >= signalTelegramDigestHourLocal) {
-        const dailyKey = `${dateKey}:${signalTelegramDigestHourLocal}`;
-        if (telegramDigestSentRef.current.dailyKey !== dailyKey) {
-          const digest = await buildTelegramDigest(1, 'Daily');
-          await sendTelegramText(digest);
-          telegramDigestSentRef.current.dailyKey = dailyKey;
-        }
-      }
-      if (
-        signalTelegramDigestWeeklyEnabled &&
-        now.getDay() === signalTelegramDigestWeeklyDay &&
-        hour >= signalTelegramDigestHourLocal
-      ) {
-        const weeklyKey = `${dateKey}:${signalTelegramDigestWeeklyDay}`;
-        if (telegramDigestSentRef.current.weeklyKey !== weeklyKey) {
-          const digest = await buildTelegramDigest(7, 'Weekly');
-          await sendTelegramText(digest);
-          telegramDigestSentRef.current.weeklyKey = weeklyKey;
-        }
-      }
-    };
-
-    void check();
-    void loadFeatureControllers().then((mod) => {
-      if (cancelled) return;
-      stop = mod.startIntervalControllerSafe({
-        intervalMs: 60_000,
-        onTick: () => check()
-      });
-    }).catch(() => {});
-    return () => {
-      mounted = false;
-      cancelled = true;
-      stop?.();
-    };
-  }, [
-    buildTelegramDigest,
-    sendTelegramText,
-    signalTelegramChatId,
-    signalTelegramDigestDailyEnabled,
-    signalTelegramDigestHourLocal,
-    signalTelegramDigestWeeklyDay,
-    signalTelegramDigestWeeklyEnabled,
-    signalTelegramEnabled,
-    signalTelegramBotToken
-  ]);
-
-  const processTelegramUpdate = useCallback(async (update: any) => {
-      const allowed = new Set(parseTelegramChatIds(signalTelegramChatId));
-      const callbackRuntime = await loadTelegramCallbackRuntimeModule();
-      const callbackRes = await callbackRuntime.runTelegramCallbackRuntime({
-        update,
-        allowedChatIds: allowed,
-        signalTelegramAllowManage,
-        signalTelegramCommandMode,
-        signalTelegramConfirmationsEnabled,
-        telegramPendingActionsRef,
-        answerTelegramCallback,
-        appendAuditEvent,
-        resolveTelegramPendingAction,
-        executeTelegramPendingAction,
-        sendTelegramText,
-        resolveTelegramSignalEntry,
-        queueTelegramConfirmation,
-        runTelegramSignalAction
-      });
-      if (callbackRes.handled) return;
-      const messageRuntime = await loadTelegramMessageRuntimeModule();
-      await messageRuntime.runTelegramMessageRuntime({
-        update,
-        allowedChatIds: allowed,
-        signalTelegramCommandPassphrase,
-        signalTelegramAllowManage,
-        signalTelegramCommandMode,
-        signalTelegramAllowStatus,
-        signalTelegramAllowChart,
-        signalTelegramConfirmationsEnabled,
-        signalIntentTelegramOpsEnabled: signalIntentFeatureFlags.signalIntentV1TelegramOps,
-        signalStatusSet: SIGNAL_TELEGRAM_STATUS_SET as Set<string>,
-        signalEntriesRef,
-        signalIntentsRef,
-        signalIntentRunsRef,
-        tlStatus,
-        tlPositionsRef,
-        tlOrdersRef,
-        tlEquity,
-        tlBalance,
-        symbolScopeSymbol,
-        activeBrokerSymbol,
-        signalPrimarySymbol,
-        brokerLinkConfigRef,
-        setAutoPilotConfigRef,
-        autoPilotConfigRef,
-        setupWatchersRef,
-        telegramWatcherResumeRef,
-        sendTelegramText,
-        resolveTelegramSignalEntry,
-        resolveTelegramSignalIntent: resolveSignalIntentByToken,
-        pauseSignalIntent,
-        resumeSignalIntent,
-        formatTelegramSignalLine,
-        formatTimeframeLabel,
-        buildTelegramSignalInlineActions,
-        buildTelegramDigest,
-        queueTelegramConfirmation,
-        runTelegramSignalAction,
-        runTelegramManageAction,
-        updateSetupWatcher,
-        updateSymbolScope,
-        parseTelegramSymbol,
-        parseTelegramTimeframe,
-        parseTelegramBroker,
-        parseTelegramAccountHint,
-        parseTelegramQtySpec,
-        fetchMt5,
-        fetchTelegramNewsSnapshot,
-        formatTelegramNewsTone,
-        captureChartChatSnapshot,
-        sendPlainTextToOpenAI,
-        sendTelegramPhoto,
-        resolveTradeLockerSymbolBestEffort
-      });
-  }, [
-    activeBrokerSymbol,
-    answerTelegramCallback,
-    addNotification,
     appendAuditEvent,
-    brokerLinkConfig,
-    brokerWatchSymbols,
-    buildTelegramDigest,
+    autoPilotConfigRef,
     buildTelegramSignalInlineActions,
-    cancelSignalOrder,
     captureChartChatSnapshot,
     executeTelegramPendingAction,
-    executeSignalTrade,
-    executeBrokerActionViaApi,
+    fetchMt5,
     fetchTelegramNewsSnapshot,
     formatTelegramNewsTone,
     formatTelegramSignalLine,
     formatTimeframeLabel,
+    getDailyBaselineStorageKey,
+    getLocalDateKey,
+    loadFeatureControllers,
+    loadTelegramCallbackRuntimeModule,
+    loadTelegramCommandRuntimeModule,
+    loadTelegramMessageRuntimeModule,
     parseTelegramAccountHint,
     parseTelegramBroker,
     parseTelegramChatIds,
     parseTelegramQtySpec,
     parseTelegramSymbol,
     parseTelegramTimeframe,
-    patternSymbols,
     pauseSignalIntent,
     queueTelegramConfirmation,
-    rejectSignalEntry,
+    readLocalJson,
     resolveSignalIntentByToken,
     resolveTelegramPendingAction,
-    resolveTradeLockerSymbolBestEffort,
     resolveTelegramSignalEntry,
+    resolveTradeLockerSymbolBestEffort,
     resumeSignalIntent,
     runTelegramManageAction,
     runTelegramSignalAction,
+    sendPlainTextToOpenAI,
+    sendTelegramAlert,
     sendTelegramPhoto,
     sendTelegramText,
+    signalEntries,
+    signalEntriesRef,
+    signalHistory,
+    signalIntentFeatureFlags,
+    signalIntentRunsRef,
+    signalIntentsRef,
     signalPrimarySymbol,
+    signalStatusSet: SIGNAL_TELEGRAM_STATUS_SET as Set<string>,
+    signalTelegramAlertAgentConfidence,
+    signalTelegramAlertConfidenceDrop,
+    signalTelegramAlertDrawdown,
+    signalTelegramAlertDrawdownPct,
+    signalTelegramAlertSentRef,
+    signalTelegramAlertTpSl,
+    signalTelegramAlertTrades,
     signalTelegramAllowChart,
     signalTelegramAllowManage,
     signalTelegramAllowStatus,
-    signalIntentFeatureFlags.signalIntentV1TelegramOps,
     signalTelegramBotToken,
     signalTelegramChatId,
     signalTelegramCommandMode,
     signalTelegramCommandPassphrase,
     signalTelegramCommandsEnabled,
     signalTelegramConfirmationsEnabled,
+    signalTelegramDigestDailyEnabled,
+    signalTelegramDigestHourLocal,
+    signalTelegramDigestWeeklyDay,
+    signalTelegramDigestWeeklyEnabled,
+    signalTelegramEnabled,
     symbolScopeSymbol,
+    telegramCommandInFlightRef,
+    telegramConfidenceRef,
+    telegramConfidenceSeenRef,
+    telegramDigestSentRef,
+    telegramDrawdownAlertRef,
+    telegramMt5AlertInFlightRef,
+    telegramMt5PositionSnapshotRef,
+    telegramPendingActionsRef,
+    telegramPollingActiveRef,
+    telegramTlPositionSnapshotRef,
+    telegramUpdateIdRef,
+    telegramWatcherResumeRef,
+    tlAccountMetrics,
     tlBalance,
     tlEquity,
+    tlOrders,
+    tlOrdersRef,
+    tlPositions,
+    tlPositionsRef,
+    tlSavedConfig,
     tlStatus,
-    updateSymbolScope
-  ]);
-
-  const handleTelegramUpdate = useCallback(async (update: any) => {
-    const mod = await loadTelegramCommandRuntimeModule();
-    await mod.runTelegramUpdateOrchestratorRuntime({
-      update,
-      signalTelegramCommandsEnabled,
-      signalTelegramBotToken,
-      signalTelegramChatId,
-      telegramUpdateIdRef,
-      telegramCommandInFlightRef,
-      processUpdate: processTelegramUpdate
-    });
-  }, [
-    processTelegramUpdate,
-    signalTelegramBotToken,
-    signalTelegramChatId,
-    signalTelegramCommandsEnabled
-  ]);
-
-  useEffect(() => {
-    const api = window.glass?.telegram;
-    if (!api?.startPolling || !api?.stopPolling) return;
-    const ready = signalTelegramCommandsEnabled && signalTelegramBotToken && signalTelegramChatId;
-    if (ready) {
-      telegramPollingActiveRef.current = true;
-      void api.startPolling({
-        botToken: signalTelegramBotToken,
-        chatId: parseTelegramChatIds(signalTelegramChatId),
-        drain: true
-      });
-      return;
-    }
-    if (telegramPollingActiveRef.current) {
-      telegramPollingActiveRef.current = false;
-      void api.stopPolling();
-    }
-  }, [parseTelegramChatIds, signalTelegramBotToken, signalTelegramChatId, signalTelegramCommandsEnabled]);
-
-  useEffect(() => {
-    const api = window.glass?.telegram;
-    if (!api?.onUpdate) return;
-    const unsub = api.onUpdate((payload: any) => {
-      void handleTelegramUpdate(payload);
-    });
-    return () => {
-      if (unsub) unsub();
-    };
-  }, [handleTelegramUpdate]);
-
+    updateSetupWatcher,
+    updateSymbolScope,
+    brokerLinkConfigRef,
+    setAutoPilotConfigRef,
+    setupWatchersRef,
+    writeLocalJson
+  });
   const mt5BridgeAvailable = typeof window !== 'undefined' && !!(window as any)?.glass?.mt5?.startBridge;
   const mt5TelemetryEnabled =
     mt5BridgeAvailable &&
@@ -38014,8 +37954,6 @@ const App: React.FC = () => {
       !!autoPilotConfig?.enabled ||
       signalExecutionTarget !== 'tradelocker'
     );
-  const mt5TelemetryInFlightRef = React.useRef(false);
-  const mt5TelemetryBackoffRef = React.useRef(0);
   const {
     startupPhase,
     startupBridgeState,
@@ -38038,6 +37976,15 @@ const App: React.FC = () => {
   });
   startupBridgeGateRef.current.ready = startupBridgeReady;
   startupBridgeGateRef.current.error = startupBridgeError ? String(startupBridgeError) : null;
+
+  useEnterpriseDiagnosticsPolling({
+    enterpriseFeatureFlagsRef,
+    ciValidationSnapshotRef,
+    securityAuditSnapshotRef,
+    renderPerfSnapshotRef,
+    bridgeLifecycleSnapshotRef,
+    loadFeatureControllers
+  });
 
   useEffect(() => {
     if (!runtimeOpsFeatureFlags.runtimeOpsControlSafetyV1) return;
@@ -38119,82 +38066,19 @@ const App: React.FC = () => {
     settingsOpenRef.current = isSettingsOpen;
   }, [isSettingsOpen, refreshOpenAiKeyStatus]);
 
-  useEffect(() => {
-    if (!mt5TelemetryEnabled) {
-      setMt5PositionsCount(null);
-      setMt5OrdersCount(null);
-      setMt5PositionsUpdatedAtMs(null);
-      setMt5OrdersUpdatedAtMs(null);
-      setMt5SnapshotError(null);
-      return;
-    }
-    let canceled = false;
-    let stop: (() => void) | null = null;
-
-    const poll = async () => {
-      if (canceled) return;
-      const now = Date.now();
-      const nextAllowed = mt5TelemetryBackoffRef.current || 0;
-      if (nextAllowed && now < nextAllowed) {
-        return Math.max(2000, nextAllowed - now);
-      }
-      if (mt5TelemetryInFlightRef.current) {
-        return 2000;
-      }
-      mt5TelemetryInFlightRef.current = true;
-      try {
-        const [positionsRes, ordersRes, spec] = await Promise.all([
-          fetchMt5('/positions'),
-          fetchMt5('/orders'),
-          fetchMt5AccountSpec()
-        ]);
-        if (canceled) return;
-        let hadSuccess = false;
-        if (positionsRes?.ok && Array.isArray(positionsRes.data?.positions)) {
-          setMt5PositionsCount(positionsRes.data.positions.length);
-          setMt5PositionsUpdatedAtMs(Date.now());
-          hadSuccess = true;
-        }
-        if (ordersRes?.ok && Array.isArray(ordersRes.data?.orders)) {
-          setMt5OrdersCount(ordersRes.data.orders.length);
-          setMt5OrdersUpdatedAtMs(Date.now());
-          hadSuccess = true;
-        }
-        if (spec) {
-          setMt5AccountSpec(spec);
-          hadSuccess = true;
-        }
-        if (hadSuccess) {
-          setMt5SnapshotError(null);
-        } else {
-          const err = positionsRes?.error || ordersRes?.error || 'MT5 telemetry unavailable.';
-          setMt5SnapshotError(String(err));
-          mt5TelemetryBackoffRef.current = Date.now() + 30_000;
-        }
-      } catch (err: any) {
-        if (canceled) return;
-        setMt5SnapshotError(err?.message ? String(err.message) : 'MT5 telemetry unavailable.');
-        mt5TelemetryBackoffRef.current = Date.now() + 30_000;
-      } finally {
-        mt5TelemetryInFlightRef.current = false;
-      }
-      return 15_000;
-    };
-    void loadMt5TelemetryControllerModule().then((mod) => {
-      if (canceled) return;
-      const controller = mod.createMt5TelemetryController({
-        defaultDelayMs: 15_000,
-        schedulerIntervalMs: 1_000,
-        tick: poll
-      });
-      controller.start({ scheduler: runtimeScheduler });
-      stop = () => controller.stop();
-    }).catch(() => {});
-    return () => {
-      canceled = true;
-      stop?.();
-    };
-  }, [mt5TelemetryEnabled]);
+  useMt5TelemetryPolling({
+    mt5TelemetryEnabled,
+    fetchMt5,
+    fetchMt5AccountSpec,
+    loadMt5TelemetryControllerModule,
+    runtimeScheduler,
+    setMt5PositionsCount,
+    setMt5OrdersCount,
+    setMt5PositionsUpdatedAtMs,
+    setMt5OrdersUpdatedAtMs,
+    setMt5SnapshotError,
+    setMt5AccountSpec
+  });
 
   const ensureTradeLockerConnected = useCallback(async (reason?: string) => {
     if (tlStatus === 'connected' || tlStatus === 'connecting') {
@@ -38535,302 +38419,87 @@ const App: React.FC = () => {
     });
   }, [activeBrokerSymbol, appendAuditEvent, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs]);
 
-  const buildHealthSnapshot = useCallback((): HealthSnapshot => {
-    const now = Date.now();
-    const watchers = setupWatchersRef.current || [];
-    const enabledCount = watchers.filter((w) => w && w.enabled !== false).length;
-    const signalsCount = setupSignalsRef.current?.length ?? 0;
-    const meta = nativeChartRef.current?.getMeta ? nativeChartRef.current.getMeta() : null;
-    const autoState = autoPilotStateRef.current;
-    const startup = startupReadinessStatus;
-    const workerFallbackStats = getWorkerFallbackStats();
-    const refreshSlaSnapshot = refreshSlaMonitor.getSnapshot(now);
-    const refreshSlaByChannel = refreshSlaMonitor.getChannelSnapshots(now);
-    const brokerCircuitSnapshot = brokerCircuitBreaker.getSnapshot(now);
-    const brokerCircuitBySource = brokerCircuitBreaker.getSourceSnapshot(now).map((entry) => ({
-      source: entry.source,
-      state: entry.state,
-      failureCount: entry.failureCount,
-      openedAt: entry.openedAtMs ?? null,
-      retryAfterMs: entry.retryAfterMs ?? 0,
-      lastError: entry.lastError ?? null
-    }));
-    const brokerCircuitOpenCount = brokerCircuitSnapshot.entries.filter((entry) => entry.open).length;
-    const bridgeDomainReadiness = getDomainReadiness();
-    const persistenceHealth = getPersistenceHealthSnapshot();
-    const executionAuditSnapshot = executionAuditService.getSnapshot();
-    const livePolicySnapshot = livePolicyService.getSnapshot();
-    const panelConnectivity = normalizePanelConnectivitySnapshot(panelConnectivityEngine.getSnapshot(now), now);
-    const crossPanelContextSnapshot = crossPanelContextEngine.getContext();
-    const outcomeCursorSnapshot = outcomeConsistencyEngine.getCursor();
-    const outcomeConsistencySnapshot = outcomeConsistencyEngine.getConsistencyState(now);
-    const panelFreshnessSnapshot = outcomeConsistencyEngine.getPanelFreshness(now);
-    const chartFrameCache = chartEngine.getFrameCacheTelemetry();
-    const schedulerStats = runtimeScheduler.getStats();
-    const signalSchedulerTask = (schedulerStats.tasks || []).find((entry) => entry.id === SIGNAL_AUTO_REFRESH_TASK_ID) || null;
-    const shadowSchedulerTask = (schedulerStats.tasks || []).find((entry) => entry.id === SHADOW_CONTROLLER_TASK_ID) || null;
-    const scorecardUpdatedAtMs = (agentScorecards || []).reduce((acc, item) => {
-      const ts = Number(item?.updatedAtMs || 0);
-      if (Number.isFinite(ts) && ts > acc) return ts;
-      return acc;
-    }, 0);
-    const rankFreshness = buildRankFreshnessState({
-      updatedAtMs: scorecardUpdatedAtMs || null,
-      persistenceOk: persistenceHealth.overallOk,
-      rankDomainOk: persistenceHealth.domains?.rank?.ok ?? null,
-      driftReports: agentDriftReportsRef.current || [],
-      staleAfterMs: 10 * 60_000
-    });
-    const channelLastSuccess = refreshSlaByChannel
-      .map((entry: any) => Number(entry?.lastSuccessAt || 0))
-      .filter((value: number) => Number.isFinite(value) && value > 0);
-    const lastSuccessfulScanAtMs = Math.max(
-      Number(lastSuccessfulSignalScanAtRef.current || 0),
-      channelLastSuccess.length > 0 ? Math.max(...channelLastSuccess) : 0
-    ) || null;
-    const workerFallbackByDomain = workerFallbackStats.reduce((acc, entry) => {
-      const domain = String(entry?.domain || 'unknown').trim() || 'unknown';
-      acc[domain] = {
-        total: Number(entry?.total || 0),
-        fallbackUsed: Number(entry?.fallbackUsed || 0),
-        byReason: entry?.fallbackReasons || {}
-      };
-      return acc;
-    }, {} as Record<string, { total: number; fallbackUsed: number; byReason: Record<string, number> }>);
-    const tlShardSchedulerTelemetry = tlShardScheduler.getTelemetry();
-    return {
-      updatedAtMs: now,
-      academyMergeAddedCount: Number(academyMergeStatsRef.current.added || 0),
-      academyMergeReplacedCount: Number(academyMergeStatsRef.current.replaced || 0),
-      academyMergeRetainedCount: Number(academyMergeStatsRef.current.retained || 0),
-      academyRichCaseCount: Number(academyDataQualityStatsRef.current.richCaseCount || 0),
-      academySparseCaseCount: Number(academyDataQualityStatsRef.current.sparseCaseCount || 0),
-      academyLessonValidCount: Number(academyDataQualityStatsRef.current.lessonValidCount || 0),
-      academyLessonDroppedCount: Number(academyDataQualityStatsRef.current.lessonDroppedCount || 0),
-      academyRepairUpserts: Number(academyDataQualityStatsRef.current.repairUpserts || 0),
-      academyLearningGraphNodeCount: Number(academyLearningGraphTelemetryRef.current.nodeCount || 0),
-      academyLearningGraphEdgeCount: Number(academyLearningGraphTelemetryRef.current.edgeCount || 0),
-      academyLearningGraphBuildMs: Number(academyLearningGraphTelemetryRef.current.buildMs || 0),
-      academyLearningGraphConflictCount: Number(academyLearningGraphTelemetryRef.current.conflictCount || 0),
-      academyLearningGraphPathRuns: Number(academyLearningGraphTelemetryRef.current.pathRuns || 0),
-      academyGraphCaseActions: Number(academyLearningGraphTelemetryRef.current.graphCaseActions || 0),
-      academyGraphLifecycleActions: Number(academyLearningGraphTelemetryRef.current.graphLifecycleActions || 0),
-      academyGraphExportCount: Number(academyLearningGraphTelemetryRef.current.graphExportCount || 0),
-      runtimeOpsStreamDrops: Number(runtimeOpsControllerState?.droppedCount || 0),
-      runtimeOpsExternalCommandSubscribeCount: Number(runtimeOpsExternalStatsRef.current.externalCommandSubscribeCount || 0),
-      runtimeOpsExternalCommandUnsubscribeCount: Number(runtimeOpsExternalStatsRef.current.externalCommandUnsubscribeCount || 0),
-      runtimeOpsExternalCommandReplyFailures: Number(runtimeOpsExternalStatsRef.current.externalCommandReplyFailures || 0),
-      runtimeOpsExternalCommandTimeouts: Number(runtimeOpsExternalStatsRef.current.externalCommandTimeouts || 0),
-      runtimeOpsRendererErrorForwarded: Number(runtimeOpsExternalStatsRef.current.rendererErrorForwarded || 0),
-      runtimeOpsStreamStartAttempts: Number(runtimeOpsStreamStatsRef.current.startAttempts || 0),
-      runtimeOpsStreamStarts: Number(runtimeOpsStreamStatsRef.current.starts || 0),
-      runtimeOpsStreamReuses: Number(runtimeOpsStreamStatsRef.current.reuses || 0),
-      runtimeOpsStreamDisconnects: Number(runtimeOpsStreamStatsRef.current.disconnects || 0),
-      runtimeOpsStreamReconnects: Number(runtimeOpsControllerState?.reconnectCount || 0),
-      runtimeOpsDecisions: Number((runtimeOpsControllerState?.recentDecisions || []).length || 0),
-      runtimeOpsActions: Number(runtimeOpsControllerState?.actionRuns || 0),
-      runtimeOpsActionFailures: Number(runtimeOpsControllerState?.actionFailures || 0),
-      runtimeOpsGuardrailTrips: Number(runtimeOpsControllerState?.guardrailTrips || 0),
-      runtimeOpsMode: runtimeOpsControllerState?.mode || null,
-      runtimeOpsLockedAttempts: Number(runtimeOpsControllerState?.lockedAttempts || 0),
-      tradeLockerSwitchAttempts: Number(tradeLockerSwitchStatsRef.current.switchAttempts || 0),
-      tradeLockerSwitchFailures: Number(tradeLockerSwitchStatsRef.current.switchFailures || 0),
-      tradeLockerSwitchReverts: Number(tradeLockerSwitchStatsRef.current.switchReverts || 0),
-      tradeLockerSwitchReconnectRetries: Number(tradeLockerSwitchStatsRef.current.switchReconnectRetries || 0),
-      tradeLockerSwitchShieldActivations: Number(tradeLockerSwitchStatsRef.current.switchShieldActivations || 0),
-      academyCompanionRowsRead: Number(academyCompanionRowsReadRef.current || 0),
-      intentHydrationRowsRead: Number(intentHydrationRowsReadRef.current || 0),
-      incrementalCursorFallbackCount: Number(incrementalCursorFallbackCountRef.current || 0),
-      ledgerArchiveMoves: Number(ledgerArchiveStatsRef.current.moves || 0),
-      ledgerArchiveRows: Number(ledgerArchiveStatsRef.current.rows || 0),
-      signalIdCollisionPreventedCount: Number(signalIdCollisionPreventedCountRef.current || 0),
-      startupCheckedAtMs: startup?.checkedAtMs ?? null,
-      startupPhase: startup?.startupPhase ?? startupPhase ?? null,
-      startupOpenaiState: openaiReadinessState || null,
-      startupTradeLockerState: tradeLockerReadinessState || null,
-      startupOpenaiProbeSource: startup?.openaiProbeSource ?? null,
-      startupTradeLockerProbeSource: startup?.tradeLockerProbeSource ?? null,
-      startupBridgeState: startup?.bridgeState ?? startupBridgeState ?? null,
-      startupBridgeError: startup?.bridgeError ?? startupBridgeError ?? null,
-      startupProbeSkippedDueToBridge: startup?.probeSkippedDueToBridge ?? null,
-      startupProbeErrors: startup?.probeErrors ?? null,
-      startupTradeLockerAutoRestoreAttempted: tlStartupAutoRestore?.attempted ?? null,
-      startupTradeLockerAutoRestoreSuccess: tlStartupAutoRestore?.success ?? null,
-      startupTradeLockerAutoRestoreError: tlStartupAutoRestore?.error ?? null,
-      startupTradeLockerAutoRestoreAtMs: tlStartupAutoRestore?.atMs ?? null,
-      startupRequestedScopes: Array.isArray(startup?.requestedScopes) ? startup.requestedScopes.slice() : null,
-      startupSkippedScopes: Array.isArray(startup?.skippedScopes) ? startup.skippedScopes.slice() : null,
-      startupActiveScopes: Array.isArray(startup?.activeScopes) ? startup.activeScopes.slice() : null,
-      startupBlockedScopes: Array.isArray(startup?.blockedScopes) ? startup.blockedScopes.slice() : null,
-      startupUnknownScopes: Array.isArray(startup?.unknownScopes) ? startup.unknownScopes.slice() : null,
-      startupPermissionError: startup?.permissionError ?? null,
-      startupDiagnosticWarning: startup?.diagnosticWarning ?? null,
-      brokerStatus: tlStatus || null,
-      brokerQuotesUpdatedAtMs: tlQuotesUpdatedAtMs ?? null,
-      brokerQuotesError: tlQuotesError ?? null,
-      brokerSnapshotUpdatedAtMs: tlSnapshotUpdatedAtMs ?? null,
-      brokerStreamStatus: tlStreamStatus ?? null,
-      brokerStreamUpdatedAtMs: tlStreamUpdatedAtMs ?? null,
-      brokerStreamError: tlStreamError ?? null,
-      brokerRateLimitLastAtMs: brokerRateLimitLastAtRef.current ?? null,
-      brokerRateLimitLastMessage: brokerRateLimitLastMessageRef.current ?? null,
-      brokerRateLimitSuppressUntilMs: brokerRateLimitSuppressUntilMs || null,
-      tradelockerRequestQueueDepth: tlStatusMeta?.requestQueueDepth ?? null,
-      tradelockerRequestQueueMaxDepth: tlStatusMeta?.requestQueueMaxDepth ?? null,
-      tradelockerRequestQueueMaxWaitMs: tlStatusMeta?.requestQueueMaxWaitMs ?? null,
-      tradelockerRequestInFlight: tlStatusMeta?.requestInFlight ?? null,
-      tradelockerRequestConcurrency: tlStatusMeta?.requestConcurrency ?? null,
-      tradelockerMinRequestIntervalMs: tlStatusMeta?.minRequestIntervalMs ?? null,
-      tradelockerRateLimitTelemetry: tlStatusMeta?.rateLimitTelemetry ?? null,
-      tradelockerShards: Array.isArray(tlShardStates)
-        ? tlShardStates.map((entry) => ({
-            accountKey: String(entry?.accountKey || ''),
-            queueDepth: Number(entry?.queueDepth || 0),
-            rateBudget: Number(entry?.rateBudget || 0),
-            circuitState: (entry?.circuitState || 'closed') as any,
-            lastError: entry?.lastError ? String(entry.lastError) : null,
-            lastReconcileAtMs: Number.isFinite(Number(entry?.lastReconcileAtMs)) ? Number(entry?.lastReconcileAtMs) : null
-          }))
-        : null,
-      tradelockerTenants: Array.isArray(tlStrategyMatrixRows) ? tlStrategyMatrixRows.length : 0,
-      tradelockerFanout: Array.isArray(tlMarketSubscriptions)
-        ? tlMarketSubscriptions.map((entry) => ({
-            symbol: String(entry?.symbol || ''),
-            subscriberCount: Number(entry?.subscriberCount || 0),
-            subscribers: Array.isArray(entry?.subscribers) ? entry.subscribers.slice() : [],
-            lastQuoteAtMs: Number.isFinite(Number(entry?.lastQuoteAtMs)) ? Number(entry?.lastQuoteAtMs) : null
-          }))
-        : null,
-      tradelockerScheduler: {
-        shardCount: Number(tlShardSchedulerTelemetry?.shardCount || 0),
-        totalQueueDepth: Number(tlShardSchedulerTelemetry?.totalQueueDepth || 0),
-        totalRuns: Number(tlShardSchedulerTelemetry?.totalRuns || 0),
-        totalFailures: Number(tlShardSchedulerTelemetry?.totalFailures || 0)
-      },
-      nativeChartSymbol: meta?.symbol || null,
-      nativeChartUpdatedAtMs: meta?.updatedAtMs ?? null,
-      nativeChartFrames: Array.isArray(meta?.frames) ? meta.frames.length : null,
-      setupWatcherEvalAtMs: setupWatcherLastEvalAtRef.current ?? null,
-      setupSignalAtMs: setupWatcherLastSignalAtRef.current ?? null,
-      setupWatcherCount: watchers.length,
-      setupWatcherEnabledCount: enabledCount,
-      setupSignalCount: signalsCount,
-      backgroundWatcherTickAtMs: backgroundWatcherLastTickAtRef.current ?? null,
-      taskTreeUpdatedAtMs: taskTreeUpdatedAtRef.current ?? null,
-      autoPilotEnabled: autoPilotConfigRef.current?.enabled ?? null,
-      autoPilotMode: autoPilotConfigRef.current?.mode ?? null,
-      killSwitch: autoPilotConfigRef.current?.killSwitch ?? null,
-      autoPilotState: autoState?.state ?? null,
-      autoPilotReason: autoState?.reason ?? null,
-      autoPilotReasonMessage: autoState?.message ?? null,
-      autoPilotStateUpdatedAtMs: autoState?.updatedAtMs ?? null,
-      perf: snapshotPerf(now),
-      scheduler: {
-        visible: schedulerStats.visible,
-        taskCount: schedulerStats.taskCount,
-        signalTaskId: SIGNAL_AUTO_REFRESH_TASK_ID,
-        signalTask: signalSchedulerTask
-          ? {
-              id: signalSchedulerTask.id,
-              groupId: signalSchedulerTask.groupId,
-              runCount: signalSchedulerTask.runCount,
-              errorCount: signalSchedulerTask.errorCount,
-              lastRunAtMs: signalSchedulerTask.lastRunAtMs,
-              lastDurationMs: signalSchedulerTask.lastDurationMs,
-              paused: signalSchedulerTask.paused,
-              consecutiveFailures: signalSchedulerTask.consecutiveFailures
-            }
-          : null,
-        shadowTaskId: SHADOW_CONTROLLER_TASK_ID,
-        shadowTask: shadowSchedulerTask
-          ? {
-              id: shadowSchedulerTask.id,
-              groupId: shadowSchedulerTask.groupId,
-              runCount: shadowSchedulerTask.runCount,
-              errorCount: shadowSchedulerTask.errorCount,
-              lastRunAtMs: shadowSchedulerTask.lastRunAtMs,
-              lastDurationMs: shadowSchedulerTask.lastDurationMs,
-              paused: shadowSchedulerTask.paused,
-              consecutiveFailures: shadowSchedulerTask.consecutiveFailures
-            }
-          : null
-      },
-      cacheBudgets: cacheBudgetManager.getTelemetry(),
-      chartFrameCache,
-      workerFallback: {
-        updatedAtMs: now,
-        byDomain: workerFallbackByDomain
-      },
-      signalRefreshSla: {
-        updatedAtMs: now,
-        tasks: refreshSlaSnapshot
-      },
-      brokerCircuit: {
-        updatedAtMs: brokerCircuitSnapshot.updatedAtMs,
-        openCount: brokerCircuitOpenCount,
-        entries: brokerCircuitSnapshot.entries
-      },
-      persistenceHealth,
-      refreshSlaByChannel: refreshSlaByChannel as any,
-      bridgeDomainReadiness: bridgeDomainReadiness as any,
-      brokerCircuitBySource: brokerCircuitBySource as any,
-      lastSuccessfulScanAtMs,
-      rankFreshness,
-      agentDrift: {
-        updatedAtMs: now,
-        reports: agentDriftReportsRef.current || []
-      },
-      executionAudit: {
-        updatedAtMs: executionAuditSnapshot.updatedAtMs,
-        recordsCount: executionAuditSnapshot.records.length,
-        mismatches: executionAuditSnapshot.mismatches
-      },
-      livePolicy: livePolicySnapshot,
-      panelConnectivity,
-      panelFreshness: panelFreshnessSnapshot,
-      outcomeFeed: {
-        cursor: outcomeCursorSnapshot,
-        consistency: outcomeConsistencySnapshot
-      },
-      crossPanelContext: crossPanelContextSnapshot
-    };
-  }, [agentScorecards, brokerRateLimitSuppressUntilMs, chartEngine, openaiReadinessState, runtimeOpsControllerState, snapshotPerf, startupBridgeError, startupBridgeState, startupPhase, startupReadinessStatus, tlMarketSubscriptions, tlQuotesError, tlQuotesUpdatedAtMs, tlShardScheduler, tlShardStates, tlSnapshotUpdatedAtMs, tlStartupAutoRestore, tlStatus, tlStrategyMatrixRows, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlStatusMeta, tradeLockerReadinessState]);
-
-  useEffect(() => {
-    buildHealthSnapshotRef.current = buildHealthSnapshot;
-  }, [buildHealthSnapshot]);
-
-  useEffect(() => {
-    const update = () => {
-      updateAutoPilotState({ emit: true });
-      const snapshot = buildHealthSnapshot();
-      healthSnapshotRef.current = snapshot;
-      setHealthSnapshot(snapshot);
-      const now = Date.now();
-      if (now - lastHealthAuditAtRef.current >= 60_000) {
-        lastHealthAuditAtRef.current = now;
-        void appendAuditEvent({
-          eventType: 'health_heartbeat',
-          payload: snapshot
-        });
-      }
-    };
-    let stop: (() => void) | null = null;
-    let cancelled = false;
-    update();
-    void loadFeatureControllers().then((mod) => {
-      if (cancelled) return;
-      stop = mod.startIntervalControllerSafe({
-        intervalMs: 10_000,
-        onTick: () => update()
-      });
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-      stop?.();
-    };
-  }, [appendAuditEvent, buildHealthSnapshot, updateAutoPilotState]);
-
+  useHealthSnapshotRuntime({
+    setupWatchersRef,
+    setupSignalsRef,
+    nativeChartRef,
+    autoPilotStateRef,
+    startupReadinessStatus,
+    startupPhase,
+    openaiReadinessState,
+    tradeLockerReadinessState,
+    startupBridgeState,
+    startupBridgeError,
+    tlStartupAutoRestore,
+    tlStatus,
+    tlQuotesUpdatedAtMs,
+    tlQuotesError,
+    tlSnapshotUpdatedAtMs,
+    tlStreamStatus,
+    tlStreamUpdatedAtMs,
+    tlStreamError,
+    brokerRateLimitSuppressUntilMs,
+    tlStatusMeta,
+    tlShardStates,
+    tlStrategyMatrixRows,
+    tlMarketSubscriptions,
+    tradeLockerAccountSelectorSnapshot,
+    tlShardScheduler,
+    agentScorecards,
+    runtimeOpsControllerState,
+    chartEngine,
+    runtimeScheduler,
+    getWorkerFallbackStats,
+    refreshSlaMonitor,
+    brokerCircuitBreaker,
+    getDomainReadiness,
+    getPersistenceHealthSnapshot,
+    executionAuditService,
+    livePolicyService,
+    panelConnectivityEngine,
+    normalizePanelConnectivitySnapshot,
+    crossPanelContextEngine,
+    outcomeConsistencyEngine,
+    buildRankFreshnessState,
+    snapshotPerf,
+    updateAutoPilotState,
+    appendAuditEvent,
+    loadFeatureControllers,
+    setHealthSnapshot,
+    buildHealthSnapshotRef,
+    healthSnapshotRef,
+    lastHealthAuditAtRef,
+    securityAuditSnapshotRef,
+    bridgeLifecycleSnapshotRef,
+    renderPerfSnapshotRef,
+    ciValidationSnapshotRef,
+    migrationParityRef,
+    academyMergeStatsRef,
+    academyDataQualityStatsRef,
+    academyLearningGraphTelemetryRef,
+    runtimeOpsExternalStatsRef,
+    runtimeOpsStreamStatsRef,
+    tradeLockerSwitchStatsRef,
+    academyCompanionRowsReadRef,
+    intentHydrationRowsReadRef,
+    incrementalCursorFallbackCountRef,
+    ledgerArchiveStatsRef,
+    signalIdCollisionPreventedCountRef,
+    signalStatusReportStatsRef,
+    chatStateRef,
+    brokerRateLimitLastAtRef,
+    brokerRateLimitLastMessageRef,
+    setupWatcherLastEvalAtRef,
+    setupWatcherLastSignalAtRef,
+    backgroundWatcherLastTickAtRef,
+    taskTreeUpdatedAtRef,
+    autoPilotConfigRef,
+    cacheBudgetManager,
+    agentDriftReportsRef,
+    lastSuccessfulSignalScanAtRef,
+    signalAutoRefreshTaskId: SIGNAL_AUTO_REFRESH_TASK_ID,
+    shadowControllerTaskId: SHADOW_CONTROLLER_TASK_ID
+  });
   const playbookRunningRef = React.useRef(false);
   const playbookLastRunAtRef = React.useRef(0);
 
@@ -39277,48 +38946,33 @@ const App: React.FC = () => {
     ? `${tlSavedConfig.env.toUpperCase()}-${tlSavedConfig.server}`
     : (tlSavedConfig?.env === 'live' ? 'LIVE' : 'DEMO');
 
-  const handleTradeLockerClosePosition = useCallback((id: string, qty?: number) => {
-    const pos = tlPositions.find((p) => p.id === id);
-    (async () => {
-      const res = await executeBrokerActionViaApi({
-        type: 'CLOSE_POSITION',
-        status: 'PENDING',
-        positionId: id,
-        qty: qty ?? 0,
-        symbol: pos?.symbol ? String(pos.symbol) : undefined,
-        source: 'manual',
-        reason: 'Manual close'
-      });
-      if (res?.ok) {
-        const qtyLabel = qty && qty > 0 ? ` (qty ${qty})` : '';
-        addNotification('Close Requested', `${pos?.symbol || 'Position'} close sent to TradeLocker${qtyLabel}`, 'info');
-      } else {
-        const err = res?.error ? String(res.error) : 'Failed to close position';
-        addNotification('Close Failed', err, 'error');
-      }
-    })();
-  }, [addNotification, executeBrokerActionViaApi, tlPositions]);
-
-  const handleTradeLockerCancelOrder = useCallback((orderId: string) => {
-    const ord = tlOrders.find((o) => o.id === orderId);
-    (async () => {
-      const res = await executeBrokerActionViaApi({
-        type: 'CANCEL_ORDER',
-        status: 'PENDING',
-        orderId,
-        symbol: ord?.symbol ? String(ord.symbol) : undefined,
-        source: 'manual',
-        reason: 'Manual cancel'
-      });
-      if (res?.ok) {
-        addNotification('Cancel Requested', `${ord?.symbol || 'Order'} cancel sent to TradeLocker`, 'info');
-      } else {
-        const err = res?.error ? String(res.error) : 'Failed to cancel order';
-        addNotification('Cancel Failed', err, 'error');
-      }
-    })();
-  }, [addNotification, executeBrokerActionViaApi, tlOrders]);
-
+  const {
+    handleTradeLockerClosePosition,
+    handleTradeLockerCancelOrder,
+    handleTradeLockerPlaceOrder
+  } = useTradeLockerOrderRuntime({
+    addNotification,
+    executeBrokerActionViaApi,
+    tlPositions,
+    tlOrders,
+    resolveTradeLockerExecutionTargets,
+    resolveSnapshotSourceKey,
+    areAccountKeysEquivalent,
+    parseTradeLockerAccountKey,
+    tlSavedConfig,
+    resolveTradeLockerSymbolBestEffort,
+    tradeDedupeFallbackRef,
+    tlNormalizeEnabledRef,
+    resolveNormalizationReferenceKey,
+    fetchTradeLockerQuotesForAccount,
+    getNormalizationOffsetForAccount,
+    readLegacyTradeLockerSubmissionFlag,
+    withTradeLockerAccountLock,
+    ensureTradeLockerAccount,
+    getTradeLockerAccountKey,
+    requestBrokerWithAudit
+  });
+  handleTradeLockerPlaceOrderRef.current = handleTradeLockerPlaceOrder;
   // --- TradeLedger reconciliation (best-effort) ---
   const lastLedgerReconcileAtRef = React.useRef(0);
   const lastLedgerBalanceRef = React.useRef<number | null>(null);
@@ -39924,357 +39578,6 @@ const App: React.FC = () => {
       }
     })();
   }, [addTradeMemory, appendAuditEvent, enqueuePostTradeReview, tlAccountMetrics, tlBalance, tlOrders, tlPositions, tlSavedConfig, tlStatus, updateLossStreak]);
-
-  const handleTradeLockerPlaceOrder = useCallback(async (args: any) => {
-      const ledger = window.glass?.tradeLedger;
-      const hasLedger = !!ledger?.reserve && !!ledger?.update;
-      const executionTargets = resolveTradeLockerExecutionTargets();
-      if (executionTargets.length === 0) {
-        const msg = 'TradeLocker active account not set. Open Locker and select an account.';
-        addNotification('TradeLocker Blocked', msg, 'warning');
-        return { ok: false, error: msg };
-      }
-
-      const snapshotKey = resolveSnapshotSourceKey();
-      const primaryKey = snapshotKey
-        ? (executionTargets.find((targetKey) => areAccountKeysEquivalent(targetKey, snapshotKey)) || executionTargets[0])
-        : executionTargets[0];
-      const primaryAccount = primaryKey ? parseTradeLockerAccountKey(primaryKey) : null;
-      const env = primaryAccount?.env || tlSavedConfig?.env || null;
-      const server = primaryAccount?.server || tlSavedConfig?.server || null;
-      const accountId = primaryAccount?.accountId ?? null;
-      const accNum = primaryAccount?.accNum ?? null;
-      const accountKey = primaryKey || (env && accountId != null && accNum != null ? `${String(env)}:${String(server || '')}:${String(accountId)}:${String(accNum)}` : null);
-
-      const orderTypeRaw = String(args?.type || tlSavedConfig?.defaultOrderType || 'market').toLowerCase();
-      const orderType = orderTypeRaw === 'limit' ? 'limit' : orderTypeRaw === 'stop' ? 'stop' : 'market';
-      const side = String(args?.side || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-      const symbolRaw = args?.symbol ? String(args.symbol) : 'UNKNOWN';
-      const symbol = await resolveTradeLockerSymbolBestEffort(symbolRaw);
-      const entryPrice =
-        orderType === 'stop'
-          ? Number(args?.stopPrice ?? args?.price ?? 0)
-          : Number(args?.price || 0);
-      const stopLoss = Number(args?.stopLoss || 0);
-      const takeProfit = Number(args?.takeProfit || 0);
-      const qty = args?.qty != null ? Number(args.qty) : null;
-
-      // Ensure we have a unique tag for matching positions back to this ticket order.
-      let strategyId = args?.strategyId ? String(args.strategyId).trim() : '';
-      if (!strategyId || strategyId.toLowerCase() === 'manual') {
-        try {
-          const pseudoProposal: any = {
-            symbol,
-            action: side,
-            entryPrice: Number.isFinite(entryPrice) ? entryPrice : 0,
-            stopLoss: Number.isFinite(stopLoss) ? stopLoss : 0,
-            takeProfit: Number.isFinite(takeProfit) ? takeProfit : 0,
-            reason: 'Manual ticket'
-          };
-          const dedupeKey = computeTradeDedupeKey({
-            proposal: pseudoProposal,
-            broker: 'tradelocker',
-            accountKey: accountKey || '',
-            orderType,
-            qty: qty ?? undefined
-          });
-          strategyId = computeClientStrategyIdFromDedupeKey(dedupeKey);
-        } catch {
-          strategyId = `gb_ticket_${Date.now().toString(16)}`.slice(0, 31);
-        }
-      }
-
-      let ledgerId: string | null = null;
-      if (hasLedger && accountKey) {
-        try {
-          const pseudoProposal: any = {
-            symbol,
-            symbolOriginal: symbolRaw,
-            action: side,
-            entryPrice: Number.isFinite(entryPrice) ? entryPrice : 0,
-            stopLoss: Number.isFinite(stopLoss) ? stopLoss : 0,
-            takeProfit: Number.isFinite(takeProfit) ? takeProfit : 0,
-            reason: 'Manual ticket'
-          };
-          const dedupeKey = computeTradeDedupeKey({
-            proposal: pseudoProposal,
-            broker: 'tradelocker',
-            accountKey,
-            orderType,
-            qty: qty ?? undefined
-          });
-
-          const reserveRes = await reserveLedgerEntry({
-            ledger,
-            dedupeKey,
-            windowMs: 2500,
-            fallbackMap: tradeDedupeFallbackRef.current,
-            fallbackWindowMs: 2500,
-            entry: {
-              kind: 'trade',
-              schemaVersion: 'trade_v1',
-              source: 'ticket',
-              broker: 'tradelocker',
-              status: 'SUBMITTING',
-              agentId: null,
-              reason: 'Manual ticket',
-              symbol,
-              symbolOriginal: symbolRaw,
-              action: side,
-              entryPrice: Number.isFinite(entryPrice) ? entryPrice : 0,
-              stopLoss: Number.isFinite(stopLoss) ? stopLoss : 0,
-              takeProfit: Number.isFinite(takeProfit) ? takeProfit : 0,
-              qty: qty ?? null,
-              orderType,
-              clientTag: strategyId,
-              account: {
-                env,
-                server,
-                accountId,
-                accNum
-              }
-            }
-          });
-
-          if (reserveRes?.ok && reserveRes?.reserved === false) {
-            addNotification('Duplicate Blocked', 'Duplicate order blocked (clicked too fast).', 'warning');
-            return { ok: false, error: 'Duplicate order blocked (clicked too fast).' };
-          }
-          if (reserveRes?.ok && reserveRes?.entry?.id) {
-            ledgerId = String(reserveRes.entry.id);
-            try {
-              if (ledgerId && ledger?.update) {
-                await ledger.update({ id: ledgerId, patch: { executionId: ledgerId } });
-              }
-            } catch {
-              // ignore
-            }
-          }
-        } catch {
-          // ledger is best-effort
-        }
-      }
-
-      const baseArgs: Record<string, any> = { ...(args || {}) };
-      baseArgs.symbol = symbol;
-      baseArgs.side = side;
-      baseArgs.type = orderType;
-      if (qty != null) baseArgs.qty = qty;
-      if (orderType === 'stop') {
-        baseArgs.stopPrice = Number.isFinite(entryPrice) ? entryPrice : baseArgs.stopPrice;
-        if (baseArgs.price == null) baseArgs.price = baseArgs.stopPrice;
-      }
-      baseArgs.strategyId = strategyId;
-
-      const normalizeTicketForAccount = async (targetKey: string) => {
-        let normalized = false;
-        const nextArgs = { ...baseArgs };
-        if (tlNormalizeEnabledRef.current) {
-          const refKey = resolveNormalizationReferenceKey();
-          if (refKey && refKey !== targetKey) {
-            await fetchTradeLockerQuotesForAccount(refKey, [symbol], { skipLock: true, restoreKey: null });
-            await fetchTradeLockerQuotesForAccount(targetKey, [symbol], { skipLock: true, restoreKey: null });
-            const offset = getNormalizationOffsetForAccount(targetKey, symbol);
-            const offsetValue = side === 'BUY' ? offset?.askOffset : offset?.bidOffset;
-            if (offset && Number.isFinite(Number(offsetValue))) {
-              const adjust = (value: any) => {
-                const num = Number(value);
-                return Number.isFinite(num) ? num + Number(offsetValue) : value;
-              };
-              if (nextArgs.price != null) nextArgs.price = adjust(nextArgs.price);
-              if (nextArgs.stopPrice != null) nextArgs.stopPrice = adjust(nextArgs.stopPrice);
-              if (nextArgs.stopLoss != null) nextArgs.stopLoss = adjust(nextArgs.stopLoss);
-              if (nextArgs.takeProfit != null) nextArgs.takeProfit = adjust(nextArgs.takeProfit);
-              normalized = true;
-            }
-          }
-        }
-        return { args: nextArgs, normalized };
-      };
-
-      const useLegacySubmission = readLegacyTradeLockerSubmissionFlag();
-      const results = useLegacySubmission
-        ? await withTradeLockerAccountLock(async () => {
-            const out: Array<{ accountKey: string; res: any; normalized: boolean }> = [];
-            for (const targetKey of executionTargets) {
-              const switchRes = await ensureTradeLockerAccount(targetKey, 'ticket_execute');
-              if (!switchRes.ok) {
-                out.push({ accountKey: targetKey, res: { ok: false, error: switchRes.error }, normalized: false });
-                continue;
-              }
-              const payload = await normalizeTicketForAccount(targetKey);
-              let res: any = null;
-              try {
-                res = await requestBrokerWithAudit(
-                  'placeOrder',
-                  payload.args,
-                  {
-                    symbol,
-                    source: 'ticket_execute',
-                    brokerId: 'tradelocker'
-                  }
-                );
-              } catch (e: any) {
-                res = { ok: false, error: e?.message ? String(e.message) : 'Failed to place order.' };
-              }
-              out.push({ accountKey: targetKey, res, normalized: payload.normalized });
-            }
-            if (snapshotKey && snapshotKey !== getTradeLockerAccountKey()) {
-              await ensureTradeLockerAccount(snapshotKey, 'ticket_restore');
-            }
-            return out;
-          })
-        : (
-            await submitTradeLockerOrderBatch({
-              route: 'ticket_execute',
-              executionTargets,
-              snapshotAccountKey: snapshotKey || null,
-              ensureAccount: async (accountKey, reason) => await ensureTradeLockerAccount(accountKey, reason),
-              withAccountLock: withTradeLockerAccountLock,
-              getActiveAccountKey: getTradeLockerAccountKey,
-              switchReason: 'ticket_execute',
-              restoreReason: 'ticket_restore',
-              submitForAccount: async (accountKey) => {
-                const payload = await normalizeTicketForAccount(accountKey);
-                let res: any = null;
-                try {
-                  res = await requestBrokerWithAudit(
-                    'placeOrder',
-                    payload.args,
-                    {
-                      symbol,
-                      source: 'ticket_execute',
-                      brokerId: 'tradelocker'
-                    }
-                  );
-                } catch (e: any) {
-                  res = { ok: false, error: e?.message ? String(e.message) : 'Failed to place order.' };
-                }
-                return { res, normalized: payload.normalized, payload: payload.args };
-              }
-            })
-          ).results.map((row) => ({
-            accountKey: row.accountKey,
-            res: row.res,
-            normalized: !!row.normalized
-          }));
-
-      const primaryResult = selectPrimaryResultByAccountKey(results, primaryKey) || results[0];
-      const res = primaryResult?.res;
-      if (!res) {
-        addNotification('TradeLocker Error', 'Failed to place order.', 'error');
-        return { ok: false, error: 'Failed to place order.' };
-      }
-      if (res?.ok) {
-        const orderId = extractBrokerOrderId(res);
-        const orderStatus = res?.orderStatus != null ? String(res.orderStatus) : null;
-        const resolvedSymbol = res?.resolvedSymbol != null ? String(res.resolvedSymbol) : null;
-        const positionId = res?.positionId != null ? String(res.positionId).trim() : null;
-        const filledQty = res?.filledQty != null && Number.isFinite(Number(res.filledQty)) ? Number(res.filledQty) : null;
-        const remainingQty = res?.remainingQty != null && Number.isFinite(Number(res.remainingQty)) ? Number(res.remainingQty) : null;
-        const statusUpper = orderStatus ? orderStatus.toUpperCase() : '';
-        const filledByStatus =
-          statusUpper.includes('FILL') || statusUpper.includes('EXECUT') || statusUpper.includes('DONE') || statusUpper.includes('COMPLETE');
-        const isFilled = (filledQty != null && filledQty > 0) || filledByStatus;
-        const mirrorExecutions = buildMirrorExecutions(results as any, primaryResult?.accountKey || null);
-
-        try {
-          const normalizedQty =
-           typeof (res as any)?.qty === 'number' && Number.isFinite(Number((res as any).qty))
-              ? Number((res as any).qty)
-              : qty;
-           if (ledgerId && ledger?.update) {
-            const patch: any = {
-              status: 'ACCEPTED',
-              brokerOrderId: orderId,
-              brokerAcceptedAtMs: Date.now(),
-              qtyNormalized: normalizedQty ?? null,
-              clientTag: strategyId,
-              brokerOrderStatus: orderStatus,
-              orderFilledQty: filledQty,
-              orderRemainingQty: remainingQty,
-              brokerResolvedSymbol: resolvedSymbol,
-              brokerResponse: res?.response ?? null,
-              mirrorExecutions
-            };
-            if (positionId) {
-              patch.positionId = positionId;
-              if (isFilled) {
-                patch.status = 'OPEN';
-                patch.positionStatus = 'OPEN';
-                patch.positionOpenedAtMs = Date.now();
-              }
-            }
-            await ledger.update({ id: ledgerId, patch });
-           }
-         } catch { /* ignore */ }
-
-        playSound('success');
-        const idHint = orderId ? ` (#${orderId})` : '';
-        const statusHint = orderStatus ? `  (${orderStatus})` : '';
-        const labelSymbol = resolvedSymbol || symbol || (args?.symbol || 'Order');
-        const kindHint = isFilled
-          ? 'filled'
-          : orderType === 'limit'
-            ? 'limit order placed (pending)'
-            : orderType === 'stop'
-              ? 'stop order placed (pending)'
-              : 'accepted (pending)';
-        addNotification(isFilled ? 'TradeLocker Filled' : 'TradeLocker Accepted', `${side} ${labelSymbol} ${kindHint}${idHint}${statusHint}`, 'success');
-        if (mirrorExecutions.length > 0 && mirrorExecutions.some((m) => m.ok === false)) {
-          addNotification('TradeLocker Mirror', 'Some mirror executions failed. Check Audit for details.', 'warning');
-        }
-        return res;
-      } else {
-        const err = res?.error ? String(res.error) : 'Unknown error';
-        const orderId = extractBrokerOrderId(res);
-        const orderStatus = res?.orderStatus != null ? String(res.orderStatus) : null;
-        const filledQty = res?.filledQty != null && Number.isFinite(Number(res.filledQty)) ? Number(res.filledQty) : null;
-        const remainingQty = res?.remainingQty != null && Number.isFinite(Number(res.remainingQty)) ? Number(res.remainingQty) : null;
-        const statusUpper = orderStatus ? orderStatus.toUpperCase() : '';
-        const cancelled =
-          statusUpper.includes('CANCEL') ||
-          statusUpper.includes('CANCELED') ||
-          statusUpper.includes('CANCELLED') ||
-          statusUpper.includes('EXPIRE') ||
-          statusUpper.includes('EXPIRED') ||
-          statusUpper.includes('CLOSE') ||
-          statusUpper.includes('CLOSED');
-        const mirrorExecutions = buildMirrorExecutions(results as any, primaryResult?.accountKey || null);
-        try {
-          if (ledgerId && ledger?.update) await ledger.update({
-            id: ledgerId,
-            patch: {
-              status: cancelled ? 'CANCELLED' : 'REJECTED',
-              brokerOrderId: orderId,
-              brokerOrderStatus: orderStatus,
-              orderFilledQty: filledQty,
-              orderRemainingQty: remainingQty,
-              error: err,
-              brokerResponse: res?.response ?? null,
-              mirrorExecutions
-            }
-          });
-        } catch { /* ignore */ }
-        addNotification('TradeLocker Rejected', err, 'error');
-        return res;
-      }
-  }, [
-    addNotification,
-    ensureTradeLockerAccount,
-    fetchTradeLockerQuotesForAccount,
-    getNormalizationOffsetForAccount,
-    getTradeLockerAccountKey,
-    resolveNormalizationReferenceKey,
-    resolveSnapshotSourceKey,
-    resolveTradeLockerExecutionTargets,
-    resolveTradeLockerSymbolBestEffort,
-    requestBrokerWithAudit,
-    tlSavedConfig,
-    withTradeLockerAccountLock
-  ]);
-  handleTradeLockerPlaceOrderRef.current = handleTradeLockerPlaceOrder;
-
 
   // --- System Initialization & Background Monitor ---
   useEffect(() => {
@@ -40888,8 +40191,189 @@ const App: React.FC = () => {
     snapshotPanelTimeframes
   ]);
 
+  const appChatPanelModel = buildChatPanelModel({
+    activeSignalThreadId,
+    signalThreads,
+    signalContextById,
+    chatContextInspectorState,
+    chatContextInspectorV1,
+    chatSignalWorkspaceV1,
+    chatSignalWorkspaceActionsV1,
+    selectSignalThreadFromChat,
+    askAgentAboutSignalFromChat,
+    openSignalFromChat,
+    openAcademyCaseFromChat,
+    openChartFromSignalChat,
+    executeSignalFromChat,
+    rejectSignalFromChat,
+    cancelSignalOrderFromChat
+  });
+
+  const appSignalPanelModel = buildSignalPanelModel({
+    signalEntries,
+    signalStatusReportsBySignalId,
+    signalStatusReportRunning,
+    signalContextById,
+    openSignalThreadInChat,
+    handleSignalFocus,
+    refreshSignalStatusesNow
+  });
+
+  const appTradeLockerPanelModel = buildTradeLockerPanelModel({
+    tlAccounts,
+    tlAccountMetrics,
+    tlAccountMetricsError,
+    tlSavedConfig,
+    tlRefreshAccounts,
+    tlRefreshAccountMetrics,
+    tlRefreshOrders,
+    tlRefreshQuotes,
+    tlRefreshSnapshot,
+    handleSnapshotSourceChange
+  });
+
+  const appSidebarLegacyPanelsModel = buildSidebarLegacyPanelModel({
+    AcademyInterface, AgentCreatorInterface, AgentLabInterface, AgentMemoryInterface, AuditTrailInterface, AutoPilotInterface,
+    BacktesterInterface, CalendarInterface, ChangesInterface, ChatInterface, LeaderboardInterface, MT5Interface,
+    MonitorInterface, NativeChartInterface, NotesInterface, PATTERN_WATCH_LIMIT, PatternsInterface, PerformanceDashboard,
+    SIDEBAR_LAZY_FALLBACK, SetupsInterface, ShadowInterface, SignalInterface, SnapshotInterface, TradeLockerInterface,
+    academyAutoApplyEnabled, academyAutoExportEnabled, academyCases, academyFocusRequest, academyLessonLimit, academyLessons,
+    academyMounted, academySelectedCaseId, academySymbolLearnings, actionTaskActiveStepRef, actionTaskQueueDepth, actionTaskTreeRunsState,
+    activeBrokerSymbol, activeSignalThreadId, activeTab, activeTabId, activeTvParams, activeTvPrice,
+    activeTvPriceUpdatedAtMs, activeTvTimeframeLabel, addChartChatAgent, addManualMemory, addSetupWatcher, agentCreatorMounted,
+    agentLabMounted, agentMemoryMounted, agentScanEnabledById, agentScorecards, agents, applyOrQueueBacktestOptimization,
+    askAgentAboutSignalFromChat, auditMounted, autoPilotConfig, backtestSymbol, backtesterMounted, backtesterRef,
+    brokerLinkConfig, brokerRateLimitSuppressUntilMs, buildTradeLockerAccountKey, calendarRules, cancelChartChatAgentTool, cancelSignalOrder,
+    cancelSignalOrderFromChat, captureChartContextPack, captureChatTabContextImages, captureTabCached, changesMounted, chartChatActiveAgentId,
+    chartChatAgents, chartChatAutoTabVisionEnabled, chartChatContext, chartChatIsLive, chartChatLeadAgentId, chartChatLiveMode,
+    chartChatLiveStream, chartChatMessages, chartChatReplyMode, chartChatSessionBias, chartChatSnapshotStatus, chartChatSnoozeWatch,
+    chartChatSnoozedUntilMs, chartChatSpeakingMessageId, chartChatThinking, chartChatWatchEnabled, chartChatWatchMode, chartSessions,
+    chatContextInspectorState, chatContextInspectorV1, chatSignalWorkspaceActionsV1, chatSignalWorkspaceV1, clearChartChatSnooze, clearChartChatWithSnapshot,
+    clearLiveErrors, clearRuntimeOpsEvents, clearSetupSignals, clearSignalEntries, clearSnapshotFrameCache, clearSymbolScope,
+    clearTradeMemories, createWatchProfileFromOptimization, crossPanelContext, deleteChartChatAgent, deleteTradeMemory, effectiveSignalSnapshotStatus,
+    emergencyStopRuntimeOps, equity, executeAgentToolRequest, executeChartChatBrokerAction, executeChartChatTradeProposal, executeSignalFromChat,
+    executeSignalTrade, executeTicketOrderViaApi, flushPendingBacktestApply, focusNativeChart, getChartContextPack, getTradeLockerAccountKey,
+    handleAcademyCaseSelect, handleAcademyFocusRequestConsumed, handleExplainSetupSignal, handleNativeBarClose, handleNormalizationChange, handlePatternAddSymbol,
+    handlePatternDetectorsChange, handlePatternRemoveSymbol, handlePatternTimeframesChange, handleReplayTaskTree, handleReplayTrade, handleSignalAddSymbol,
+    handleSignalFocus, handleSignalRemoveSymbol, handleSignalTimeframesChange, handleSnapshotPanelSelectSymbol, handleSnapshotSourceChange, handleTradeLockerCancelOrder,
+    handleTradeLockerClosePosition, healthSnapshot, isUnifiedChatMode, journalEntry, lastTradeBlock, leaderboardFilter,
+    leaderboardHistory, learningGraphFeatureFlags, liveErrors, loadCalendarPnlSnapshot, lossStreakState, memories,
+    mode, nativeChartMounted, nativeChartRef, nativeChartSymbol, openAcademyCase, openAcademyCaseFromChat,
+    openChartFromSignalChat, openSidebarMode, openSignalFromChat, openSignalThreadInChat, openSymbolPanel, outcomeFeedConsistency,
+    outcomeFeedCursor, panelFreshness, parseTradeLockerAccountNumber, patternAutoRefreshEnabled, patternDetectorsResolved, patternEvents,
+    patternRefreshIntervalMs, patternRefreshMode, patternSymbolMode, patternSymbols, patternWatchSummary, patternWatchSymbols,
+    patternWatchTimeframes, pauseSignalIntent, persistAcademyExport, playbookStatusByWatcher, postTradeReviewAgentId, postTradeReviewEnabled,
+    prefillSignalTicket, recommendedActionFlowsState, recordAcademyLearningGraphBuilt, recordAcademyLearningGraphCaseAction, recordAcademyLearningGraphLensChanged, recordAcademyLearningGraphPathZoom,
+    recordAcademyLearningPathGenerated, refreshAcademyCases, refreshAcademyLessons, refreshAcademySymbolLearnings, refreshCalendarRules, refreshShadowTrades,
+    refreshSignalStatusesNow, refreshSnapshotPanelStatus, rejectChartChatBrokerAction, rejectChartChatTradeProposal, rejectSignalEntry, rejectSignalFromChat,
+    removeSetupWatcher, requestBrokerWithAudit, requestChartRefresh, requestSystemSnapshot, resolveSignalThreadKey, resolveTradeLockerSymbolBestEffort,
+    resumePlaybookRun, resumeSignalIntent, resumeTaskTreeRun, reviewAnnotations, reviewLastClosedTrade, runAcademyLessonLifecycleAction,
+    runAcademyLessonSimulation, runActionCatalog, runActionCatalogImmediate, runRecommendedActionFlow, runRuntimeOpsAction, runSignalScan,
+    runSignalScanForce, runtimeOpsControllerState, runtimeOpsEvents, runtimeOpsFeatureFlags, saveOptimizerWinnerPreset, saveSetupLibraryFromOptimization,
+    searchSymbolSuggestions, selectSignalThreadFromChat, sendBacktestMessage, sendBacktestSetupToWatchlist, sendChartChatMessageWithSnapshot, sendChartChatVideoFrame,
+    sessionBias, setAgentSignalScanEnabled, setAutoPilotConfig, setBacktestSymbol, setBrokerLinkConfig, setChartChatAutoTabVisionEnabled,
+    setChartChatLeadAgentId, setChartChatReplyMode, setChartChatSessionBias, setChartChatWatchEnabled, setChartChatWatchMode, setIsChartFullscreen,
+    setIsSettingsOpen, setJournalEntry, setLeaderboardFilter, setNativeChartSymbol, setPostTradeReviewAgentId, setPostTradeReviewEnabled,
+    setRuntimeOpsEnabled, setRuntimeOpsMode, setShadowPanelTabSafe, setSignalIntentComposerOpen, setSnapshotPanelApplyToSignals, setTlExecutionTargets,
+    setTlSnapshotAutoSwitch, setTlSnapshotFallbackOrder, setupLibraryEntries, setupPerformanceByLibrary, setupPerformanceByMode, setupPerformanceBySymbol,
+    setupPerformanceByWatcher, setupPerformanceError, setupPerformanceSummary, setupPerformanceUpdatedAtMs, setupRegimeBlocks, setupRegimes,
+    setupSignals, setupWatchers, setupsMounted, shadowAccounts, shadowPanelTab, shadowProfiles,
+    shadowTradeCompare, shadowTradeStats, shadowTradeViews, signalAutoExecuteEnabled, signalAutoRefreshEnabled, signalContextById,
+    signalEntries, signalExecutionTarget, signalExpiryMinutes, signalIncludePatterns, signalIntentFeatureFlags, signalIntents,
+    signalLastAttemptAtMs, signalLastError, signalLastParseAtMs, signalLastParseError, signalLastRunAtMs, signalMemoryLimit,
+    signalMemoryMode, signalPrimarySymbol, signalProbabilityMax, signalProbabilityThreshold, signalRefreshIntervalMs, signalRunning,
+    signalSessions, signalShadowFollowEnabled, signalSimulatedOutcomes, signalSnapshotScopeMismatch, signalStatusReportRunning, signalStatusReportsBySignalId,
+    signalStrategyModes, signalSymbols, signalThreads, signalTimeframes, snapshotPanelApplyToSignals, snapshotPanelCandidates,
+    snapshotPanelStatus, snapshotPanelSymbol, snapshotPanelTimeframes, speakChartChatMessage, startChartChatLive, stopChartChatLive,
+    switchChartChatAgent, symbolScope, symbolScopeSymbol, syncEconomicCalendar, tabs, taskPlaybookActiveRunRef,
+    taskPlaybookRunsRef, taskPlaybooks, taskTreeResumeEntries, taskTreeRunsState, tlAccountMetrics, tlAccountMetricsError,
+    tlAccounts, tlAccountsError, tlBalance, tlConnectionMeta, tlEquity, tlExecutionTargets,
+    tlMarketSubscriptions, tlNormalizeEnabled, tlNormalizeRefKey, tlOrders, tlOrdersError, tlPositions,
+    tlQuotesBySymbol, tlQuotesError, tlQuotesUpdatedAtMs, tlRefreshAccountMetrics, tlRefreshAccounts, tlRefreshOrders,
+    tlRefreshQuotes, tlRefreshSnapshot, tlSavedConfig, tlSearchInstruments, tlServerLabel, tlShardStates,
+    tlSnapshotAutoSwitch, tlSnapshotFallbackOrder, tlSnapshotSourceKey, tlSnapshotUpdatedAtMs, tlStatus, tlStatusMeta,
+    tlStrategyAssignments, tlStrategyMatrixRows, tlStreamError, tlStreamStatus, tlStreamUpdatedAtMs, tlUpstreamBlockedUntilMs,
+    toggleCalendarRule, updateAcademySettings, updateChartChatAgent, updatePatternSettings, updateSetupWatcher, updateShadowProfile,
+    updateSignalSettings, updateSymbolScope, updateTab, updateTradeMemory, upsertCalendarRule, warmupSnapshotPanel,
+  });
+
+  const appSidebarPanelsModel = buildSidebarPanelsModel({
+    mode,
+    sidebarLazyFallback: SIDEBAR_LAZY_FALLBACK,
+    chat: appChatPanelModel,
+    signal: appSignalPanelModel,
+    tradeLocker: appTradeLockerPanelModel,
+    legacy: appSidebarLegacyPanelsModel
+  });
+
+  const appOrchestratorShell = buildShellContentModel({
+    isFullscreen,
+    notifications,
+    dismissNotification: dismissNotification,
+    commandPaletteOpen,
+    commandPaletteQuery,
+    setCommandPaletteQuery,
+    commandActions,
+    closeCommandPalette,
+    activeTab,
+    tabs,
+    navigate,
+    handleRefresh,
+    handleBack,
+    handleForward,
+    toggleSidebar,
+    isOpen,
+    toggleTabWatch,
+    setActiveTabId,
+    addTab,
+    closeTab,
+    toggleTabPin,
+    setTabLabel,
+    openSettings,
+    toggleFullscreen,
+    tradeLockerAccountSelectorModel,
+    isTradingViewUrl,
+    formatBrokerPrice,
+    brokerBadgeSymbol,
+    brokerBadgeBid,
+    brokerBadgeAsk,
+    brokerBadgeSpread,
+    brokerBadgeAgeLabel,
+    tvPriceLine,
+    tvSymbolLine,
+    activeTabId,
+    updateTab,
+    handleControlsReady,
+    isSettingsOpen,
+    isChartFullscreen,
+    keepWatchedTabsMounted,
+    closeSidebar,
+    mode,
+    handleSwitchSidebarMode,
+    prefetchSidebarMode
+  });
+
+  const appOrchestratorOutsideShell = buildOutsideShellModel({
+    OnboardingGate, SETTINGS_LAZY_FALLBACK, SIGNAL_TELEGRAM_STATUS_OPTIONS, SettingsModal, SignalIntentComposer, activeBrokerSymbol,
+    agents, assistSignalIntentParse, brokerLinkConfig, brokerWatchSymbols, chartSessions, clearLiveErrors,
+    createSignalIntent, executeAgentToolRequest, handleSettingsSaved, healthSnapshot, keepWatchedTabsMounted, keepWatchedTabsMountedRequested,
+    isLive, liveMode, chartWatchEnabled, isOpen, isSettingsOpen, liveErrors,
+    mode, mt5BridgeAvailable, onboardingOpen, openSidebarMode, openaiKeyStored, openaiPermissionBlockedReason,
+    openaiReadinessState, patternSymbols, refreshOnboardingStatus, runActionCatalog, runActionCatalogImmediate, setBrokerLinkConfig,
+    setIsSettingsOpen, setSignalIntentComposerOpen, signalIntentComposerOpen, signalIntentFeatureFlags, signalPrimarySymbol, signalSnapshotWarmupBars1d,
+    signalSnapshotWarmupBars1w, signalSnapshotWarmupBarsDefault, signalSnapshotWarmupTimeoutMs, signalSymbols, signalTelegramConfig, signalTimeframes,
+    startupPhase, symbolScopeSymbol, tabs, tradeLockerPermissionBlockedReason, tradeLockerReadinessState, tradeLockerReady,
+    updateSignalSnapshotWarmup, updateSignalTelegram,
+  });
+
+  const appOrchestratorDeps = buildAppOrchestratorDeps({
+    shell: appOrchestratorShell,
+    sidebarPanels: appSidebarPanelsModel,
+    outsideShell: appOrchestratorOutsideShell
+  });
+
   return (
-    <ErrorBoundary
+    <AppOrchestrator
       onError={({ error, errorInfo }) => {
         appendLiveError({
           source: 'error_boundary',
@@ -40898,961 +40382,14 @@ const App: React.FC = () => {
           detail: errorInfo ? { componentStack: errorInfo.componentStack } : null
         });
       }}
-    >
-      <div
-        className={
-          isFullscreen
-            ? 'flex items-stretch justify-stretch h-screen w-full p-0 relative'
-            : 'flex items-center justify-center min-h-screen w-full p-4 sm:p-8 md:p-12 relative'
-        }
-      >
-        
-        {/* Global Notification Layer */}
-        <ToastContainer notifications={notifications} onDismiss={dismissNotification} />
-        <CommandPalette
-          isOpen={commandPaletteOpen}
-          query={commandPaletteQuery}
-          onQueryChange={setCommandPaletteQuery}
-          actions={commandActions}
-          onClose={closeCommandPalette}
-        />
-
-        <WindowFrame variant={isFullscreen ? 'full' : 'framed'}>
-          {/* Header / Chrome */}
-          <BrowserChrome 
-            currentTab={activeTab}
-            tabs={tabs}
-            onNavigate={navigate}
-            onRefresh={handleRefresh}
-            onBack={handleBack}
-            onForward={handleForward}
-            toggleChat={toggleSidebar}
-            isChatOpen={isOpen}
-            onToggleWatch={toggleTabWatch}
-            onSwitchTab={setActiveTabId}
-            onAddTab={addTab}
-            onCloseTab={closeTab}
-            onTogglePin={toggleTabPin}
-            onSetLabel={setTabLabel}
-            onOpenSettings={openSettings}
-            isFullscreen={isFullscreen}
-            onToggleFullscreen={toggleFullscreen}
-          />
-
-          {/* Main Content Area */}
-          <div className="flex-1 relative flex overflow-hidden">
-            
-            {/* The Main Browser View */}
-            {isTradingViewUrl(activeTab?.url || '') && (
-              <div className="absolute top-3 left-3 z-20 pointer-events-none">
-                <div className="bg-black/70 backdrop-blur-md border border-white/10 rounded-lg px-3 py-2 text-[10px] font-mono text-gray-200 shadow-lg">
-                  <div className="text-gray-400 uppercase tracking-wider">
-                    TL Quote{brokerBadgeSymbol ? ` (${brokerBadgeSymbol})` : ''}
-                  </div>
-                  <div className="mt-1">
-                    {brokerBadgeBid != null || brokerBadgeAsk != null ? (
-                      <>
-                        bid {formatBrokerPrice(brokerBadgeBid)} / ask {formatBrokerPrice(brokerBadgeAsk)}
-                      </>
-                    ) : (
-                      <>bid -- / ask --</>
-                    )}
-                    {brokerBadgeSpread != null ? ` | sp ${formatBrokerPrice(brokerBadgeSpread)}` : ''}
-                    {brokerBadgeAgeLabel ? ` | ${brokerBadgeAgeLabel}` : ''}
-                  </div>
-                  {tvPriceLine ? (
-                    <div className="mt-1 text-gray-500">{tvPriceLine}</div>
-                  ) : null}
-                  {tvSymbolLine ? (
-                    <div className="mt-1 text-gray-500">{tvSymbolLine}</div>
-                  ) : null}
-                </div>
-              </div>
-            )}
-            <BrowserView 
-              tabs={tabs}
-              activeTabId={activeTabId}
-              onTabUpdate={updateTab}
-              onControlsReady={handleControlsReady}
-              isOverlayActive={isSettingsOpen || isChartFullscreen}
-              keepWatchedTabsMounted={keepWatchedTabsMounted}
-            />
-
-            {/* Modular Sidebar Frame */}
-            <SidebarFrame 
-                isVisible={isOpen} 
-                onClose={closeSidebar}
-                activeMode={mode}
-                onSwitchMode={handleSwitchSidebarMode}
-                onPrefetchMode={prefetchSidebarMode}
-            >
-                <React.Suspense fallback={SIDEBAR_LAZY_FALLBACK}>
-                {/* Conditionally render the selected feature */}
-                {mode === 'signal' && (
-                    <SignalInterface
-                      symbols={signalSymbols}
-                      onAddSymbol={handleSignalAddSymbol}
-                      onRemoveSymbol={handleSignalRemoveSymbol}
-                      onSearchSymbols={searchSymbolSuggestions}
-                      timeframes={signalTimeframes}
-                      onTimeframesChange={handleSignalTimeframesChange}
-                      sessions={signalSessions}
-                      onSessionsChange={(next) => updateSignalSettings({ sessions: next })}
-                      strategyModes={signalStrategyModes}
-                      onStrategyModesChange={(next) => updateSignalSettings({ strategyModes: next })}
-                      autoRefreshEnabled={signalAutoRefreshEnabled}
-                      onAutoRefreshChange={(next) => updateSignalSettings({ autoRefreshEnabled: next })}
-                      refreshIntervalMs={signalRefreshIntervalMs}
-                      onRefreshIntervalChange={(next) => updateSignalSettings({ refreshIntervalMs: next })}
-                      probabilityThreshold={signalProbabilityThreshold}
-                      onProbabilityThresholdChange={(next) => updateSignalSettings({ probabilityThreshold: next })}
-                      probabilityMax={signalProbabilityMax}
-                      onProbabilityMaxChange={(next) => updateSignalSettings({ probabilityMax: next })}
-                      expiryMinutes={signalExpiryMinutes}
-                      onExpiryMinutesChange={(next) => updateSignalSettings({ expiryMinutes: next })}
-                      autoExecuteEnabled={signalAutoExecuteEnabled}
-                      onAutoExecuteChange={(next) => updateSignalSettings({ autoExecuteEnabled: next })}
-                      executionTarget={signalExecutionTarget}
-                      onExecutionTargetChange={(next) => updateSignalSettings({ executionTarget: next })}
-                      memoryMode={signalMemoryMode}
-                      onMemoryModeChange={(next) => updateSignalSettings({ memoryMode: next })}
-                      memoryLimit={signalMemoryLimit}
-                      onMemoryLimitChange={(next) => updateSignalSettings({ memoryLimit: next })}
-                      patternContextEnabled={signalIncludePatterns}
-                      onPatternContextChange={(next) => updateSignalSettings({ includePatterns: next })}
-                      autoPilotEnabled={!!autoPilotConfig?.enabled}
-                      autoPilotKill={!!autoPilotConfig?.killSwitch}
-                      autoPilotMode={autoPilotConfig?.mode || null}
-                      isRunning={signalRunning}
-                      lastRunAtMs={signalLastRunAtMs}
-                      lastAttemptAtMs={signalLastAttemptAtMs}
-                      lastError={signalLastError}
-                      lastParseError={signalLastParseError}
-                      lastParseAtMs={signalLastParseAtMs}
-                      snapshotStatus={effectiveSignalSnapshotStatus}
-                      snapshotScopeMismatch={signalSnapshotScopeMismatch}
-                      healthSnapshot={healthSnapshot}
-                      signals={signalEntries}
-                      simulatedOutcomes={signalSimulatedOutcomes}
-                      onRunScan={() => runSignalScan('manual')}
-                      onExecuteSignal={(id) => executeSignalTrade(id, 'manual')}
-                      onRejectSignal={(id) => rejectSignalEntry(id)}
-                      onCancelSignalOrder={(id) => cancelSignalOrder(id)}
-                      onOpenAcademyCase={(id) => openAcademyCase(id)}
-                      onFocusSignal={handleSignalFocus}
-                      onOpenChart={(symbol, timeframe) => openSymbolPanel('nativechart', symbol, timeframe)}
-                      onOpenMt5={(symbol, timeframe) => openSymbolPanel('mt5', symbol, timeframe)}
-                      onOpenTradeLocker={(symbol, timeframe) => openSymbolPanel('tradelocker', symbol, timeframe)}
-                      onPrefillMt5Ticket={(entry) => {
-                        void prefillSignalTicket(entry, 'mt5');
-                      }}
-                      onPrefillTradeLockerTicket={(entry) => {
-                        void prefillSignalTicket(entry, 'tradelocker');
-                      }}
-                      onClearSignals={clearSignalEntries}
-                      intents={signalIntentFeatureFlags.signalIntentV1Composer ? signalIntents : []}
-                      onOpenIntentComposer={() => {
-                        if (!signalIntentFeatureFlags.signalIntentV1Composer) return;
-                        setSignalIntentComposerOpen(true);
-                      }}
-                      onPauseIntent={(id) => {
-                        void pauseSignalIntent(id, 'signal_panel');
-                      }}
-                      onResumeIntent={(id) => {
-                        void resumeSignalIntent(id, 'signal_panel');
-                      }}
-                      crossPanelContext={crossPanelContext}
-                    />
-                )}
-                {mode === 'snapshot' && (
-                    <SnapshotInterface
-                      symbol={snapshotPanelSymbol || symbolScopeSymbol || signalPrimarySymbol || activeBrokerSymbol || activeTvParams?.symbol || ''}
-                      candidateSymbols={snapshotPanelCandidates}
-                      onSelectSymbol={handleSnapshotPanelSelectSymbol}
-                      onSearchSymbols={searchSymbolSuggestions}
-                      timeframes={snapshotPanelTimeframes}
-                      status={snapshotPanelStatus}
-                      onWarmup={() => {
-                        void warmupSnapshotPanel();
-                      }}
-                      onRefresh={() => {
-                        void refreshSnapshotPanelStatus();
-                      }}
-                      applyToSignals={snapshotPanelApplyToSignals}
-                      onApplyToSignalsChange={setSnapshotPanelApplyToSignals}
-                      brokerConnected={tlStatus === 'connected'}
-                      upstreamBlockedUntilMs={tlUpstreamBlockedUntilMs ?? null}
-                    />
-                )}
-                {mode === 'patterns' && (
-                    <PatternsInterface
-                      symbols={patternSymbols}
-                      symbolMode={patternSymbolMode}
-                      onSymbolModeChange={(next) => updatePatternSettings({ symbolMode: next })}
-                      onAddSymbol={handlePatternAddSymbol}
-                      onRemoveSymbol={handlePatternRemoveSymbol}
-                      onSearchSymbols={searchSymbolSuggestions}
-                      timeframes={patternWatchTimeframes}
-                      onTimeframesChange={handlePatternTimeframesChange}
-                      detectors={patternDetectorsResolved}
-                      onDetectorsChange={handlePatternDetectorsChange}
-                      autoRefreshEnabled={patternAutoRefreshEnabled}
-                      onAutoRefreshChange={(next) => updatePatternSettings({ autoRefreshEnabled: next })}
-                      refreshIntervalMs={patternRefreshIntervalMs}
-                      onRefreshIntervalChange={(next) => updatePatternSettings({ refreshIntervalMs: next })}
-                      refreshMode={patternRefreshMode}
-                      onRefreshModeChange={(next) => updatePatternSettings({ refreshMode: next })}
-                      events={patternEvents}
-                      effectiveSymbols={patternWatchSymbols}
-                      watchCount={patternWatchSummary.watchCount}
-                      watchLimit={PATTERN_WATCH_LIMIT}
-                      watchTruncated={patternWatchSummary.truncated}
-                      onRefreshNow={() => {
-                        const fetches = Math.max(1, Math.min(6, patternWatchSummary.watchCount || 1));
-                        requestChartRefresh(fetches);
-                      }}
-                      onFocusChart={(symbol, timeframe) => openSymbolPanel('nativechart', symbol, timeframe)}
-                    />
-                )}
-                {mode === 'shadow' && (
-                    <div className="flex h-full w-full flex-col bg-[#0a0a0a]">
-                      <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-white/5">
-                        <div className="text-[11px] uppercase tracking-wider text-gray-400">Automation Control</div>
-                        <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-black/30 p-1">
-                          <button
-                            type="button"
-                            onClick={() => setShadowPanelTabSafe('shadow')}
-                            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                              shadowPanelTab === 'shadow'
-                                ? 'bg-slate-600 text-white shadow-sm'
-                                : 'text-gray-400 hover:text-white hover:bg-white/5'
-                            }`}
-                          >
-                            Shadow
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShadowPanelTabSafe('auto')}
-                            className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                              shadowPanelTab === 'auto'
-                                ? 'bg-red-600 text-white shadow-sm'
-                                : 'text-gray-400 hover:text-white hover:bg-white/5'
-                            }`}
-                          >
-                            Auto
-                          </button>
-                        </div>
-                      </div>
-                      <div className="flex-1 overflow-hidden">
-                        {shadowPanelTab === 'shadow' ? (
-                          <ShadowInterface
-                            agents={agents}
-                            profiles={shadowProfiles}
-                            accounts={shadowAccounts}
-                            trades={shadowTradeViews}
-                            followEnabled={signalShadowFollowEnabled}
-                            onToggleFollow={(next) => updateSignalSettings({ shadowFollowEnabled: next })}
-                            onUpdateProfile={updateShadowProfile}
-                            onRefresh={() => {
-                              void refreshShadowTrades({ force: true, includeCompare: true });
-                            }}
-                          />
-                        ) : (
-                          <AutoPilotInterface
-                            config={autoPilotConfig}
-                            onUpdateConfig={setAutoPilotConfig}
-                            equity={equity}
-                            memories={memories}
-                            agents={agents}
-                            activePlaybookRun={taskPlaybookActiveRunRef.current}
-                            recentPlaybookRuns={taskPlaybookRunsRef.current}
-                            taskTreeResumeEntries={taskTreeResumeEntries}
-                            onResumeTaskTreeRun={(input) => {
-                              void resumeTaskTreeRun(input);
-                            }}
-                            taskTreeRuns={taskTreeRunsState}
-                            actionTaskTreeRuns={actionTaskTreeRunsState}
-                            onReplayTaskTree={handleReplayTaskTree}
-                            recommendedFlows={recommendedActionFlowsState}
-                            onRunActionFlow={runRecommendedActionFlow}
-                            onRunActionCatalog={runActionCatalog}
-                            onOpenAcademy={() => openAcademyCase(null)}
-                            onResumePlaybookRun={(runId, opts) => {
-                              void resumePlaybookRun(runId, opts);
-                            }}
-                            postTradeReviewEnabled={postTradeReviewEnabled}
-                            onTogglePostTradeReview={(enabled) => setPostTradeReviewEnabled(!!enabled)}
-                            postTradeReviewAgentId={postTradeReviewAgentId}
-                            onSetPostTradeReviewAgentId={(id) => setPostTradeReviewAgentId(String(id || '').trim())}
-                            onReviewLastClosedTrade={() => reviewLastClosedTrade()}
-                            onAddMemory={({ type, text, meta }) => addManualMemory({ type, text, meta: { source: 'user', ...(meta || {}) } })}
-                            onUpdateMemory={updateTradeMemory}
-                            onDeleteMemory={deleteTradeMemory}
-                            onClearMemories={clearTradeMemories}
-                            lossStreak={lossStreakState?.streak ?? null}
-                            lossStreakUpdatedAtMs={lossStreakState?.updatedAtMs ?? lossStreakState?.lastClosedAtMs ?? null}
-                            shadowTradeStats={shadowTradeStats}
-                            shadowCompare={shadowTradeCompare}
-                            lastTradeBlock={lastTradeBlock}
-                            healthSnapshot={healthSnapshot}
-                            brokerRateLimitSuppressUntilMs={brokerRateLimitSuppressUntilMs}
-                          />
-                        )}
-                      </div>
-                    </div>
-                )}
-                {mode === 'calendar' && (
-                    <CalendarInterface
-                      rules={calendarRules}
-                      onRefreshRules={refreshCalendarRules}
-                      onUpsertRule={upsertCalendarRule}
-                      onToggleRule={toggleCalendarRule}
-                      onSearchSymbols={searchSymbolSuggestions}
-                      onSyncEvents={() => syncEconomicCalendar({ force: true, reason: 'panel' })}
-                      onLoadPnlSnapshot={loadCalendarPnlSnapshot}
-                      pnlAccountOptions={(Array.isArray(tlAccounts) ? tlAccounts : [])
-                        .map((acct: any) => {
-                          const env = tlSavedConfig?.env ? String(tlSavedConfig.env) : '';
-                          const server = tlSavedConfig?.server ? String(tlSavedConfig.server) : '';
-                          const accountId = parseTradeLockerAccountNumber(acct?.id);
-                          const accNum = parseTradeLockerAccountNumber(acct?.accNum);
-                          if (accountId == null || accNum == null) return null;
-                          const accountKey = buildTradeLockerAccountKey({
-                            env: env || null,
-                            server: server || null,
-                            accountId,
-                            accNum
-                          });
-                          if (!accountKey) return null;
-                          const labelRaw = acct?.name ? String(acct.name).trim() : '';
-                          const label = labelRaw || `TradeLocker ${accountId}/${accNum}`;
-                          return {
-                            accountKey,
-                            label,
-                            broker: 'tradelocker',
-                            accountId,
-                            accNum,
-                            env: env || null,
-                            server: server || null
-                          };
-                        })
-                        .filter(Boolean)}
-                      pnlActiveAccountKey={getTradeLockerAccountKey()}
-                      pnlEnabled
-                      onRunActionCatalog={runActionCatalog}
-                    />
-                )}
-                {isUnifiedChatMode(mode) && (
-                    <div className="flex h-full flex-col">
-                      <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-white/5">
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Chart Chat</div>
-                        <button
-                          type="button"
-                          onClick={() => sendChartChatMessageWithSnapshot('Explain latest patterns.', chartChatContext, [], null)}
-                          className="px-2 py-1 rounded-md text-[10px] bg-sky-500/20 hover:bg-sky-500/30 text-sky-100"
-                        >
-                          Explain latest patterns
-                        </button>
-                      </div>
-                      <div className="flex-1 overflow-hidden">
-                          <ChatInterface
-                            channel="chart"
-                            messages={chartChatMessages}
-                            onSendMessage={(text, img) => sendChartChatMessageWithSnapshot(text, chartChatContext, [], img)}
-                            captureActiveTabScreenshot={async () => {
-                              const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 80, width: 1280 }, 1200);
-                              if (!frame?.data) return null;
-                              return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
-                            }}
-                            captureContextScreenshots={captureChatTabContextImages}
-                            onClearChat={clearChartChatWithSnapshot}
-                            isThinking={chartChatThinking}
-                            isTeamMode={chartChatReplyMode === 'team'}
-                            chartSnapshotStatus={chartChatSnapshotStatus}
-                            onToggleTeamMode={() => setChartChatReplyMode(prev => prev === 'team' ? 'single' : 'team')}
-                          agents={chartChatAgents}
-                          activeAgentId={chartChatActiveAgentId}
-                          onAddAgent={addChartChatAgent}
-                          onSwitchAgent={switchChartChatAgent}
-                          onUpdateAgent={updateChartChatAgent}
-                            onDeleteAgent={deleteChartChatAgent}
-                            actionQueueDepth={actionTaskQueueDepth}
-                            actionTaskActiveConfig={actionTaskActiveStepRef.current}
-                            playbooks={taskPlaybooks}
-                            activePlaybookRun={taskPlaybookActiveRunRef.current}
-                            recentPlaybookRuns={taskPlaybookRunsRef.current}
-                            taskTreeResumeEntries={taskTreeResumeEntries}
-                            onResumeTaskTreeRun={(input) => {
-                              void resumeTaskTreeRun(input);
-                            }}
-                            taskTreeRuns={taskTreeRunsState}
-                            actionTaskTreeRuns={actionTaskTreeRunsState}
-                            onReplayTaskTree={handleReplayTaskTree}
-                            recommendedFlows={recommendedActionFlowsState}
-                            onRunActionFlow={runRecommendedActionFlow}
-                            onRunActionCatalog={runActionCatalog}
-                            onResumePlaybookRun={(runId, opts) => {
-                              void resumePlaybookRun(runId, opts);
-                            }}
-                            autoTabVisionEnabled={chartChatAutoTabVisionEnabled}
-                          onToggleAutoTabVision={() => setChartChatAutoTabVisionEnabled(prev => !prev)}
-                          chartWatchEnabled={chartChatWatchEnabled}
-                          onToggleChartWatch={() => setChartChatWatchEnabled(prev => !prev)}
-                          chartWatchMode={chartChatWatchMode}
-                          onSetChartWatchMode={setChartChatWatchMode}
-                          chartWatchSnoozedUntilMs={chartChatSnoozedUntilMs}
-                          onSnoozeChartWatch={chartChatSnoozeWatch}
-                          onClearChartWatchSnooze={clearChartChatSnooze}
-                          chartWatchLeadAgentId={chartChatLeadAgentId}
-                          onSetChartWatchLeadAgentId={setChartChatLeadAgentId}
-                          chartSessions={chartSessions.sessions}
-                          activeTabId={activeTabId}
-                          getTabTitle={(tabId) => {
-                            const tab = tabs.find((t) => t.id === tabId);
-                            return tab?.title || tab?.url || tabId;
-                          }}
-                          onCreateChartSessionFromActiveTab={() => {
-                            if (!activeTab) return;
-                            const sessionId = chartSessions.createSessionFromTab(activeTab);
-                            if (!sessionId) return;
-                            chartSessions.assignTabToTimeframe(sessionId, '15m', activeTabId);
-                            updateTab(activeTabId, { isWatched: true, watchSource: 'manual' });
-                          }}
-                          onAssignActiveTabToChartSession={(sessionId, timeframe) => {
-                            if (!activeTabId) return;
-                            chartSessions.assignTabToTimeframe(sessionId, timeframe, activeTabId);
-                            updateTab(activeTabId, { isWatched: true, watchSource: 'manual' });
-                          }}
-                          onClearChartSessionTimeframe={(sessionId, timeframe) => {
-                            chartSessions.clearTimeframe(sessionId, timeframe);
-                          }}
-                          onToggleChartSessionWatch={(sessionId) => {
-                            const session = chartSessions.byId.get(sessionId);
-                            if (!session) return;
-                            chartSessions.setSessionWatchEnabled(sessionId, !session.watchEnabled);
-                          }}
-                          onRemoveChartSession={(sessionId) => {
-                            chartSessions.removeSession(sessionId);
-                          }}
-                          isLive={chartChatIsLive}
-                          liveMode={chartChatLiveMode}
-                          liveStream={chartChatLiveStream}
-                          startLiveSession={startChartChatLive}
-                          stopLiveSession={stopChartChatLive}
-                          sendVideoFrame={sendChartChatVideoFrame}
-                          speakMessage={speakChartChatMessage}
-                          speakingMessageId={chartChatSpeakingMessageId}
-                          sessionBias={chartChatSessionBias}
-                          onUpdateSessionBias={setChartChatSessionBias}
-                          onExecuteTrade={(messageId, proposal) => executeChartChatTradeProposal(messageId, proposal, 'manual')}
-                          onRejectTrade={(messageId) => rejectChartChatTradeProposal(messageId, 'Rejected by user')}
-                          onExecuteBrokerAction={(messageId, action) => executeChartChatBrokerAction(messageId, action)}
-                          onRejectBrokerAction={(messageId) => rejectChartChatBrokerAction(messageId, 'Rejected by user')}
-                          onCancelAgentTool={(messageId) => cancelChartChatAgentTool(messageId)}
-                          contextPackText={getChartContextPack()}
-                          onCaptureContextPack={captureChartContextPack}
-                          symbolScope={symbolScope}
-                          onUpdateSymbolScope={updateSymbolScope}
-                          onClearSymbolScope={clearSymbolScope}
-                          onSearchSymbols={searchSymbolSuggestions}
-                          crossPanelContext={crossPanelContext}
-                        />
-                      </div>
-                    </div>
-                )}
-                {mode === 'notes' && (
-                    <NotesInterface 
-                        autoAppend={journalEntry}
-                        onClearAppend={() => setJournalEntry(null)}
-                        currentTab={activeTab ? { url: activeTab.url, title: activeTab.title } : undefined}
-                        sessionBias={sessionBias}
-                        captureActiveTabScreenshot={async () => {
-                          const frame = await captureTabCached(activeTabId, { format: 'jpeg', quality: 60, width: 1200 }, 1200);
-                          if (!frame?.data) return null;
-                          return `data:${frame.mimeType || 'image/jpeg'};base64,${frame.data}`;
-                        }}
-                        activeAccount={tlSavedConfig ? {
-                          env: tlSavedConfig.env ?? null,
-                          server: tlSavedConfig.server ?? null,
-                          accountId: tlSavedConfig.accountId ?? null,
-                          accNum: tlSavedConfig.accNum ?? null
-                        } : undefined}
-                        onReplayTrade={handleReplayTrade}
-                        onRunActionCatalog={runActionCatalog}
-                        crossPanelContext={crossPanelContext}
-                    />
-                )}
-                {mode === 'leaderboard' && (
-                    <LeaderboardInterface 
-                        agents={agents}
-                        history={leaderboardHistory}
-                        scorecards={agentScorecards}
-                        rankFreshness={healthSnapshot?.rankFreshness || null}
-                        agentDriftReports={healthSnapshot?.agentDrift?.reports || null}
-                        filter={leaderboardFilter}
-                        onFilterChange={setLeaderboardFilter}
-                        onRunActionCatalog={runActionCatalog}
-                        onOpenAcademy={() => openAcademyCase(null)}
-                        crossPanelContext={crossPanelContext}
-                        outcomeFeedCursor={outcomeFeedCursor}
-                        outcomeFeedConsistency={outcomeFeedConsistency}
-                        panelFreshness={panelFreshness.find((row) => row.panel === 'leaderboard') || null}
-                    />
-                )}
-                {mode === 'academy' && academyMounted && (
-                    <AcademyInterface
-                      cases={academyCases}
-                      lessons={academyLessons}
-                      symbolLearnings={academySymbolLearnings}
-                      selectedCaseId={academySelectedCaseId}
-                      onSelectCase={handleAcademyCaseSelect}
-                      autoApplyEnabled={academyAutoApplyEnabled}
-                      onToggleAutoApply={(next) => updateAcademySettings({ autoApplyEnabled: next })}
-                      autoExportEnabled={academyAutoExportEnabled}
-                      onToggleAutoExport={(next) => updateAcademySettings({ autoExportEnabled: next })}
-                      lessonLimit={academyLessonLimit}
-                      onLessonLimitChange={(next) => updateAcademySettings({ lessonLimit: next })}
-                      onRefresh={() => {
-                        void refreshAcademyCases();
-                        void refreshAcademyLessons();
-                        void refreshAcademySymbolLearnings();
-                      }}
-                      onExport={() => {
-                        void persistAcademyExport();
-                      }}
-                      onOpenChart={(symbol, timeframe) => openSymbolPanel('nativechart', symbol, timeframe)}
-                      onOpenMt5={(symbol, timeframe) => openSymbolPanel('mt5', symbol, timeframe)}
-                      onOpenTradeLocker={(symbol, timeframe) => openSymbolPanel('tradelocker', symbol, timeframe)}
-                      onReplayTrade={handleReplayTrade}
-                      crossPanelContext={crossPanelContext}
-                      outcomeFeedCursor={outcomeFeedCursor}
-                      outcomeFeedConsistency={outcomeFeedConsistency}
-                      focusRequest={academyFocusRequest}
-                      onFocusRequestConsumed={handleAcademyFocusRequestConsumed}
-                      onApplyLesson={(lessonId, targetAgentKey) => {
-                        return runAcademyLessonLifecycleAction({
-                          lessonId,
-                          action: 'apply',
-                          targetAgentKey: targetAgentKey || null
-                        });
-                      }}
-                      onSimulateLesson={(lessonId) => {
-                        return runAcademyLessonSimulation(lessonId);
-                      }}
-                      onPinLesson={(lessonId, nextPinned) => {
-                        return runAcademyLessonLifecycleAction({
-                          lessonId,
-                          action: nextPinned ? 'pin' : 'unpin'
-                        });
-                      }}
-                      onSetLessonLifecycle={(lessonId, next) => {
-                        return runAcademyLessonLifecycleAction({
-                          lessonId,
-                          action: next === 'core'
-                            ? 'promote'
-                            : next === 'deprecated'
-                              ? 'deprecate'
-                              : 'demote_candidate'
-                        });
-                      }}
-                      onLearningGraphBuilt={recordAcademyLearningGraphBuilt}
-                      onLearningGraphLensChanged={recordAcademyLearningGraphLensChanged}
-                      onLearningPathGenerated={recordAcademyLearningPathGenerated}
-                      onLearningGraphCaseAction={recordAcademyLearningGraphCaseAction}
-                      onLearningGraphPathZoom={recordAcademyLearningGraphPathZoom}
-                      learningGraphFeatureFlags={learningGraphFeatureFlags}
-                      panelFreshness={panelFreshness.find((row) => row.panel === 'academy') || null}
-                    />
-                )}
-                {mode === 'dashboard' && (
-                    <PerformanceDashboard
-                      defaultSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                      defaultTimeframe={activeTvTimeframeLabel}
-                      onApplyToBacktester={applyOrQueueBacktestOptimization}
-                      onCreateWatchProfile={createWatchProfileFromOptimization}
-                      onSaveWinnerPreset={saveOptimizerWinnerPreset}
-                      onRunActionCatalog={runActionCatalog}
-                    />
-                )}
-                {mode === 'monitor' && (
-                    <MonitorInterface
-                      health={healthSnapshot}
-                      onRequestSnapshot={requestSystemSnapshot}
-                      onClearSnapshotFrameCache={clearSnapshotFrameCache}
-                      onRunActionCatalog={runActionCatalog}
-                      onExecuteAgentTool={executeAgentToolRequest}
-                      liveErrors={liveErrors}
-                      onClearLiveErrors={clearLiveErrors}
-                      runtimeOpsEvents={runtimeOpsEvents}
-                      onClearRuntimeOpsEvents={clearRuntimeOpsEvents}
-                      runtimeOpsState={runtimeOpsControllerState}
-                      runtimeOpsEnabled={runtimeOpsControllerState.mode !== 'disarmed'}
-                      onSetRuntimeOpsEnabled={setRuntimeOpsEnabled}
-                      onSetRuntimeOpsMode={setRuntimeOpsMode}
-                      onEmergencyStopRuntimeOps={emergencyStopRuntimeOps}
-                      onRunRuntimeOpsAction={runRuntimeOpsAction}
-                      runtimeOpsFeatureFlags={runtimeOpsFeatureFlags}
-                    />
-                )}
-                {mode === 'mt5' && (
-                    <MT5Interface
-                      onRunActionCatalog={runActionCatalog}
-                      defaultSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                      symbolMap={brokerLinkConfig?.symbolMap || []}
-                    />
-                )}
-                  {mode === 'tradelocker' && (
-                     <TradeLockerInterface 
-                          balance={tlBalance}
-                          equity={tlEquity}
-                          positions={tlPositions}
-                          orders={tlOrders}
-                          ordersError={tlOrdersError}
-                          brokerQuotes={tlQuotesBySymbol}
-                          brokerQuotesUpdatedAtMs={tlQuotesUpdatedAtMs}
-                          brokerQuotesError={tlQuotesError}
-                          accountMetrics={tlAccountMetrics}
-                          accountMetricsError={tlAccountMetricsError}
-                          accountProbePath={tlStatusMeta?.accountProbePath ?? null}
-                          accountProbeLastError={tlStatusMeta?.accountProbeLastError ?? null}
-                          reconcileLagMs={tlStatusMeta?.reconcileLagMs ?? null}
-                          snapshotUpdatedAtMs={tlSnapshotUpdatedAtMs}
-                          defaultSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                          accounts={tlAccounts}
-                          accountsError={tlAccountsError}
-                          activeAccount={{
-                            env: tlSavedConfig?.env ?? null,
-                            server: tlSavedConfig?.server ?? null,
-                            accountId: tlSavedConfig?.accountId ?? null,
-                            accNum: tlSavedConfig?.accNum ?? null
-                          }}
-                          snapshotSourceKey={tlSnapshotSourceKey}
-                          snapshotAutoSwitch={tlSnapshotAutoSwitch}
-                          snapshotFallbackOrder={tlSnapshotFallbackOrder}
-                          executionTargets={tlExecutionTargets}
-                          normalizationEnabled={tlNormalizeEnabled}
-                          normalizationReferenceKey={tlNormalizeRefKey || null}
-                          symbolMap={brokerLinkConfig?.symbolMap || []}
-                          strategyMatrixRows={tlStrategyMatrixRows}
-                          strategyAssignments={tlStrategyAssignments}
-                          marketSubscriptions={tlMarketSubscriptions}
-                          shardStates={tlShardStates}
-                          onRefresh={() => {
-                            tlRefreshSnapshot();
-                            tlRefreshOrders();
-                            tlRefreshAccountMetrics();
-                            tlRefreshQuotes();
-                          }}
-                          onRefreshAccounts={tlRefreshAccounts}
-                          onClosePosition={handleTradeLockerClosePosition}
-                          onCancelOrder={handleTradeLockerCancelOrder}
-                          onPlaceOrder={executeTicketOrderViaApi}
-                          onSearchInstruments={tlSearchInstruments}
-                          onOpenSettings={() => setIsSettingsOpen(true)}
-                          isConnected={tlStatus === 'connected'}
-                          tradingEnabled={!!tlSavedConfig?.tradingEnabled}
-                          defaultOrderQty={tlSavedConfig?.defaultOrderQty ?? 0}
-                          defaultOrderType={tlSavedConfig?.defaultOrderType || 'market'}
-                          streamStatus={tlStreamStatus}
-                          streamUpdatedAtMs={tlStreamUpdatedAtMs}
-                          streamError={tlStreamError}
-                          rateLimitTelemetry={tlStatusMeta?.rateLimitTelemetry ?? null}
-                          serverLabel={tlServerLabel}
-                          connectionLabel={tlConnectionMeta.label}
-                          connectionDotClass={tlConnectionMeta.dot}
-                          onRunActionCatalog={runActionCatalog}
-                          onRunActionCatalogImmediate={runActionCatalogImmediate}
-                          onSnapshotSourceChange={handleSnapshotSourceChange}
-                          onSnapshotAutoSwitchChange={setTlSnapshotAutoSwitch}
-                          onSnapshotFallbackChange={setTlSnapshotFallbackOrder}
-                          onExecutionTargetsChange={setTlExecutionTargets}
-                          onNormalizationChange={handleNormalizationChange}
-                          onSymbolMapChange={(entries) => {
-                            setBrokerLinkConfig((prev) => ({ ...prev, symbolMap: entries || [] }));
-                          }}
-                        />
-                  )}
-                {(nativeChartMounted || mode === 'nativechart') && (
-                    <div className={mode === 'nativechart' ? 'flex flex-1 flex-col min-h-0 overflow-y-auto' : 'absolute inset-0 pointer-events-none opacity-0'}>
-                        <NativeChartInterface
-                            ref={nativeChartRef}
-                              activeSymbol={nativeChartSymbol || symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                            isPanelVisible={mode === 'nativechart'}
-                            isConnected={tlStatus === 'connected'}
-                            hasDeveloperApiKey={!!tlSavedConfig?.hasSavedDeveloperApiKey}
-                            positions={tlPositions}
-                            orders={tlOrders}
-                            quotesBySymbol={tlQuotesBySymbol}
-                            setupSignals={setupSignals}
-                            setupWatchers={setupWatchers}
-                            regimeBlocks={setupRegimeBlocks}
-                            reviewAnnotations={reviewAnnotations}
-                            patternEvents={patternEvents}
-                            tvSymbol={activeTvParams?.symbol}
-                            tvPrice={activeTvPrice}
-                            tvPriceUpdatedAtMs={activeTvPriceUpdatedAtMs}
-                            onOpenAcademy={() => openAcademyCase(null)}
-                            onOpenSettings={() => setIsSettingsOpen(true)}
-                            onSymbolChange={setNativeChartSymbol}
-                            resolveSymbol={resolveTradeLockerSymbolBestEffort}
-                            onFullscreenChange={setIsChartFullscreen}
-                            onBarClose={handleNativeBarClose}
-                            onUpdateWatcher={updateSetupWatcher}
-                            onRunActionCatalog={runActionCatalog}
-                            requestBroker={requestBrokerWithAudit}
-                            crossPanelContext={crossPanelContext}
-                        />
-                    </div>
-                )}
-                  {(backtesterMounted || mode === 'backtester') && (
-                      <div className={mode === 'backtester' ? 'flex flex-1 flex-col' : 'hidden'}>
-                          <BacktesterInterface
-                              ref={backtesterRef}
-                              activeSymbol={backtestSymbol || symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                              isConnected={tlStatus === 'connected'}
-                              onOpenSettings={() => setIsSettingsOpen(true)}
-                              onSymbolChange={setBacktestSymbol}
-                              resolveSymbol={resolveTradeLockerSymbolBestEffort}
-                              onSendTrainingMessage={sendBacktestMessage}
-                              onSendToWatchlist={sendBacktestSetupToWatchlist}
-                              onFocusChart={focusNativeChart}
-                              onPersistOptimization={saveSetupLibraryFromOptimization}
-                              onCreateWatchProfile={createWatchProfileFromOptimization}
-                              onRunActionCatalog={runActionCatalog}
-                              activePlaybookRun={taskPlaybookActiveRunRef.current}
-                              recentPlaybookRuns={taskPlaybookRunsRef.current}
-                              taskTreeResumeEntries={taskTreeResumeEntries}
-                              onResumeTaskTreeRun={(input) => {
-                                void resumeTaskTreeRun(input);
-                              }}
-                        taskTreeRuns={taskTreeRunsState}
-                        actionTaskTreeRuns={actionTaskTreeRunsState}
-                        recommendedFlows={recommendedActionFlowsState}
-                        onReplayTaskTree={handleReplayTaskTree}
-                        onResumePlaybookRun={(runId, opts) => {
-                          void resumePlaybookRun(runId, opts);
-                        }}
-                              onReady={flushPendingBacktestApply}
-                          />
-                      </div>
-                  )}
-                  {(setupsMounted || mode === 'setups') && (
-                      <div className={mode === 'setups' ? 'flex flex-1 flex-col min-h-0' : 'hidden'}>
-                          <SetupsInterface
-                              isConnected={tlStatus === 'connected'}
-                              watchers={setupWatchers}
-                              signals={setupSignals}
-                              regimes={setupRegimes}
-                              regimeBlocks={setupRegimeBlocks}
-                              libraryEntries={setupLibraryEntries}
-                              performanceByWatcher={setupPerformanceByWatcher}
-                              performanceByLibrary={setupPerformanceByLibrary}
-                              performanceByMode={setupPerformanceByMode}
-                              performanceBySymbol={setupPerformanceBySymbol}
-                              performanceSummary={setupPerformanceSummary}
-                              playbookStatusByWatcher={playbookStatusByWatcher}
-                              performanceUpdatedAtMs={setupPerformanceUpdatedAtMs}
-                              performanceError={setupPerformanceError}
-                              onCreateWatcher={(input) => addSetupWatcher(input)}
-                              onUpdateWatcher={updateSetupWatcher}
-                              onRemoveWatcher={removeSetupWatcher}
-                              onClearSignals={clearSetupSignals}
-                              onFocusChart={(symbol, timeframe) => openSymbolPanel('nativechart', symbol, timeframe)}
-                              onApplyToBacktester={(payload) => applyOrQueueBacktestOptimization(payload)}
-                              onExplainSignal={handleExplainSetupSignal}
-                              onRunActionCatalog={runActionCatalog}
-                              crossPanelContext={crossPanelContext}
-                          />
-                      </div>
-                  )}
-                {(agentCreatorMounted || mode === 'agentcreator') && (
-                    <div className={mode === 'agentcreator' ? 'flex flex-1 flex-col min-h-0' : 'hidden'}>
-                        <AgentCreatorInterface
-                          agents={agents}
-                          activeSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                          activeTimeframe={activeTvTimeframeLabel}
-                          onRunActionCatalog={runActionCatalog}
-                          signalScanEnabledByAgentId={agentScanEnabledById}
-                          onSetSignalScanEnabled={setAgentSignalScanEnabled}
-                          onOpenSignalPanel={() => openSidebarMode('signal')}
-                        />
-                    </div>
-                )}
-                {(agentMemoryMounted || mode === 'agentmemory') && (
-                    <div className={mode === 'agentmemory' ? 'flex flex-1 flex-col' : 'hidden'}>
-                        <AgentMemoryInterface
-                            activeSymbol={symbolScopeSymbol || activeBrokerSymbol || activeTvParams?.symbol}
-                          activeTimeframe={activeTvTimeframeLabel}
-                          agents={agents}
-                          onOpenSettings={() => setIsSettingsOpen(true)}
-                          onRunActionCatalog={runActionCatalog}
-                        />
-                    </div>
-                )}
-                {(agentLabMounted || mode === 'agentlab') && (
-                    <div className={mode === 'agentlab' ? 'flex flex-1 flex-col' : 'hidden'}>
-                        <AgentLabInterface onRunActionCatalog={runActionCatalog} />
-                    </div>
-                )}
-                {(auditMounted || mode === 'audit') && (
-                    <div className={mode === 'audit' ? 'flex flex-1 flex-col' : 'hidden'}>
-                        <AuditTrailInterface
-                          health={healthSnapshot || undefined}
-                          onReplayTaskTree={handleReplayTaskTree}
-                          onRunActionCatalog={runActionCatalog}
-                          outcomeFeedCursor={outcomeFeedCursor}
-                          outcomeFeedConsistency={outcomeFeedConsistency}
-                          panelFreshness={panelFreshness.find((row) => row.panel === 'audit') || null}
-                        />
-                    </div>
-                )}
-                {(changesMounted || mode === 'changes') && (
-                    <div className={mode === 'changes' ? 'flex flex-1 flex-col' : 'hidden'}>
-                        <ChangesInterface
-                          onRunActionCatalog={runActionCatalog}
-                          outcomeFeedCursor={outcomeFeedCursor}
-                          outcomeFeedConsistency={outcomeFeedConsistency}
-                          panelFreshness={panelFreshness.find((row) => row.panel === 'changes') || null}
-                        />
-                    </div>
-                )}
-                </React.Suspense>
-            </SidebarFrame>
-          </div>
-        </WindowFrame>
-
-      </div>
-
-      {signalIntentFeatureFlags.signalIntentV1Composer && signalIntentComposerOpen && (
-        <React.Suspense fallback={null}>
-          <SignalIntentComposer
-            open={signalIntentComposerOpen}
-            onClose={() => setSignalIntentComposerOpen(false)}
-            agents={(agents || []).map((agent) => ({
-              id: String(agent?.id || '').trim(),
-              name: agent?.name ? String(agent.name) : null
-            })).filter((agent) => agent.id)}
-            knownSymbols={Array.from(
-              new Set(
-                [
-                  ...(Array.isArray(signalSymbols) ? signalSymbols : []),
-                  ...(Array.isArray(patternSymbols) ? patternSymbols : []),
-                  ...(Array.isArray(brokerWatchSymbols) ? brokerWatchSymbols : []),
-                  symbolScopeSymbol,
-                  activeBrokerSymbol,
-                  signalPrimarySymbol
-                ]
-                  .map((entry) => String(entry || '').trim().toUpperCase())
-                  .filter(Boolean)
-              )
-            )}
-            defaultSymbol={signalPrimarySymbol || symbolScopeSymbol || activeBrokerSymbol || null}
-            defaultTimeframes={signalTimeframes}
-            onAssistParse={assistSignalIntentParse}
-            onCreateIntent={createSignalIntent}
-          />
-        </React.Suspense>
-      )}
-
-      <OnboardingGate
-        open={onboardingOpen}
-        startupPhase={startupPhase}
-        openaiReady={openaiKeyStored}
-        openaiState={openaiReadinessState}
-        tradeLockerReady={tradeLockerReady}
-        tradeLockerState={tradeLockerReadinessState}
-        openaiBlockedReason={openaiPermissionBlockedReason}
-        tradeLockerBlockedReason={tradeLockerPermissionBlockedReason}
-        mt5Available={mt5BridgeAvailable}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenTradeLocker={() => openSidebarMode('tradelocker')}
-        onOpenMt5={() => openSidebarMode('mt5')}
-        onRefresh={refreshOnboardingStatus}
-      />
-
-      {isSettingsOpen && (
-        <React.Suspense fallback={SETTINGS_LAZY_FALLBACK}>
-          <SettingsModal 
-            isOpen={isSettingsOpen}
-            onClose={() => setIsSettingsOpen(false)}
-            onSave={handleSettingsSaved}
-            onRunActionCatalog={runActionCatalog}
-            onRunActionCatalogImmediate={runActionCatalogImmediate}
-            onExecuteAgentTool={executeAgentToolRequest}
-            liveErrors={liveErrors}
-            onClearLiveErrors={clearLiveErrors}
-            brokerLinkConfig={brokerLinkConfig}
-            onBrokerLinkChange={setBrokerLinkConfig}
-            signalTelegramConfig={signalTelegramConfig}
-            signalTelegramStatusOptions={SIGNAL_TELEGRAM_STATUS_OPTIONS}
-            onSignalTelegramChange={updateSignalTelegram}
-            signalSnapshotWarmupConfig={{
-              barsDefault: signalSnapshotWarmupBarsDefault,
-              bars1d: signalSnapshotWarmupBars1d,
-              bars1w: signalSnapshotWarmupBars1w,
-              timeoutMs: signalSnapshotWarmupTimeoutMs
-            }}
-            onSignalSnapshotWarmupChange={updateSignalSnapshotWarmup}
-            healthSnapshot={healthSnapshot}
-            performance={{
-              keepWatchedTabsMounted,
-              keepWatchedTabsMountedRequested,
-              isLive,
-              liveMode,
-              chatOpen: isOpen,
-              sidebarMode: mode,
-              chartWatchEnabled,
-              watchedTabs: {
-                total: tabs.filter((t) => !!t.isWatched).length,
-                manual: tabs.filter((t) => !!t.isWatched && t.watchSource === 'manual').length,
-                auto: tabs.filter((t) => !!t.isWatched && t.watchSource === 'auto').length
-              },
-              chartSessions: {
-                total: (chartSessions.sessions || []).length,
-                watchEnabled: (chartSessions.sessions || []).filter((s) => s && s.watchEnabled !== false).length,
-                assignedViews: (chartSessions.sessions || []).reduce((acc, s: any) => {
-                  if (!s || !s.views) return acc;
-                  return acc + Object.values(s.views).filter(Boolean).length;
-                }, 0)
-              }
-            }}
-          />
-        </React.Suspense>
-      )}
-      
-      {/* Background Ambience styles */}
-      <style>{`
-        @keyframes loading-bar {
-          0% { width: 0%; margin-left: 0; }
-          50% { width: 70%; margin-left: 0; }
-          100% { width: 100%; margin-left: 100%; }
-        }
-        .animate-loading-bar {
-          animation: loading-bar 1.5s infinite linear;
-        }
-        .animate-slideInRight {
-          animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        @keyframes slideInRight {
-          from { transform: translateX(100%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.1);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(255, 255, 255, 0.2);
-        }
-      `}</style>
-    </ErrorBoundary>
+      deps={appOrchestratorDeps}
+    />
   );
 };
 
 export default App;
+
+
+
+
+

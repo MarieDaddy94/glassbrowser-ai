@@ -47,3 +47,12 @@ test('legacy chat channel aliases to chart channel across runtime and UI', () =>
   assert.match(CHAT_RUNTIME, /if \(raw === 'chart' \|\| raw === 'chartchat' \|\| raw === 'chart_chat' \|\| raw === 'chat'\) return 'chart';/);
   assert.match(CHAT_INTERFACE, /const normalizedChannel: 'chat' \| 'chart' = 'chart';/);
 });
+
+test('chat send payload forwards thread metadata through UI and runtime', () => {
+  assert.match(CHAT_INTERFACE, /threadKind: activeThreadKind/);
+  assert.match(CHAT_INTERFACE, /threadId: activeThreadId/);
+  assert.match(CHAT_INTERFACE, /signalId: activeSignalIdForThread \|\| null/);
+  assert.match(CHAT_RUNTIME, /const threadKindRaw = String\(payload\.threadKind \|\| ''\)\.trim\(\)\.toLowerCase\(\);/);
+  assert.match(CHAT_RUNTIME, /const threadIdRaw = String\(payload\.threadId \|\| ''\)\.trim\(\);/);
+  assert.match(CHAT_RUNTIME, /await chartHandlers\.sendMessage\(text, context, \[\], image, options\);/);
+});

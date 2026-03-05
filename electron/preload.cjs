@@ -593,6 +593,9 @@ contextBridge.exposeInMainWorld('glass', {
   mt5: {
     startBridge: () => guardedInvoke('mt5', 'mt5Bridge:start'),
     getBridgeStatus: () => guardedInvoke('mt5', 'mt5Bridge:status'),
+    heartbeat: () => guardedInvoke('mt5', 'mt5Bridge:heartbeat'),
+    getLifecycleStatus: () => guardedInvoke('mt5', 'mt5Bridge:lifecycleStatus'),
+    forceRestart: () => guardedInvoke('mt5', 'mt5Bridge:forceRestart'),
     openBridgeLog: () => guardedInvoke('mt5', 'mt5Bridge:openLog')
   },
   window: {
@@ -606,7 +609,9 @@ contextBridge.exposeInMainWorld('glass', {
     stopRuntimeStream: (args) => guardedInvoke('diagnostics', 'diagnostics:runtimeStream:stop', args),
     onRuntimeEvent: guardedOnRuntimeDiagnosticsEvent,
     listReleases: (args) => guardedInvoke('diagnostics', 'diagnostics:listReleases', args),
-    getBundleStats: () => guardedInvoke('diagnostics', 'diagnostics:getBundleStats')
+    getBundleStats: () => guardedInvoke('diagnostics', 'diagnostics:getBundleStats'),
+    getSecurityAuditSnapshot: () => guardedInvoke('diagnostics', 'diagnostics:securityAuditSnapshot'),
+    getRenderPerfSnapshot: () => guardedInvoke('diagnostics', 'diagnostics:renderPerfSnapshot')
   },
   runtimeOps: {
     onExternalCommand: guardedOnRuntimeOpsExternalCommand,
@@ -656,6 +661,7 @@ contextBridge.exposeInMainWorld('glass', {
 
     getSnapshot: (opts) => guardedInvoke('tradelocker', 'tradelocker:getSnapshot', opts),
     getAccountMetrics: (opts) => guardedInvoke('tradelocker', 'tradelocker:getAccountMetrics', opts),
+    getAccountMetricsForAccount: (opts) => guardedInvoke('tradelocker', 'tradelocker:getAccountMetricsForAccount', opts),
     getOrders: () => guardedInvoke('tradelocker', 'tradelocker:getOrders'),
     getOrdersHistory: () => guardedInvoke('tradelocker', 'tradelocker:getOrdersHistory'),
     getOrderDetails: (args) => guardedInvoke('tradelocker', 'tradelocker:getOrderDetails', args),

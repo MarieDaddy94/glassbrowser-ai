@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import SystemBoot from './components/SystemBoot';
+import ErrorBoundary from './components/ErrorBoundary';
 import '@fontsource/inter/index.css';
 import './styles/index.css';
 
@@ -12,6 +13,8 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <SystemBoot />
+    <ErrorBoundary>
+      <SystemBoot />
+    </ErrorBoundary>
   </React.StrictMode>
 );

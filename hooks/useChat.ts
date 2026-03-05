@@ -41,6 +41,57 @@ const MAX_MEMORIES_IN_STATE = 200;
 const MAX_MEMORIES_IN_PROMPT = 30;
 const MAX_MESSAGES_IN_STATE = 300;
 const MAX_DATAURL_IMAGES_IN_STATE = 12;
+const GLOBAL_THREAD_ID = 'global';
+
+type MessageThreadMeta = {
+  threadKind?: 'global' | 'signal';
+  threadId?: string | null;
+  threadLabel?: string | null;
+  signalId?: string | null;
+};
+
+const normalizeMessageThreadMeta = (input: any): Required<MessageThreadMeta> => {
+  const signalIdRaw = String(input?.signalId || '').trim();
+  const signalId = signalIdRaw || null;
+  const kindRaw = String(input?.threadKind || '').trim().toLowerCase();
+  const threadKind: 'global' | 'signal' =
+    (kindRaw === 'signal' && signalId)
+      ? 'signal'
+      : 'global';
+  const inferredThreadId = threadKind === 'signal' && signalId ? `signal:${signalId}` : GLOBAL_THREAD_ID;
+  const threadIdRaw = String(input?.threadId || '').trim();
+  const threadId = threadIdRaw || inferredThreadId;
+  const threadLabelRaw = String(input?.threadLabel || '').trim();
+  const threadLabel = threadLabelRaw || (threadKind === 'signal' && signalId ? `Signal ${signalId}` : 'Global');
+  return {
+    threadKind,
+    threadId,
+    threadLabel,
+    signalId: threadKind === 'signal' ? signalId : null
+  };
+};
+
+const applyThreadMetaToMessage = (message: Message, input: any): Message => {
+  const meta = normalizeMessageThreadMeta(input);
+  return {
+    ...message,
+    threadKind: meta.threadKind,
+    threadId: meta.threadId,
+    threadLabel: meta.threadLabel,
+    signalId: meta.signalId
+  };
+};
+
+const includeMessageInThreadHistory = (message: Message | null | undefined, threadMetaInput: any): boolean => {
+  if (!message) return false;
+  if (String(message.id || '') === 'welcome') return true;
+  const threadMeta = normalizeMessageThreadMeta(threadMetaInput);
+  const msgMeta = normalizeMessageThreadMeta(message);
+  if (threadMeta.threadKind === 'signal' && threadMeta.signalId) {
+    return msgMeta.threadKind === 'signal' && msgMeta.signalId === threadMeta.signalId;
+  }
+  return msgMeta.threadKind === 'global';
+};
 
 type ChatWorkflowIntentModule = typeof import('../services/chatWorkflowIntent');
 type ChatPromptBuildersModule = typeof import('../services/chatPromptBuilders');
@@ -374,13 +425,14 @@ const normalizeMessageSeed = (raw: any, index: number): Message | null => {
             ? Date.parse(raw.timestamp)
             : Date.now());
   const id = raw.id != null ? String(raw.id) : `seed_${tsRaw}_${index}`;
-  return {
+  const normalized = {
     ...(raw as Message),
     id,
     role,
     text,
     timestamp: new Date(tsRaw)
   };
+  return applyThreadMetaToMessage(normalized, raw);
 };
 
 const prepareSeedMessages = (input?: Message[] | null): Message[] => {
@@ -1245,7 +1297,9 @@ export const useChat = (
         isError: !result.ok,
         image: imageForChat
       };
-      setMessages((prev) => [...prev, toolMessage]);
+      const sourceMessage = (messagesRef.current || []).find((m) => m.id === messageId);
+      const threadedToolMessage = applyThreadMetaToMessage(toolMessage, sourceMessage || action);
+      setMessages((prev) => [...prev, threadedToolMessage]);
     }
   }, []);
 
@@ -3873,7 +3927,14 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
     },
     monitoredUrls: string[],
     imageAttachment?: string | Array<{ dataUrl?: string; label?: string; meta?: any }> | null,
-    meta?: { correlationId?: string; [key: string]: any }
+    meta?: {
+      correlationId?: string;
+      threadKind?: 'global' | 'signal';
+      threadId?: string | null;
+      threadLabel?: string | null;
+      signalId?: string | null;
+      [key: string]: any;
+    }
   ) => {
     if ((!text.trim() && !imageAttachment) || isThinking) return;
 
@@ -3881,6 +3942,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
     const isImageCommand = text.trim().toLowerCase().startsWith('/image');
     const now = Date.now();
     const requestMeta = meta && typeof meta === 'object' ? meta : {};
+    const requestThreadMeta = normalizeMessageThreadMeta(requestMeta);
     const correlationId = typeof requestMeta.correlationId === 'string' && requestMeta.correlationId.trim()
       ? requestMeta.correlationId
       : createCorrelationId(now);
@@ -3902,17 +3964,17 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
       }
     }
 
-    const userMessage: Message = {
+    const userMessage: Message = applyThreadMetaToMessage({
       id: now.toString(),
       role: 'user',
       text,
       image: userImageForChat,
       timestamp: new Date(),
       correlationId
-    };
+    }, requestThreadMeta);
     lastUserIntentRef.current = String(text || '').trim();
 
-    const historySnapshot = messages;
+    const historySnapshot = (messages || []).filter((entry) => includeMessageInThreadHistory(entry, requestThreadMeta));
 
     if (!isImageCommand) {
       const workflowModule = await loadChatWorkflowIntentModule();
@@ -3947,7 +4009,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
         };
         const finalToolAction = ensureToolActionSource(toolAction) || toolAction;
 
-        const toolMessage: Message = {
+        const toolMessage: Message = applyThreadMetaToMessage({
           id: assistantMessageId,
           role: 'model',
           text: `Starting workflow: ${workflowIntent.playbookId}${workflowIntent.symbol ? ` for ${workflowIntent.symbol}` : ''}.`,
@@ -3957,7 +4019,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
           agentName: currentAgent.name,
           agentColor: currentAgent.color,
           agentToolAction: finalToolAction
-        };
+        }, requestThreadMeta);
 
         setMessages((prev) => [...prev, userMessage, toolMessage]);
         setIsThinking(false);
@@ -3997,7 +4059,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
             reason: payload.reason
           };
           const finalToolAction = ensureToolActionSource(toolAction) || toolAction;
-          const toolMessage: Message = {
+          const toolMessage: Message = applyThreadMetaToMessage({
             id: `${now}_flow`,
             role: 'model',
             text: `Running learned flow: ${learnedFlow.intentLabel || learnedFlow.intentKey}.`,
@@ -4007,7 +4069,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
             agentName: currentAgent.name,
             agentColor: currentAgent.color,
             agentToolAction: finalToolAction
-          };
+          }, requestThreadMeta);
           setMessages((prev) => [...prev, userMessage, toolMessage]);
           setIsThinking(false);
           void executeAgentTool(toolMessage.id, finalToolAction);
@@ -4040,7 +4102,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
         return `TEAM RESPONSES SO FAR:\n${lines || 'none'}`;
       };
 
-      const placeholderMessages: Message[] = targetAgents.map((agent, idx) => ({
+      const placeholderMessages: Message[] = targetAgents.map((agent, idx) => applyThreadMetaToMessage({
         id: (now + idx + 1).toString(),
         role: 'model',
         text: '',
@@ -4050,7 +4112,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
         agentName: agent.name,
         agentColor: agent.color,
         isStreaming: true
-      }));
+      }, requestThreadMeta));
 
       setMessages(prev => [...prev, userMessage, ...placeholderMessages]);
       setIsThinking(true);
@@ -4260,7 +4322,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
           const assistantMessageId = (now + i + 1).toString();
           const res = await runAgent(agent, assistantMessageId, historyForAgents);
           if (res?.responseText) {
-            historyForAgents = [...historyForAgents, {
+            historyForAgents = [...historyForAgents, applyThreadMetaToMessage({
               id: assistantMessageId,
               role: 'model',
               text: res.responseText,
@@ -4272,7 +4334,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
               tradeProposal: res.tradeProposal,
               brokerAction: res.brokerAction,
               agentToolAction: res.agentToolAction
-            }];
+            }, requestThreadMeta)];
             roundResponses.push({
               agentId: agent.id,
               agentName: agent.name,
@@ -4296,7 +4358,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
       return;
     }
 
-    const placeholderMessage: Message | null = isImageCommand ? null : {
+    const placeholderMessage: Message | null = isImageCommand ? null : applyThreadMetaToMessage({
       id: assistantMessageId,
       role: 'model',
       text: '',
@@ -4306,7 +4368,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
       agentName: currentAgent.name,
       agentColor: currentAgent.color,
       isStreaming: true
-    };
+    }, requestThreadMeta);
 
     setMessages(prev => placeholderMessage ? [...prev, userMessage, placeholderMessage] : [...prev, userMessage]);
     setIsThinking(true);
@@ -4343,7 +4405,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
         } catch {
           // ignore
         }
-        const imageMessage: Message = {
+        const imageMessage: Message = applyThreadMetaToMessage({
           id: assistantMessageId,
           role: 'model',
           text: `Here is your generated image for: "${prompt}"`,
@@ -4353,7 +4415,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
           agentId: currentAgent.id,
           agentName: currentAgent.name,
           agentColor: currentAgent.color
-        };
+        }, requestThreadMeta);
         setMessages(prev => [...prev, imageMessage]);
       } 
       else {
@@ -4432,7 +4494,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
 
         // Pass memories and monitored URLs to service
         const { text: responseText, tradeProposal, riskUpdate, brokerAction, agentToolAction } = await sendMessageToOpenAI(
-            messages, 
+            historySnapshot, 
             text, 
             systemContext, 
             requestImageAttachment, 
@@ -4521,7 +4583,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
           return { ...m, text: `Error: ${short}`, isError: true, isStreaming: false };
         }));
       } else {
-        const errorMessage: Message = {
+        const errorMessage: Message = applyThreadMetaToMessage({
           id: assistantMessageId,
           role: 'model',
           text: `Error: ${short}`,
@@ -4530,7 +4592,7 @@ Write a concise review focused on process and rule adherence. If a chart snapsho
           agentId: currentAgent.id,
           agentName: currentAgent.name,
           agentColor: currentAgent.color
-        };
+        }, requestThreadMeta);
         setMessages(prev => [...prev, errorMessage]);
       }
     } finally {

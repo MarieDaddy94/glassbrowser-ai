@@ -123,6 +123,44 @@ declare global {
           };
           error?: string;
         }>;
+        getSecurityAuditSnapshot: () => Promise<{
+          ok: boolean;
+          generatedAtMs?: number;
+          isPackaged?: boolean;
+          csp?: { mode?: string; policy?: string };
+          windows?: Array<{
+            id?: number | null;
+            destroyed?: boolean;
+            url?: string | null;
+            webPreferences?: {
+              contextIsolation?: boolean;
+              nodeIntegration?: boolean;
+              sandbox?: boolean;
+              webSecurity?: boolean;
+              allowRunningInsecureContent?: boolean;
+              webviewTag?: boolean;
+            } | null;
+          }>;
+          error?: string;
+        }>;
+        getRenderPerfSnapshot: () => Promise<{
+          ok: boolean;
+          generatedAtMs?: number;
+          appUptimeSec?: number;
+          windows?: number;
+          memory?: {
+            rss?: number;
+            heapTotal?: number;
+            heapUsed?: number;
+            external?: number;
+          };
+          runtime?: {
+            streamSubscribers?: number;
+            runtimeEventsBuffered?: number;
+            runtimeEventsDropped?: number;
+          };
+          error?: string;
+        }>;
       };
       runtimeOps?: {
         onExternalCommand: (handler: (payload: {
@@ -231,6 +269,24 @@ declare global {
       mt5?: {
         startBridge: () => Promise<{ ok: boolean; port?: number; healthy?: boolean | null; started?: boolean; error?: string }>;
         getBridgeStatus: () => Promise<{ ok: boolean; port?: number; healthy?: boolean; lastError?: string | null }>;
+        heartbeat: () => Promise<{ ok: boolean; port?: number; healthy?: boolean; lastHeartbeatAtMs?: number | null; error?: string }>;
+        getLifecycleStatus: () => Promise<{
+          ok: boolean;
+          running?: boolean;
+          pid?: number | null;
+          authEnabled?: boolean;
+          tokenPresent?: boolean;
+          lastError?: string | null;
+          lastHeartbeatAtMs?: number | null;
+          lastHeartbeatOk?: boolean | null;
+          heartbeatMisses?: number;
+          restartCount?: number;
+          lastExitAtMs?: number | null;
+          lastExitCode?: number | null;
+          lastExitSignal?: string | null;
+          error?: string;
+        }>;
+        forceRestart: () => Promise<{ ok: boolean; restarted?: boolean; port?: number; error?: string }>;
         openBridgeLog: () => Promise<{ ok: boolean; logPath?: string }>;
       };
       broker?: {
@@ -384,6 +440,29 @@ declare global {
           error?: string;
         }>;
         getAccountMetrics: (opts?: { maxAgeMs?: number }) => Promise<{
+          ok: boolean;
+          accountId?: number | null;
+          accNum?: number | null;
+          currency?: string | null;
+          balance?: number;
+          equity?: number;
+          openGrossPnl?: number | null;
+          openNetPnl?: number | null;
+          marginUsed?: number | null;
+          marginFree?: number | null;
+          marginLevel?: number | null;
+          computedMarginLevel?: boolean;
+          updatedAtMs?: number;
+          cached?: boolean;
+          rateLimited?: boolean;
+          retryAtMs?: number;
+          error?: string;
+        }>;
+        getAccountMetricsForAccount: (opts: {
+          accountId: number;
+          accNum: number;
+          maxAgeMs?: number;
+        }) => Promise<{
           ok: boolean;
           accountId?: number | null;
           accNum?: number | null;

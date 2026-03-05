@@ -1066,6 +1066,14 @@ const MonitorInterface: React.FC<MonitorInterfaceProps> = ({
                   tone={schedulerHealth?.shadowTask?.paused ? 'text-amber-300' : undefined}
                 />
               </MetricCard>
+              <MetricCard title="TradeLocker Shards">
+                <MetricRow label="Shards" value={liveHealth.tradelockerScheduler?.shardCount ?? liveHealth.tradelockerShards?.length ?? 0} />
+                <MetricRow label="Tenants" value={liveHealth.tradelockerTenants ?? '--'} />
+                <MetricRow label="Fanout Symbols" value={Array.isArray(liveHealth.tradelockerFanout) ? liveHealth.tradelockerFanout.length : 0} />
+                <MetricRow label="Queue Depth" value={liveHealth.tradelockerScheduler?.totalQueueDepth ?? '--'} />
+                <MetricRow label="Runs" value={liveHealth.tradelockerScheduler?.totalRuns ?? '--'} />
+                <MetricRow label="Failures" value={liveHealth.tradelockerScheduler?.totalFailures ?? '--'} />
+              </MetricCard>
               <MetricCard title="Startup">
                 <MetricRow
                   label="Phase"

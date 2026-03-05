@@ -159,6 +159,15 @@ export const IPC_CONTRACT = {
       "inPreload": true
     },
     {
+      "name": "diagnostics:renderPerfSnapshot",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "diagnostics:runtimeStream:start",
       "domain": "diagnostics",
       "scopes": [
@@ -169,6 +178,15 @@ export const IPC_CONTRACT = {
     },
     {
       "name": "diagnostics:runtimeStream:stop",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "diagnostics:securityAuditSnapshot",
       "domain": "diagnostics",
       "scopes": [
         "diagnostics"
@@ -208,6 +226,33 @@ export const IPC_CONTRACT = {
       "domain": "glass",
       "scopes": [
         "file"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:forceRestart",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:heartbeat",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:lifecycleStatus",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
       ],
       "inMain": true,
       "inPreload": true
@@ -815,6 +860,15 @@ export const IPC_CONTRACT = {
     },
     {
       "name": "tradelocker:getAccountMetrics",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "tradelocker:getAccountMetricsForAccount",
       "domain": "tradelocker",
       "scopes": [
         "tradelocker"

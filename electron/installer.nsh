@@ -4,3 +4,7 @@
   StrCpy $INSTDIR "$LOCALAPPDATA\Programs\${PRODUCT_NAME}"
 !macroend
 
+!macro customInstall
+  ; Intentionally empty: finish-page auto-run is disabled via
+  ; build.nsis.runAfterFinish=false in package.json.
+!macroend

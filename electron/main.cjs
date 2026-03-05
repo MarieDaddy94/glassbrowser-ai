@@ -1170,6 +1170,26 @@ const AGENT_RUNNER_DEFAULT_MODEL = String(process.env.OPENAI_TEXT_MODEL || proce
 const ENABLE_SANDBOX = process.env.GLASS_DISABLE_SANDBOX !== '1';
 const ALLOWED_WEBVIEW_PROTOCOLS = new Set(['http:', 'https:', 'about:', 'blob:']);
 const ALLOWED_PERMISSION_TYPES = new Set(['media', 'display-capture', 'clipboard-read', 'notifications']);
+const RENDERER_ENTRY_ASSET_ATTR_RE = /\b(?:src|href)=["']([^"']+)["']/gi;
+const NON_LOCAL_RENDERER_REF_RE = /^(?:[a-z]+:|\/\/|#)/i;
+const DEFAULT_ALLOWED_WEBVIEW_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1'
+]);
+const ENTERPRISE_FLAG_DEFAULTS = Object.freeze({
+  securityAuditV1: true,
+  mt5BridgeAuthV1: true,
+  zustandMigrationV1: true,
+  uiVirtualizationV1: false,
+  electronE2EV1: true
+});
+const BRIDGE_AUTH_HEADER = 'x-glass-bridge-token';
+const BRIDGE_HEARTBEAT_INTERVAL_MS = 5_000;
+const BRIDGE_HEARTBEAT_TIMEOUT_MS = 2_000;
+const BRIDGE_HEARTBEAT_MISS_LIMIT = 3;
+const BRIDGE_FORCE_KILL_DELAY_MS = 4_000;
+const CSP_PACKAGED = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* http://127.0.0.1:*; media-src 'self' blob: data:; frame-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+const CSP_DEV = "default-src 'self' http://localhost:3000 http://127.0.0.1:3000 ws://localhost:3000 ws://127.0.0.1:3000; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:3000 http://127.0.0.1:3000; style-src 'self' 'unsafe-inline' http://localhost:3000 http://127.0.0.1:3000; img-src 'self' data: blob: https: http:; font-src 'self' data: http:; connect-src 'self' https: http://localhost:3000 http://127.0.0.1:3000 ws://localhost:3000 ws://127.0.0.1:3000 ws://127.0.0.1:* http://127.0.0.1:*; media-src 'self' blob: data:; object-src 'none'; base-uri 'self'; form-action 'self'";
 let startupMigrationStatus = {
   migrationAttempted: false,
   migrationApplied: false,
@@ -1177,6 +1197,35 @@ let startupMigrationStatus = {
   migrationFiles: [],
   migrationReason: null
 };
+
+function parseEnvBoolean(raw, fallback = false) {
+  const value = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === '1' || value === 'true' || value === 'yes' || value === 'on') return true;
+  if (value === '0' || value === 'false' || value === 'no' || value === 'off') return false;
+  return fallback;
+}
+
+function loadEnterpriseFlags() {
+  const envRaw = String(process.env.GLASS_FEATURE_FLAGS_JSON || '').trim();
+  const next = { ...ENTERPRISE_FLAG_DEFAULTS };
+  if (!envRaw) return next;
+  try {
+    const parsed = JSON.parse(envRaw);
+    if (parsed && typeof parsed === 'object') {
+      for (const key of Object.keys(next)) {
+        if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+          next[key] = parsed[key] === true;
+        }
+      }
+    }
+  } catch {
+    // ignore malformed env payload
+  }
+  return next;
+}
+
+const enterpriseFlags = loadEnterpriseFlags();
 
 function runOneTimeProfileMigration() {
   let status;
@@ -1359,9 +1408,36 @@ const originalIpcHandle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, handler) => {
   return originalIpcHandle(channel, async (...ipcArgs) => {
     const startedAtMs = Date.now();
+    const senderEvent = ipcArgs[0];
     const rawArg = ipcArgs[1];
     const { payload } = unwrapIpcPayload(rawArg);
     const requestId = extractRequestId(rawArg) || buildRequestId();
+    if (!isTrustedSender(senderEvent)) {
+      const denied = `IPC blocked for untrusted sender: ${String(channel || '')}`;
+      pushRuntimeEvent({
+        source: 'ipc_error',
+        level: 'warn',
+        code: 'ipc_sender_denied',
+        message: denied,
+        payload: {
+          channel,
+          requestId,
+          senderUrl: senderEvent?.senderFrame?.url || senderEvent?.sender?.getURL?.() || null
+        }
+      });
+      return buildIpcEnvelope({
+        channel,
+        requestId,
+        startedAtMs,
+        result: {
+          ok: false,
+          error: 'Untrusted IPC sender.',
+          code: 'untrusted_sender',
+          channel
+        },
+        error: null
+      });
+    }
     try {
       const nextArgs = ipcArgs.length > 1 ? [ipcArgs[0], payload, ...ipcArgs.slice(2)] : ipcArgs;
       const result = await handler(...nextArgs);
@@ -1385,7 +1461,18 @@ function isAllowedWebviewUrl(raw) {
   if (!url) return false;
   const proto = url.protocol;
   if (proto === 'about:') return url.href === 'about:blank';
-  return ALLOWED_WEBVIEW_PROTOCOLS.has(proto);
+  if (!ALLOWED_WEBVIEW_PROTOCOLS.has(proto)) return false;
+  if (proto !== 'http:' && proto !== 'https:') return true;
+  const host = String(url.hostname || '').trim().toLowerCase();
+  if (!host) return false;
+  if (DEFAULT_ALLOWED_WEBVIEW_HOSTS.has(host)) return true;
+  const rawAllowlist = String(process.env.GLASS_WEBVIEW_HOST_ALLOWLIST || '').trim();
+  if (!rawAllowlist) return false;
+  const allowedHosts = rawAllowlist
+    .split(',')
+    .map((entry) => String(entry || '').trim().toLowerCase())
+    .filter(Boolean);
+  return allowedHosts.includes(host);
 }
 
 function isAllowedAppNavigation(raw) {
@@ -1412,6 +1499,100 @@ function isAllowedPermissionRequest(permission, details, webContents) {
   const perm = String(permission || '').trim().toLowerCase();
   if (!ALLOWED_PERMISSION_TYPES.has(perm)) return false;
   return true;
+}
+
+function buildSecureWebPreferences(overrides = {}) {
+  return {
+    preload: path.join(__dirname, 'preload.cjs'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: ENABLE_SANDBOX,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    enableRemoteModule: false,
+    webviewTag: true,
+    ...overrides
+  };
+}
+
+function getContentSecurityPolicy() {
+  return isDev ? CSP_DEV : CSP_PACKAGED;
+}
+
+function installContentSecurityPolicy() {
+  try {
+    const ses = session?.defaultSession;
+    if (!ses?.webRequest?.onHeadersReceived) return;
+    ses.webRequest.onHeadersReceived((details, callback) => {
+      try {
+        const current = details?.responseHeaders || {};
+        const nextHeaders = { ...current };
+        nextHeaders['Content-Security-Policy'] = [getContentSecurityPolicy()];
+        callback({ responseHeaders: nextHeaders });
+      } catch {
+        callback({ responseHeaders: details?.responseHeaders || {} });
+      }
+    });
+  } catch {
+    // ignore csp install failures
+  }
+}
+
+function buildSecurityAuditSnapshot() {
+  const windows = BrowserWindow.getAllWindows().map((win) => {
+    let prefs = null;
+    try {
+      prefs = win?.webContents?.getLastWebPreferences?.() || null;
+    } catch {
+      prefs = null;
+    }
+    return {
+      id: win?.id || null,
+      destroyed: !!win?.isDestroyed?.(),
+      url: win?.webContents?.getURL?.() || null,
+      webPreferences: prefs
+        ? {
+            contextIsolation: prefs.contextIsolation === true,
+            nodeIntegration: prefs.nodeIntegration === false,
+            sandbox: prefs.sandbox !== false,
+            webSecurity: prefs.webSecurity !== false,
+            allowRunningInsecureContent: prefs.allowRunningInsecureContent !== true,
+            webviewTag: prefs.webviewTag === true
+          }
+        : null
+    };
+  });
+  return {
+    ok: true,
+    generatedAtMs: Date.now(),
+    isPackaged: app.isPackaged,
+    csp: {
+      mode: isDev ? 'dev' : 'packaged',
+      policy: getContentSecurityPolicy()
+    },
+    windows
+  };
+}
+
+function buildRenderPerfSnapshot() {
+  const memory = process.memoryUsage();
+  return {
+    ok: true,
+    generatedAtMs: Date.now(),
+    appUptimeSec: Number(process.uptime().toFixed(2)),
+    windows: BrowserWindow.getAllWindows().length,
+    memory: {
+      rss: memory.rss,
+      heapTotal: memory.heapTotal,
+      heapUsed: memory.heapUsed,
+      external: memory.external
+    },
+    runtime: {
+      streamSubscribers: runtimeStreamSubscribersByWebContentsId.size,
+      runtimeEventsBuffered: runtimeEventRingBuffer.length,
+      runtimeEventsDropped: runtimeEventDroppedCount
+    }
+  };
 }
 
 const CODEBASE_DEFAULT_EXTENSIONS = [
@@ -1726,6 +1907,17 @@ let mt5BridgeEnsureTimer = null;
 let mt5BridgeRestartTimer = null;
 let mt5BridgeStartInFlight = null;
 let mt5BridgeLastStartError = null;
+let mt5BridgeHeartbeatTimer = null;
+let mt5BridgeHeartbeatMisses = 0;
+let mt5BridgeLastHeartbeatAtMs = null;
+let mt5BridgeLastHeartbeatOk = null;
+let mt5BridgeLaunchToken = null;
+let mt5BridgeRestartCount = 0;
+let mt5BridgeLastExitAtMs = null;
+let mt5BridgeLastExitCode = null;
+let mt5BridgeLastExitSignal = null;
+let mt5BridgeLastTerminationRequestedAtMs = null;
+let mt5BridgeLastTerminationAckAtMs = null;
 let isQuitting = false;
 const SHUTDOWN_PREPARE_TIMEOUT_MS = 5000;
 const pendingShutdownReadyByRequest = new Map();
@@ -1830,15 +2022,9 @@ app.on('web-contents-created', (_event, contents) => {
         return;
       }
 
-      // Enforce safest possible guest settings.
-      delete webPreferences.preload;
-      webPreferences.nodeIntegration = false;
-      webPreferences.contextIsolation = true;
-      webPreferences.sandbox = true;
-      webPreferences.enableRemoteModule = false;
-      webPreferences.webSecurity = true;
-      webPreferences.allowRunningInsecureContent = false;
-      webPreferences.safeDialogs = true;
+      // Enforce safest possible guest settings from one canonical profile.
+      const securePrefs = buildSecureWebPreferences({ preload: undefined });
+      Object.assign(webPreferences, securePrefs, { preload: undefined, safeDialogs: true });
     });
   }
 });
@@ -2292,9 +2478,66 @@ function getBackendBasePath() {
   return isDev ? path.join(__dirname, '..') : process.resourcesPath;
 }
 
+function getMt5BridgeToken() {
+  if (!enterpriseFlags.mt5BridgeAuthV1) return '';
+  if (mt5BridgeLaunchToken) return mt5BridgeLaunchToken;
+  mt5BridgeLaunchToken = crypto.randomBytes(24).toString('hex');
+  return mt5BridgeLaunchToken;
+}
+
 function getMt5BridgeScriptPath() {
   const base = getBackendBasePath();
   return path.join(base, 'backend', 'mt5_bridge', 'app.py');
+}
+
+function getPackagedMt5BridgeBinaryPath() {
+  const base = getBackendBasePath();
+  return path.join(base, 'backend', 'mt5_bridge', 'dist', 'mt5_bridge', 'mt5_bridge.exe');
+}
+
+function resolveMt5BridgeLaunchSpec() {
+  if (!isDev) {
+    const binaryPath = getPackagedMt5BridgeBinaryPath();
+    if (fs.existsSync(binaryPath)) {
+      return { mode: 'packaged_binary', cmdCandidates: [binaryPath], args: [], entryPath: binaryPath };
+    }
+    return { mode: 'packaged_binary_missing', cmdCandidates: [], args: [], entryPath: binaryPath };
+  }
+  const scriptPath = getMt5BridgeScriptPath();
+  return {
+    mode: 'python_script',
+    cmdCandidates: [(process.env.GLASS_MT5_PYTHON || '').trim(), 'python', 'py'].filter(Boolean),
+    args: [scriptPath],
+    entryPath: scriptPath
+  };
+}
+
+function killProcessTreeWindows(pid) {
+  const targetPid = Number(pid || 0);
+  if (process.platform !== 'win32' || !Number.isFinite(targetPid) || targetPid <= 0) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const child = spawn('taskkill', ['/PID', String(targetPid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true
+    });
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    child.once('error', () => done(false));
+    child.once('exit', (code) => done(code === 0));
+  });
+}
+
+function buildMt5BridgeHeaders() {
+  const headers = {};
+  const token = getMt5BridgeToken();
+  if (token) headers[BRIDGE_AUTH_HEADER] = token;
+  return headers;
 }
 
 function appendMt5Log(line) {
@@ -2305,10 +2548,10 @@ function appendMt5Log(line) {
   }
 }
 
-function checkHealth(url, timeoutMs = 1200) {
+function checkHealth(url, timeoutMs = 1200, headers = null) {
   return new Promise((resolve) => {
     try {
-      const req = http.get(url, (res) => {
+      const req = http.get(url, { headers: headers || undefined }, (res) => {
         res.resume();
         resolve(res.statusCode === 200);
       });
@@ -2328,6 +2571,7 @@ function scheduleMt5BridgeRestart(reason = 'unknown') {
   if (mt5BridgeRestartTimer) return;
   mt5BridgeRestartTimer = setTimeout(() => {
     mt5BridgeRestartTimer = null;
+    mt5BridgeRestartCount += 1;
     appendMt5Log(`[${new Date().toISOString()}] Restarting MT5 bridge (reason=${reason})\n`);
     startMt5Bridge().catch(() => {});
   }, 1500);
@@ -2381,43 +2625,61 @@ async function startMt5Bridge() {
 
   mt5BridgeStartInFlight = (async () => {
     const healthUrl = `http://127.0.0.1:${port}/health`;
-    const alreadyRunning = await checkHealth(healthUrl);
+    const alreadyRunning = await checkHealth(healthUrl, 1200, buildMt5BridgeHeaders());
     if (alreadyRunning) {
       mt5BridgeLastStartError = null;
+      mt5BridgeLastHeartbeatAtMs = Date.now();
+      mt5BridgeLastHeartbeatOk = true;
       return { ok: true, port, healthy: true, started: false };
     }
 
-    const scriptPath = getMt5BridgeScriptPath();
     const cwd = getBackendBasePath();
+    const launchSpec = resolveMt5BridgeLaunchSpec();
+    const launchMode = String(launchSpec.mode || '').trim().toLowerCase();
+    const entryPath = String(launchSpec.entryPath || launchSpec.args?.[0] || '').trim();
 
-    if (!fs.existsSync(scriptPath)) {
-      const msg = `MT5 bridge script not found: ${scriptPath}`;
+    if (launchMode === 'packaged_binary_missing') {
+      const msg =
+        `Packaged MT5 sidecar binary missing at ${entryPath}. ` +
+        'Rebuild with `npm run build:mt5-sidecar` before packaging the installer.';
       mt5BridgeLastStartError = msg;
       appendMt5Log(`[${new Date().toISOString()}] ${msg}\n`);
-      return { ok: false, port, error: msg };
+      pushRuntimeEvent({
+        source: 'main_error',
+        level: 'error',
+        code: 'mt5_bridge_packaged_binary_missing',
+        message: msg,
+        payload: { path: entryPath }
+      });
+      return { ok: false, port, error: msg, mode: launchMode };
+    }
+
+    if (launchMode === 'python_script' && !fs.existsSync(entryPath)) {
+      const msg = `MT5 bridge script not found: ${entryPath}`;
+      mt5BridgeLastStartError = msg;
+      appendMt5Log(`[${new Date().toISOString()}] ${msg}\n`);
+      return { ok: false, port, error: msg, mode: launchMode };
     }
 
     const logPath = path.join(app.getPath('userData'), 'mt5-bridge.log');
     try {
       mt5BridgeLogStream = fs.createWriteStream(logPath, { flags: 'a' });
       appendMt5Log(`\n\n[${new Date().toISOString()}] Starting MT5 bridge (port ${port})\n`);
-      appendMt5Log(`[${new Date().toISOString()}] Script: ${scriptPath}\n`);
+      appendMt5Log(`[${new Date().toISOString()}] Launch mode: ${launchMode}\n`);
+      appendMt5Log(`[${new Date().toISOString()}] Entry: ${entryPath}\n`);
     } catch {
       mt5BridgeLogStream = null;
     }
 
     const env = { ...process.env };
     env.MT5_BRIDGE_PORT = String(port);
-
-    const candidates = [
-      (process.env.GLASS_MT5_PYTHON || '').trim(),
-      'python',
-      'py',
-    ].filter(Boolean);
+    const token = getMt5BridgeToken();
+    if (token) env.GLASS_BRIDGE_TOKEN = token;
+    env.GLASS_BRIDGE_AUTH_REQUIRED = enterpriseFlags.mt5BridgeAuthV1 ? '1' : '0';
 
     const { child, cmd, lastError } = await spawnWithCandidates(
-      candidates,
-      [scriptPath],
+      launchSpec.cmdCandidates,
+      launchSpec.args,
       { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }
     );
 
@@ -2428,7 +2690,7 @@ async function startMt5Bridge() {
       return { ok: false, port, error: msg };
     }
 
-    appendMt5Log(`[${new Date().toISOString()}] Spawned: ${cmd} ${scriptPath}\n`);
+    appendMt5Log(`[${new Date().toISOString()}] Spawned (${launchMode}): ${cmd} ${entryPath}\n`);
     mt5BridgeLastStartError = null;
     mt5BridgeProcess = child;
 
@@ -2451,12 +2713,18 @@ async function startMt5Bridge() {
 
     child.on('exit', (code, signal) => {
       appendMt5Log(`[${new Date().toISOString()}] Bridge exited (code=${code}, signal=${signal})\n`);
+      mt5BridgeLastExitAtMs = Date.now();
+      mt5BridgeLastExitCode = Number.isFinite(Number(code)) ? Number(code) : null;
+      mt5BridgeLastExitSignal = signal ? String(signal) : null;
+      mt5BridgeLastTerminationAckAtMs = mt5BridgeLastExitAtMs;
       mt5BridgeProcess = null;
       scheduleMt5BridgeRestart('process_exit');
     });
 
-    const healthy = await checkHealth(healthUrl, 1800);
-    return { ok: true, port, healthy, started: true };
+    const healthy = await checkHealth(healthUrl, 1800, buildMt5BridgeHeaders());
+    mt5BridgeLastHeartbeatOk = healthy;
+    mt5BridgeLastHeartbeatAtMs = healthy ? Date.now() : mt5BridgeLastHeartbeatAtMs;
+    return { ok: true, port, healthy, started: true, mode: launchMode, entryPath };
   })();
 
   try {
@@ -2466,13 +2734,41 @@ async function startMt5Bridge() {
   }
 }
 
-function stopMt5Bridge() {
+function stopMt5Bridge(options = {}) {
+  const force = options?.force === true;
   const child = mt5BridgeProcess;
   mt5BridgeProcess = null;
   if (child) {
+    const childPid = Number(child?.pid || 0);
+    mt5BridgeLastTerminationRequestedAtMs = Date.now();
     try {
-      child.kill();
-      appendMt5Log(`[${new Date().toISOString()}] Sent kill to bridge\n`);
+      child.kill(force ? 'SIGKILL' : 'SIGTERM');
+      appendMt5Log(`[${new Date().toISOString()}] Sent ${force ? 'SIGKILL' : 'SIGTERM'} to bridge\n`);
+      if (force && process.platform === 'win32' && Number.isFinite(childPid) && childPid > 0) {
+        void killProcessTreeWindows(childPid).then((ok) => {
+          appendMt5Log(
+            `[${new Date().toISOString()}] taskkill /T /F ${ok ? 'succeeded' : 'failed'} for bridge pid ${childPid}\n`
+          );
+        });
+      }
+      if (!force) {
+        setTimeout(() => {
+          if (child.killed) return;
+          try {
+            child.kill('SIGKILL');
+            appendMt5Log(`[${new Date().toISOString()}] Escalated bridge kill to SIGKILL\n`);
+            if (process.platform === 'win32' && Number.isFinite(childPid) && childPid > 0) {
+              void killProcessTreeWindows(childPid).then((ok) => {
+                appendMt5Log(
+                  `[${new Date().toISOString()}] taskkill /T /F escalation ${ok ? 'succeeded' : 'failed'} for bridge pid ${childPid}\n`
+                );
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }, BRIDGE_FORCE_KILL_DELAY_MS);
+      }
     } catch {
       // ignore
     }
@@ -2494,6 +2790,191 @@ function isTrustedSender(evt) {
   }
 }
 
+async function checkMt5BridgeHeartbeat() {
+  const port = getMt5BridgePort();
+  const heartbeatUrl = `http://127.0.0.1:${port}/heartbeat`;
+  return checkHealth(heartbeatUrl, BRIDGE_HEARTBEAT_TIMEOUT_MS, buildMt5BridgeHeaders());
+}
+
+function startMt5BridgeHeartbeatLoop() {
+  if (mt5BridgeHeartbeatTimer || process.env.GLASS_DISABLE_MT5_BRIDGE === '1') return;
+  mt5BridgeHeartbeatTimer = setInterval(async () => {
+    if (isQuitting) return;
+    const running = !!mt5BridgeProcess;
+    if (!running) return;
+    const ok = await checkMt5BridgeHeartbeat();
+    mt5BridgeLastHeartbeatOk = ok;
+    if (ok) {
+      mt5BridgeLastHeartbeatAtMs = Date.now();
+      mt5BridgeHeartbeatMisses = 0;
+      return;
+    }
+    mt5BridgeHeartbeatMisses += 1;
+    if (mt5BridgeHeartbeatMisses < BRIDGE_HEARTBEAT_MISS_LIMIT) return;
+    appendMt5Log(`[${new Date().toISOString()}] Heartbeat miss threshold reached (${mt5BridgeHeartbeatMisses}). Restarting bridge.\n`);
+    stopMt5Bridge({ force: true });
+    scheduleMt5BridgeRestart('heartbeat_miss');
+  }, BRIDGE_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopMt5BridgeHeartbeatLoop() {
+  if (!mt5BridgeHeartbeatTimer) return;
+  clearInterval(mt5BridgeHeartbeatTimer);
+  mt5BridgeHeartbeatTimer = null;
+}
+
+function normalizeRendererAssetReference(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return null;
+  if (NON_LOCAL_RENDERER_REF_RE.test(raw)) return null;
+  let normalized = raw.split('#')[0].split('?')[0].trim().replace(/\\/g, '/');
+  if (!normalized) return null;
+  if (normalized.startsWith('./')) normalized = normalized.slice(2);
+  if (normalized.startsWith('/')) normalized = normalized.slice(1);
+  if (!normalized.startsWith('assets/')) return null;
+  if (normalized.includes('..')) return null;
+  return normalized;
+}
+
+function extractRendererAssetReferences(htmlText) {
+  const refs = new Set();
+  const source = String(htmlText || '');
+  RENDERER_ENTRY_ASSET_ATTR_RE.lastIndex = 0;
+  let match = null;
+  while ((match = RENDERER_ENTRY_ASSET_ATTR_RE.exec(source)) !== null) {
+    const normalized = normalizeRendererAssetReference(match[1]);
+    if (normalized) refs.add(normalized);
+  }
+  return Array.from(refs).sort();
+}
+
+function validatePackagedRendererEntryIntegrity() {
+  const distDir = path.resolve(path.join(__dirname, '../dist'));
+  const indexPath = path.join(distDir, 'index.html');
+  if (!fs.existsSync(indexPath)) {
+    return {
+      ok: false,
+      reason: 'index_missing',
+      indexPath,
+      distDir,
+      references: [],
+      missingFiles: [{ ref: 'index.html', path: indexPath }],
+      error: null
+    };
+  }
+
+  let htmlText = '';
+  try {
+    htmlText = fs.readFileSync(indexPath, 'utf8');
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'index_read_failed',
+      indexPath,
+      distDir,
+      references: [],
+      missingFiles: [],
+      error: err?.message || String(err)
+    };
+  }
+
+  const references = extractRendererAssetReferences(htmlText);
+  const missingFiles = [];
+  for (const ref of references) {
+    const resolvedPath = path.resolve(path.join(distDir, ref));
+    let exists = false;
+    try {
+      exists = fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isFile();
+    } catch {
+      exists = false;
+    }
+    if (!exists) missingFiles.push({ ref, path: resolvedPath });
+  }
+
+  return {
+    ok: missingFiles.length === 0,
+    reason: missingFiles.length > 0 ? 'asset_missing' : 'ok',
+    indexPath,
+    distDir,
+    references,
+    missingFiles,
+    error: null
+  };
+}
+
+function escapeHtml(rawValue) {
+  return String(rawValue || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildRendererIntegrityFailureHtml(details) {
+  const missingList = Array.isArray(details?.missingFiles) ? details.missingFiles : [];
+  const missingMarkup = missingList.length > 0
+    ? `<ul>${missingList.map((entry) => `<li><code>${escapeHtml(entry?.path || entry?.ref || '')}</code></li>`).join('')}</ul>`
+    : '<p>No specific files were reported missing.</p>';
+  const reason = details?.error ? `${details?.reason || 'unknown'} (${details.error})` : String(details?.reason || 'unknown');
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GlassBrowser AI Startup Error</title>
+    <style>
+      body { margin: 0; font-family: "Segoe UI", sans-serif; background: #090d16; color: #e8edf7; }
+      main { max-width: 920px; margin: 40px auto; padding: 24px; background: #11182a; border: 1px solid #2a3654; border-radius: 12px; }
+      h1 { margin: 0 0 12px; font-size: 24px; }
+      p { margin: 8px 0; line-height: 1.5; color: #c6d2e9; }
+      code { color: #9fd3ff; }
+      ul { margin: 10px 0 0 20px; padding: 0; }
+      li { margin: 6px 0; }
+      .hint { margin-top: 18px; padding: 12px; border-radius: 8px; background: #1a2338; border: 1px solid #31456f; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>GlassBrowser AI could not load packaged UI assets.</h1>
+      <p>Version: <code>${escapeHtml(app.getVersion())}</code></p>
+      <p>Reason: <code>${escapeHtml(reason)}</code></p>
+      <p>Executable: <code>${escapeHtml(process.execPath)}</code></p>
+      <p>App path: <code>${escapeHtml(app.getAppPath())}</code></p>
+      <p>Expected renderer entry: <code>${escapeHtml(details?.indexPath || 'unknown')}</code></p>
+      <h2>Missing files</h2>
+      ${missingMarkup}
+      <div class="hint">
+        Reinstall the latest hotfix installer build. If this persists, remove the existing install folder before reinstalling.
+      </div>
+    </main>
+  </body>
+</html>`;
+}
+
+function reportRendererEntryIntegrityFailure(details) {
+  const payload = {
+    reason: details?.reason || 'unknown',
+    error: details?.error || null,
+    indexPath: details?.indexPath || null,
+    distDir: details?.distDir || null,
+    referencesCount: Array.isArray(details?.references) ? details.references.length : 0,
+    missingFiles: Array.isArray(details?.missingFiles)
+      ? details.missingFiles.map((entry) => ({ ref: entry?.ref || null, path: entry?.path || null }))
+      : []
+  };
+  appendMainLog(
+    `[${new Date().toISOString()}] renderer_entry_integrity_failed reason=${payload.reason} missing=${payload.missingFiles.length} indexPath=${payload.indexPath || 'n/a'}\n`
+  );
+  pushRuntimeEvent({
+    source: 'startup',
+    level: 'error',
+    code: 'renderer_entry_integrity_failed',
+    message: 'Packaged renderer integrity check failed; loading startup error page.',
+    payload
+  });
+}
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1400,
@@ -2502,23 +2983,21 @@ function createWindow() {
     minHeight: 700,
     backgroundColor: '#050505',
     icon: path.join(__dirname, 'assets', 'icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: ENABLE_SANDBOX,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      enableRemoteModule: false,
-      webviewTag: true
-    }
+    webPreferences: buildSecureWebPreferences()
   });
 
   if (isDev) {
     win.loadURL('http://localhost:3000');
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    const integrity = validatePackagedRendererEntryIntegrity();
+    if (!integrity.ok) {
+      reportRendererEntryIntegrityFailure(integrity);
+      const fallbackHtml = buildRendererIntegrityFailureHtml(integrity);
+      win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(fallbackHtml)}`);
+    } else {
+      win.loadFile(integrity.indexPath);
+    }
   }
 
   const windowId = win.id;
@@ -2663,6 +3142,7 @@ app.whenReady().then(async () => {
   } catch {
     // ignore keychain failures
   }
+  installContentSecurityPolicy();
   if (session?.defaultSession?.setPermissionRequestHandler) {
     session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
       const allowed = isAllowedPermissionRequest(permission, details, webContents);
@@ -2677,6 +3157,7 @@ app.whenReady().then(async () => {
   }
   startMt5Bridge().catch(() => {});
   startMt5BridgeWatchdog();
+  startMt5BridgeHeartbeatLoop();
 
   tradeLockerClient = new TradeLockerClient();
   if (tradeLockerStreamUnsub) {
@@ -2721,8 +3202,55 @@ app.whenReady().then(async () => {
   ipcMain.handle('mt5Bridge:status', async () => {
     const port = getMt5BridgePort();
     const healthUrl = `http://127.0.0.1:${port}/health`;
-    const healthy = await checkHealth(healthUrl, 800);
+    const healthy = await checkHealth(healthUrl, 800, buildMt5BridgeHeaders());
     return { ok: true, port, healthy, lastError: mt5BridgeLastStartError };
+  });
+
+  ipcMain.handle('mt5Bridge:heartbeat', async () => {
+    const port = getMt5BridgePort();
+    const heartbeatUrl = `http://127.0.0.1:${port}/heartbeat`;
+    const healthy = await checkHealth(heartbeatUrl, BRIDGE_HEARTBEAT_TIMEOUT_MS, buildMt5BridgeHeaders());
+    mt5BridgeLastHeartbeatOk = healthy;
+    if (healthy) mt5BridgeLastHeartbeatAtMs = Date.now();
+    return {
+      ok: true,
+      port,
+      healthy,
+      lastHeartbeatAtMs: mt5BridgeLastHeartbeatAtMs
+    };
+  });
+
+  ipcMain.handle('mt5Bridge:lifecycleStatus', async () => {
+    const port = getMt5BridgePort();
+    const launchSpec = resolveMt5BridgeLaunchSpec();
+    const launchMode = String(launchSpec.mode || '').trim().toLowerCase();
+    const expectedEntryPath = String(launchSpec.entryPath || '').trim() || null;
+    return {
+      ok: true,
+      port,
+      running: !!mt5BridgeProcess,
+      pid: mt5BridgeProcess?.pid || null,
+      launchMode,
+      expectedEntryPath,
+      authEnabled: enterpriseFlags.mt5BridgeAuthV1,
+      tokenPresent: !!getMt5BridgeToken(),
+      lastError: mt5BridgeLastStartError || null,
+      lastHeartbeatAtMs: mt5BridgeLastHeartbeatAtMs,
+      lastHeartbeatOk: mt5BridgeLastHeartbeatOk,
+      heartbeatMisses: mt5BridgeHeartbeatMisses,
+      restartCount: mt5BridgeRestartCount,
+      lastExitAtMs: mt5BridgeLastExitAtMs,
+      lastExitCode: mt5BridgeLastExitCode,
+      lastExitSignal: mt5BridgeLastExitSignal,
+      lastTerminationRequestedAtMs: mt5BridgeLastTerminationRequestedAtMs,
+      lastTerminationAckAtMs: mt5BridgeLastTerminationAckAtMs
+    };
+  });
+
+  ipcMain.handle('mt5Bridge:forceRestart', async () => {
+    stopMt5Bridge({ force: true });
+    await startMt5Bridge();
+    return { ok: true, restarted: true, port: getMt5BridgePort() };
   });
 
   ipcMain.handle('mt5Bridge:openLog', async () => {
@@ -2733,6 +3261,8 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('diagnostics:getAppMeta', async () => getAppMeta());
   ipcMain.handle('diagnostics:getMainLog', async (_evt, opts) => readMainLogTail(opts || {}));
+  ipcMain.handle('diagnostics:securityAuditSnapshot', async () => buildSecurityAuditSnapshot());
+  ipcMain.handle('diagnostics:renderPerfSnapshot', async () => buildRenderPerfSnapshot());
   ipcMain.handle('diagnostics:listReleases', async (_evt, opts) => listReleaseArtifacts(opts || {}));
   ipcMain.handle('diagnostics:getBundleStats', async () => getBundleStats());
   ipcMain.handle('diagnostics:runtimeStream:start', async (evt, opts) => {
@@ -2916,6 +3446,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('tradelocker:getSnapshot', async (_evt, opts) => tradeLockerClient.getSnapshot(opts || {}));
   ipcMain.handle('tradelocker:getAccountMetrics', async (_evt, opts) => tradeLockerClient.getAccountMetrics(opts || {}));
+  ipcMain.handle('tradelocker:getAccountMetricsForAccount', async (_evt, opts) => tradeLockerClient.getAccountMetricsForAccount(opts || {}));
   ipcMain.handle('tradelocker:getOrders', async () => tradeLockerClient.getOrders());
   ipcMain.handle('tradelocker:getOrdersHistory', async () => tradeLockerClient.getOrdersHistory());
   ipcMain.handle('tradelocker:getOrderDetails', async (_evt, args) => tradeLockerClient.getOrderDetails(args || {}));
@@ -4036,5 +4567,6 @@ app.on('before-quit', () => {
     // ignore
   }
   stopMt5BridgeWatchdog();
+  stopMt5BridgeHeartbeatLoop();
   stopMt5Bridge();
 });

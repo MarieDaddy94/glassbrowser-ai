@@ -1,6 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Lock, TrendingUp, TrendingDown, Clock, RotateCw, Settings, Send, X, ChevronUp, ChevronDown, Link2, Plus, Eye, EyeOff } from 'lucide-react';
-import { EvidenceCard, Position, TradeLockerAccountMetrics, TradeLockerOrder, TradeLockerQuote, TradeLockerRateLimitTelemetry } from '../types';
+import {
+  EvidenceCard,
+  Position,
+  TradeLockerAccountMetrics,
+  TradeLockerAccountShardState,
+  TradeLockerMarketSubscriptionState,
+  TradeLockerOrder,
+  TradeLockerQuote,
+  TradeLockerRateLimitTelemetry,
+  TradeLockerStrategyMatrixRow
+} from '../types';
 import type { SymbolMapEntry } from '../services/brokerLink';
 import { normalizeSymbolKey } from '../services/symbols';
 import { getRuntimeScheduler } from '../services/runtimeScheduler';
@@ -69,6 +79,10 @@ interface TradeLockerInterfaceProps {
     normalizationEnabled?: boolean;
     normalizationReferenceKey?: string | null;
     symbolMap?: SymbolMapEntry[];
+    strategyMatrixRows?: TradeLockerStrategyMatrixRow[];
+    strategyAssignments?: Record<string, string[]>;
+    marketSubscriptions?: TradeLockerMarketSubscriptionState[];
+    shardStates?: TradeLockerAccountShardState[];
     onRefresh?: () => void;
     onRefreshAccounts?: () => void;
     onClosePosition: (id: string, qty?: number) => void | Promise<any>;
@@ -353,6 +367,10 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     normalizationEnabled = false,
     normalizationReferenceKey = null,
     symbolMap = [],
+    strategyMatrixRows = [],
+    strategyAssignments = {},
+    marketSubscriptions = [],
+    shardStates = [],
     onRefresh,
     onRefreshAccounts,
     onClosePosition,
@@ -572,6 +590,87 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
     else next.add(key);
     onExecutionTargetsChange?.(Array.from(next));
   }, [executionTargetSet, onExecutionTargetsChange]);
+
+  const [matrixAccountFilter, setMatrixAccountFilter] = useState<string>('all');
+  const [matrixStrategyFilter, setMatrixStrategyFilter] = useState<string>('all');
+  const [matrixStateFilter, setMatrixStateFilter] = useState<string>('all');
+  const [matrixActionBusy, setMatrixActionBusy] = useState(false);
+  const [matrixActionStatus, setMatrixActionStatus] = useState<string | null>(null);
+  const [matrixActionError, setMatrixActionError] = useState<string | null>(null);
+  const [assignmentStrategyId, setAssignmentStrategyId] = useState<string>('manual');
+  const [assignmentAccountKeys, setAssignmentAccountKeys] = useState<string[]>([]);
+
+  const matrixStrategies = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of Array.isArray(strategyMatrixRows) ? strategyMatrixRows : []) {
+      const key = String(row?.strategyId || '').trim().toLowerCase();
+      if (key) set.add(key);
+    }
+    for (const key of Object.keys(strategyAssignments || {})) {
+      const normalized = String(key || '').trim().toLowerCase();
+      if (normalized) set.add(normalized);
+    }
+    if (!set.size) set.add('manual');
+    return Array.from(set.values()).sort();
+  }, [strategyAssignments, strategyMatrixRows]);
+
+  useEffect(() => {
+    if (!matrixStrategies.includes(assignmentStrategyId)) {
+      setAssignmentStrategyId(matrixStrategies[0] || 'manual');
+    }
+  }, [assignmentStrategyId, matrixStrategies]);
+
+  useEffect(() => {
+    const selected = String(assignmentStrategyId || '').trim().toLowerCase();
+    const next = Array.isArray((strategyAssignments as any)?.[selected])
+      ? (strategyAssignments as any)[selected].map((entry: any) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    setAssignmentAccountKeys(Array.from(new Set(next)));
+  }, [assignmentStrategyId, strategyAssignments]);
+
+  const visibleStrategyRows = useMemo(() => {
+    const rows = Array.isArray(strategyMatrixRows) ? strategyMatrixRows : [];
+    return rows.filter((row) => {
+      if (matrixAccountFilter !== 'all' && String(row?.accountKey || '') !== matrixAccountFilter) return false;
+      if (matrixStrategyFilter !== 'all' && String(row?.strategyId || '').toLowerCase() !== matrixStrategyFilter) return false;
+      if (matrixStateFilter !== 'all' && String(row?.state || '').toLowerCase() !== matrixStateFilter) return false;
+      return true;
+    });
+  }, [matrixAccountFilter, matrixStateFilter, matrixStrategyFilter, strategyMatrixRows]);
+
+  const runStrategyMatrixAction = useCallback(async (actionId: string, payload: Record<string, any>) => {
+    setMatrixActionBusy(true);
+    setMatrixActionError(null);
+    setMatrixActionStatus(null);
+    try {
+      const runner = onRunActionCatalogImmediate || onRunActionCatalog;
+      if (!runner) {
+        setMatrixActionError('Action catalog unavailable.');
+        return;
+      }
+      const res = await Promise.resolve(runner({ actionId, payload }));
+      if (res?.ok === false) {
+        setMatrixActionError(res?.error ? String(res.error) : 'Action failed.');
+        return;
+      }
+      setMatrixActionStatus('Runtime updated.');
+    } catch (err: any) {
+      setMatrixActionError(err?.message ? String(err.message) : 'Action failed.');
+    } finally {
+      setMatrixActionBusy(false);
+    }
+  }, [onRunActionCatalog, onRunActionCatalogImmediate]);
+
+  const toggleAssignmentAccountKey = useCallback((key: string) => {
+    const normalized = String(key || '').trim();
+    if (!normalized) return;
+    setAssignmentAccountKeys((prev) => {
+      const next = new Set(prev || []);
+      if (next.has(normalized)) next.delete(normalized);
+      else next.add(normalized);
+      return Array.from(next.values());
+    });
+  }, []);
   const metricsBalance =
     accountMetrics && Number.isFinite(Number(accountMetrics.balance)) ? Number(accountMetrics.balance) : null;
   const metricsEquity =
@@ -2551,6 +2650,165 @@ const TradeLockerInterface: React.FC<TradeLockerInterfaceProps> = ({
                           Apply
                         </button>
                       </div>
+                    </div>
+
+                    <div className="rounded-lg border border-white/10 bg-black/20 p-3 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-widest text-gray-500">Strategy Matrix</div>
+                          <div className="text-[10px] text-gray-500">
+                            {strategyMatrixRows.length} tenant{strategyMatrixRows.length === 1 ? '' : 's'} • {marketSubscriptions.length} symbol stream{marketSubscriptions.length === 1 ? '' : 's'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void runStrategyMatrixAction('tradelocker.strategy_runtime.list', { source: 'tradelocker_panel' })}
+                          disabled={matrixActionBusy}
+                          className="px-2 py-1 rounded border border-white/10 text-[11px] text-gray-300 hover:text-white hover:border-white/30 disabled:opacity-50"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-3">
+                        <select
+                          value={matrixAccountFilter}
+                          onChange={(e) => setMatrixAccountFilter(e.target.value)}
+                          className="bg-black/40 border border-white/10 text-xs px-2 py-1.5 rounded"
+                        >
+                          <option value="all">All accounts</option>
+                          {accountOptions.map((opt) => (
+                            <option key={`matrix-account-${opt.key}`} value={opt.key}>{opt.label}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={matrixStrategyFilter}
+                          onChange={(e) => setMatrixStrategyFilter(e.target.value)}
+                          className="bg-black/40 border border-white/10 text-xs px-2 py-1.5 rounded"
+                        >
+                          <option value="all">All strategies</option>
+                          {matrixStrategies.map((strategyId) => (
+                            <option key={`matrix-strategy-${strategyId}`} value={strategyId}>{strategyId}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={matrixStateFilter}
+                          onChange={(e) => setMatrixStateFilter(e.target.value)}
+                          className="bg-black/40 border border-white/10 text-xs px-2 py-1.5 rounded"
+                        >
+                          <option value="all">All states</option>
+                          <option value="idle">idle</option>
+                          <option value="armed">armed</option>
+                          <option value="running">running</option>
+                          <option value="paused">paused</option>
+                          <option value="faulted">faulted</option>
+                          <option value="degraded">degraded</option>
+                        </select>
+                      </div>
+
+                      {visibleStrategyRows.length === 0 ? (
+                        <div className="text-[11px] text-gray-500">No strategy tenants match the current filters.</div>
+                      ) : (
+                        <div className="space-y-2 max-h-56 overflow-y-auto custom-scrollbar">
+                          {visibleStrategyRows.map((row) => (
+                            <div key={row.tenantKey} className="rounded border border-white/10 bg-black/30 p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[11px] text-gray-200 font-mono">{row.strategyId} @ {row.accountKey}</div>
+                                <span className={`text-[10px] uppercase tracking-wider ${
+                                  row.state === 'running' ? 'text-emerald-300' :
+                                  row.state === 'degraded' || row.state === 'faulted' ? 'text-red-300' :
+                                  row.state === 'paused' ? 'text-amber-300' : 'text-gray-400'
+                                }`}>
+                                  {row.state}
+                                </span>
+                              </div>
+                              <div className="mt-1 text-[10px] text-gray-500">
+                                Symbols {Array.isArray(row.symbols) && row.symbols.length > 0 ? row.symbols.join(', ') : '--'} • queue {Number(row.queueDepth || 0)} • circuit {row.circuit || 'closed'}
+                              </div>
+                              <div className="mt-2 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void runStrategyMatrixAction('tradelocker.strategy_runtime.set_state', {
+                                    tenantKey: row.tenantKey,
+                                    state: row.state === 'paused' ? 'running' : 'paused',
+                                    reason: 'panel_matrix_toggle'
+                                  })}
+                                  disabled={matrixActionBusy}
+                                  className="px-2 py-1 rounded border border-white/10 text-[10px] text-gray-300 hover:text-white hover:border-white/30 disabled:opacity-50"
+                                >
+                                  {row.state === 'paused' ? 'Resume' : 'Pause'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void runStrategyMatrixAction('tradelocker.strategy_runtime.reconcile', {
+                                    tenantKey: row.tenantKey,
+                                    reason: 'panel_matrix_reconcile'
+                                  })}
+                                  disabled={matrixActionBusy}
+                                  className="px-2 py-1 rounded border border-white/10 text-[10px] text-gray-300 hover:text-white hover:border-white/30 disabled:opacity-50"
+                                >
+                                  Reconcile
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void runStrategyMatrixAction('tradelocker.strategy_runtime.set_state', {
+                                    tenantKey: row.tenantKey,
+                                    state: 'armed',
+                                    reason: 'panel_matrix_reset'
+                                  })}
+                                  disabled={matrixActionBusy}
+                                  className="px-2 py-1 rounded border border-white/10 text-[10px] text-gray-300 hover:text-white hover:border-white/30 disabled:opacity-50"
+                                >
+                                  Reset
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="rounded border border-white/10 bg-black/30 p-2 space-y-2">
+                        <div className="text-[10px] uppercase tracking-widest text-gray-500">Strategy Assignment</div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <input
+                            value={assignmentStrategyId}
+                            onChange={(e) => setAssignmentStrategyId(String(e.target.value || '').trim().toLowerCase())}
+                            className="bg-black/40 border border-white/10 text-xs px-2 py-1.5 rounded"
+                            placeholder="strategy id"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void runStrategyMatrixAction('tradelocker.strategy_runtime.assign_accounts', {
+                              strategyId: assignmentStrategyId,
+                              accountKeys: assignmentAccountKeys
+                            })}
+                            disabled={matrixActionBusy || !assignmentStrategyId}
+                            className="px-2 py-1.5 rounded border border-white/10 text-[11px] text-gray-300 hover:text-white hover:border-white/30 disabled:opacity-50"
+                          >
+                            Apply Assignment
+                          </button>
+                        </div>
+                        <div className="grid gap-1 md:grid-cols-2">
+                          {accountOptions.map((opt) => (
+                            <label key={`assignment-${opt.key}`} className="flex items-center gap-2 text-[11px] text-gray-400">
+                              <input
+                                type="checkbox"
+                                checked={assignmentAccountKeys.includes(opt.key)}
+                                onChange={() => toggleAssignmentAccountKey(opt.key)}
+                              />
+                              <span>{opt.label}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
+                      {Array.isArray(shardStates) && shardStates.length > 0 ? (
+                        <div className="text-[10px] text-gray-500">
+                          Shards: {shardStates.length} • queue {shardStates.reduce((sum, row) => sum + Number(row?.queueDepth || 0), 0)} • open circuits {shardStates.filter((row) => String(row?.circuitState || 'closed') !== 'closed').length}
+                        </div>
+                      ) : null}
+                      {matrixActionStatus ? <div className="text-[10px] text-emerald-300">{matrixActionStatus}</div> : null}
+                      {matrixActionError ? <div className="text-[10px] text-red-300">{matrixActionError}</div> : null}
                     </div>
                   </div>
                 )}

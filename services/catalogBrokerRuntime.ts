@@ -33,7 +33,11 @@ export async function runCatalogBrokerRuntime(
   executeTicketOrderViaApi,
   tlSearchInstrumentsRef,
   tlPositionsRef,
-  tlOrdersRef
+  tlOrdersRef,
+  listTradeLockerStrategyRuntimes,
+  setTradeLockerStrategyRuntimeState,
+  assignTradeLockerStrategyRuntimeAccounts,
+  reconcileTradeLockerStrategyRuntime
 } = context as any;
   
     if (actionId === 'broker.refresh_snapshot') {
@@ -426,6 +430,106 @@ export async function runCatalogBrokerRuntime(
       });
       if (!res?.ok) return { ok: false, error: res?.error ? String(res.error) : 'Failed to reconcile account state.' };
       return { ok: true, data: res ?? null };
+    }
+
+    if (actionId === 'tradelocker.strategy_runtime.list') {
+      if (typeof listTradeLockerStrategyRuntimes !== 'function') {
+        return { ok: false, error: 'TradeLocker strategy runtime list unavailable.' };
+      }
+      try {
+        const res = await Promise.resolve(listTradeLockerStrategyRuntimes());
+        if (res?.ok === false) {
+          return { ok: false, error: res?.error ? String(res.error) : 'Failed to list strategy runtimes.' };
+        }
+        return { ok: true, data: res?.data ?? res ?? null };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ? String(err.message) : 'Failed to list strategy runtimes.' };
+      }
+    }
+
+    if (actionId === 'tradelocker.strategy_runtime.set_state') {
+      if (typeof setTradeLockerStrategyRuntimeState !== 'function') {
+        return { ok: false, error: 'TradeLocker strategy runtime control unavailable.' };
+      }
+      const tenantKey = String(payload.tenantKey || '').trim();
+      const stateRaw = String(payload.state || '').trim().toLowerCase();
+      if (!tenantKey) return { ok: false, error: 'tenantKey is required.' };
+      if (!stateRaw) return { ok: false, error: 'state is required.' };
+      const state = (
+        stateRaw === 'idle' ||
+        stateRaw === 'armed' ||
+        stateRaw === 'running' ||
+        stateRaw === 'paused' ||
+        stateRaw === 'faulted' ||
+        stateRaw === 'degraded'
+      ) ? stateRaw : 'paused';
+      try {
+        const res = await Promise.resolve(
+          setTradeLockerStrategyRuntimeState({
+            tenantKey,
+            state,
+            reason: payload.reason != null ? String(payload.reason) : null
+          })
+        );
+        if (res?.ok === false) {
+          return { ok: false, error: res?.error ? String(res.error) : 'Failed to update strategy runtime state.' };
+        }
+        return { ok: true, data: res?.data ?? res ?? null };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ? String(err.message) : 'Failed to update strategy runtime state.' };
+      }
+    }
+
+    if (actionId === 'tradelocker.strategy_runtime.assign_accounts') {
+      if (typeof assignTradeLockerStrategyRuntimeAccounts !== 'function') {
+        return { ok: false, error: 'TradeLocker strategy assignment unavailable.' };
+      }
+      const strategyId = String(payload.strategyId || payload.strategy || '').trim().toLowerCase();
+      const accountKeys = Array.isArray(payload.accountKeys)
+        ? payload.accountKeys.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+        : [];
+      if (!strategyId) return { ok: false, error: 'strategyId is required.' };
+      try {
+        const res = await Promise.resolve(
+          assignTradeLockerStrategyRuntimeAccounts({
+            strategyId,
+            accountKeys
+          })
+        );
+        if (res?.ok === false) {
+          return { ok: false, error: res?.error ? String(res.error) : 'Failed to assign strategy runtime accounts.' };
+        }
+        return { ok: true, data: res?.data ?? res ?? null };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ? String(err.message) : 'Failed to assign strategy runtime accounts.' };
+      }
+    }
+
+    if (actionId === 'tradelocker.strategy_runtime.reconcile') {
+      if (typeof reconcileTradeLockerStrategyRuntime !== 'function') {
+        return { ok: false, error: 'TradeLocker strategy reconcile unavailable.' };
+      }
+      const tenantKey = String(payload.tenantKey || '').trim();
+      const accountKey = String(payload.accountKey || '').trim();
+      if (!tenantKey && !accountKey) {
+        return { ok: false, error: 'tenantKey or accountKey is required.' };
+      }
+      try {
+        const res = await Promise.resolve(
+          reconcileTradeLockerStrategyRuntime({
+            tenantKey: tenantKey || undefined,
+            accountKey: accountKey || undefined,
+            reason: payload.reason != null ? String(payload.reason) : null,
+            force: payload.force === true
+          })
+        );
+        if (res?.ok === false) {
+          return { ok: false, error: res?.error ? String(res.error) : 'Failed to reconcile strategy runtime.' };
+        }
+        return { ok: true, data: res?.data ?? res ?? null };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ? String(err.message) : 'Failed to reconcile strategy runtime.' };
+      }
     }
 
     if (actionId === 'tradelocker.clear_secrets') {

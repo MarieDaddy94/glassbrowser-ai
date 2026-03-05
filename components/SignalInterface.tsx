@@ -3,7 +3,15 @@ import { Activity, CheckCircle2, ChevronDown, ChevronUp, Play, Plus, RefreshCw, 
 import TagPills from './TagPills';
 import VirtualItem from './VirtualItem';
 import SignalIntentList from './signal/SignalIntentList';
-import type { CrossPanelContext, HealthSnapshot, NewsSnapshot, SignalIntent, SignalQuantTelemetry, UnifiedSnapshotStatus } from '../types';
+import type {
+  CrossPanelContext,
+  HealthSnapshot,
+  NewsSnapshot,
+  SignalIntent,
+  SignalQuantTelemetry,
+  SignalStatusReportEntry,
+  UnifiedSnapshotStatus
+} from '../types';
 import { requireBridge } from '../services/bridgeGuard';
 import {
   classifyUnifiedSnapshotStatus,
@@ -127,9 +135,19 @@ type SignalInterfaceProps = {
   signals: SignalEntry[];
   simulatedOutcomes?: Record<string, SignalSimulatedOutcome>;
   onRunScan: () => void;
+  onRunScanForceBypass?: () => void;
+  onRunSignalStatusReport?: () => void;
+  signalStatusReportRunning?: boolean;
+  signalStatusReportsBySignalId?: Record<string, SignalStatusReportEntry[]>;
+  signalStatusReportEnabled?: boolean;
+  onRefreshSignalStatuses?: () => void;
+  forceScanAvailable?: boolean;
+  statusRefreshAvailable?: boolean;
+  statusRefreshRunning?: boolean;
   onExecuteSignal: (id: string) => void;
   onRejectSignal: (id: string) => void;
   onCancelSignalOrder: (id: string) => void;
+  onDiscussInChat?: (signal: SignalEntry) => void;
   onOpenAcademyCase?: (id: string) => void;
   onOpenChart?: (symbol: string, timeframe?: string | null) => void;
   onOpenMt5?: (symbol: string, timeframe?: string | null) => void;
@@ -343,6 +361,27 @@ const clampNumber = (value: any, min: number, max: number) => {
 const toggleList = <T extends string>(list: T[], value: T) => {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 };
+
+const formatStatusReportVerdict = (verdict?: string | null) => {
+  const raw = String(verdict || '').trim().toLowerCase();
+  if (!raw) return 'No Data';
+  return raw
+    .split('_')
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(' ');
+};
+
+const formatReportNumber = (value: any, digits = 4) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 'n/a';
+  return n.toFixed(digits);
+};
+
+const formatReportPercent = (value: any) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 'n/a';
+  return `${n.toFixed(1)}%`;
+};
 const SignalInterface: React.FC<SignalInterfaceProps> = ({
   symbols,
   onAddSymbol,
@@ -389,9 +428,19 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
   signals,
   simulatedOutcomes,
   onRunScan,
+  onRunScanForceBypass,
+  onRunSignalStatusReport,
+  signalStatusReportRunning = false,
+  signalStatusReportsBySignalId,
+  signalStatusReportEnabled = true,
+  onRefreshSignalStatuses,
+  forceScanAvailable = true,
+  statusRefreshAvailable = true,
+  statusRefreshRunning = false,
   onExecuteSignal,
   onRejectSignal,
   onCancelSignalOrder,
+  onDiscussInChat,
   onOpenAcademyCase,
   onOpenChart,
   onOpenMt5,
@@ -428,6 +477,10 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
   const [activePresetId, setActivePresetId] = useState<string>('');
   const [presetName, setPresetName] = useState<string>('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [expandedReportSignals, setExpandedReportSignals] = useState<string[]>([]);
+  const reportRunner = onRunSignalStatusReport || onRefreshSignalStatuses;
+  const reportRunning = signalStatusReportRunning || statusRefreshRunning;
+  const reportAvailable = signalStatusReportEnabled && statusRefreshAvailable;
   const resolvedMemoryMode =
     memoryMode === 'inject' || memoryMode === 'tool' || memoryMode === 'both' ? memoryMode : 'both';
   const signalSla = useMemo(() => {
@@ -892,6 +945,28 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
     onRunScan();
   }, [onRunScan]);
 
+  const handleRunScanForceBypass = useCallback(() => {
+    const gate = requireBridge('signal.scan.force');
+    if (!gate.ok) {
+      setBridgeError(gate.error);
+      return;
+    }
+    if (typeof onRunScanForceBypass !== 'function') return;
+    setBridgeError(null);
+    onRunScanForceBypass();
+  }, [onRunScanForceBypass]);
+
+  const handleRunSignalStatusReport = useCallback(() => {
+    const gate = requireBridge('signal.status_report');
+    if (!gate.ok) {
+      setBridgeError(gate.error);
+      return;
+    }
+    if (typeof reportRunner !== 'function') return;
+    setBridgeError(null);
+    reportRunner();
+  }, [reportRunner]);
+
   const updateSession = (id: SignalSessionWindow['id'], patch: Partial<SignalSessionWindow>) => {
     const next = sessions.map((session) =>
       session.id === id ? { ...session, ...patch } : session
@@ -1275,6 +1350,34 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                 </button>
                 <button
                   type="button"
+                  onClick={handleRunScanForceBypass}
+                  disabled={!forceScanAvailable || symbols.length === 0 || isRunning || typeof onRunScanForceBypass !== 'function'}
+                  className={`px-3 py-2 rounded border text-xs flex items-center gap-2 ${
+                    forceScanAvailable && symbols.length > 0 && !isRunning && typeof onRunScanForceBypass === 'function'
+                      ? 'border-amber-400/60 text-amber-100 hover:bg-amber-500/10'
+                      : 'border-white/10 text-gray-500 cursor-not-allowed'
+                  }`}
+                  title="Run one scan that bypasses unresolved-signal gate."
+                >
+                  <RefreshCw size={14} />
+                  Force New Signals
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRunSignalStatusReport}
+                  disabled={!reportAvailable || reportRunning || typeof reportRunner !== 'function'}
+                  className={`px-3 py-2 rounded border text-xs flex items-center gap-2 ${
+                    reportAvailable && !reportRunning && typeof reportRunner === 'function'
+                      ? 'border-blue-400/60 text-blue-100 hover:bg-blue-500/10'
+                      : 'border-white/10 text-gray-500 cursor-not-allowed'
+                  }`}
+                  title="Generate agent-authored market status reports for all open signals."
+                >
+                  <RefreshCw size={14} className={reportRunning ? 'animate-spin' : ''} />
+                  {reportRunning ? 'Updating Status Report...' : 'Agent Status Update'}
+                </button>
+                <button
+                  type="button"
                   onClick={onClearSignals}
                   className="px-3 py-2 rounded border border-white/10 text-gray-400 hover:text-white"
                 >
@@ -1625,6 +1728,12 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                 : simOutcome?.outcome === 'LOSS'
                   ? 'text-red-300'
                   : 'text-amber-300';
+            const statusReports = Array.isArray(signalStatusReportsBySignalId?.[signal.id])
+              ? (signalStatusReportsBySignalId?.[signal.id] || [])
+              : [];
+            const latestStatusReport = statusReports[0] || null;
+            const previousStatusReports = statusReports.slice(1, 3);
+            const reportHistoryExpanded = expandedReportSignals.includes(signal.id);
             const newsLabel = getNewsImpactLabel(signal.newsSnapshot);
             const toneLabel = getNewsToneLabel(signal.newsSnapshot);
             const trumpNews = !!signal.newsSnapshot?.trumpNews;
@@ -1792,6 +1901,61 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                     {simOutcome.resolvedAtMs ? ` • ${formatAge(simOutcome.resolvedAtMs)}` : ''}
                   </div>
                 )}
+                {latestStatusReport && (
+                  <div className="rounded border border-blue-400/30 bg-blue-500/5 px-2 py-2 space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-blue-200">
+                        Agent report: {formatStatusReportVerdict(latestStatusReport.verdict)}
+                        {latestStatusReport.source === 'chart_update' ? ' (chart update)' : ' (manual)'}
+                      </span>
+                      <span className="text-gray-500">{formatAge(latestStatusReport.createdAtMs)}</span>
+                    </div>
+                    <div className="text-xs text-blue-100/90">
+                      {latestStatusReport.commentary || 'No commentary returned.'}
+                    </div>
+                    <div className="text-[11px] text-gray-400 flex flex-wrap gap-3">
+                      <span>Ref {formatReportNumber(latestStatusReport.referencePrice)}</span>
+                      <span>Entry Δ {formatReportNumber(latestStatusReport.distanceToEntry)}</span>
+                      <span>TP Δ {formatReportNumber(latestStatusReport.distanceToTp)}</span>
+                      <span>SL Δ {formatReportNumber(latestStatusReport.distanceToSl)}</span>
+                      <span>Progress {formatReportPercent(latestStatusReport.progressPct)}</span>
+                      <span>RR Rem {formatReportNumber(latestStatusReport.rrRemaining, 3)}</span>
+                    </div>
+                    {latestStatusReport.error && (
+                      <div className="text-[11px] text-amber-200">
+                        Commentary fallback: {latestStatusReport.error}
+                      </div>
+                    )}
+                    {previousStatusReports.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandedReportSignals((prev) =>
+                            prev.includes(signal.id)
+                              ? prev.filter((id) => id !== signal.id)
+                              : [...prev, signal.id]
+                          );
+                        }}
+                        className="text-[11px] text-blue-200 hover:text-white underline underline-offset-2"
+                      >
+                        {reportHistoryExpanded ? 'Hide previous reports' : `Show previous reports (${previousStatusReports.length})`}
+                      </button>
+                    )}
+                    {reportHistoryExpanded && previousStatusReports.length > 0 && (
+                      <div className="space-y-1 pt-1 border-t border-blue-400/20">
+                        {previousStatusReports.map((report) => (
+                          <div key={report.id} className="text-[11px] text-gray-300">
+                            <div className="flex items-center justify-between">
+                              <span>{formatStatusReportVerdict(report.verdict)}</span>
+                              <span className="text-gray-500">{formatAge(report.createdAtMs)}</span>
+                            </div>
+                            <div className="text-gray-400">{report.commentary || 'No commentary returned.'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   {!isExecuted && !isDone && !isInFlight && (
                     <button
@@ -1830,6 +1994,19 @@ const SignalInterface: React.FC<SignalInterfaceProps> = ({
                     >
                       <XCircle size={14} />
                       Reject
+                    </button>
+                  )}
+                  {onDiscussInChat && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        focusSignal(signal);
+                        onDiscussInChat(signal);
+                      }}
+                      className="px-3 py-1.5 rounded border border-sky-400/40 text-sky-100 hover:bg-sky-500/10 text-xs inline-flex items-center gap-1"
+                    >
+                      <Activity size={14} />
+                      Discuss in Chat
                     </button>
                   )}
                   {onOpenAcademyCase && (

@@ -362,6 +362,86 @@ export interface SignalHistoryEntry {
   attribution?: SignalAttributionRecord | null;
 }
 
+export type SignalMarketStatusVerdict =
+  | 'watching'
+  | 'approaching_entry'
+  | 'entry_zone'
+  | 'in_profit'
+  | 'at_risk'
+  | 'approaching_tp'
+  | 'approaching_sl'
+  | 'invalidated'
+  | 'expired'
+  | 'no_data';
+
+export interface SignalStatusReportEntry {
+  id: string;
+  signalId: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  createdAtMs: number;
+  source: 'manual' | 'chart_update';
+  symbol?: string | null;
+  timeframe?: string | null;
+  action?: 'BUY' | 'SELL' | null;
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  referencePrice?: number | null;
+  distanceToEntry?: number | null;
+  distanceToTp?: number | null;
+  distanceToSl?: number | null;
+  progressPct?: number | null;
+  rrRemaining?: number | null;
+  verdict: SignalMarketStatusVerdict;
+  confidence?: number | null;
+  commentary?: string | null;
+  rawModelText?: string | null;
+  error?: string | null;
+}
+
+export type SignalStatusReportMap = Record<string, SignalStatusReportEntry[]>;
+
+export interface SignalChatThreadSummary {
+  signalId: string;
+  symbol: string;
+  timeframe?: string | null;
+  status: string;
+  agentId?: string | null;
+  updatedAtMs: number;
+  unreadCount: number;
+  hasPendingAction: boolean;
+  archived?: boolean;
+}
+
+export interface SignalChatContextSnapshot {
+  signalId: string;
+  symbol: string;
+  timeframe?: string | null;
+  action?: 'BUY' | 'SELL' | string | null;
+  status?: string | null;
+  entryPrice?: number | null;
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  probability?: number | null;
+  strategyMode?: string | null;
+  reason?: string | null;
+  createdAtMs?: number | null;
+  ageMs?: number | null;
+  agentId?: string | null;
+  agentName?: string | null;
+  fallbackAgentId?: string | null;
+  latestReport?: SignalStatusReportEntry | null;
+  previousReportCount?: number;
+  latestHistory?: SignalHistoryEntry | null;
+  executionOrderId?: string | null;
+  executionPositionId?: string | null;
+  executionStatus?: string | null;
+  executionSource?: string | null;
+  executionBroker?: string | null;
+  archived?: boolean;
+}
+
 export type AcademyCaseStatus =
   | 'PROPOSED'
   | 'SUBMITTING'
@@ -788,6 +868,139 @@ export interface TradeLockerAccountMetrics {
   updatedAtMs?: number;
 }
 
+export type TradeLockerAccountSelectorStatus = 'fresh' | 'stale' | 'unavailable';
+
+export interface TradeLockerAccountSelectorItem {
+  accountKey: string;
+  accountId: number;
+  accNum: number | null;
+  label: string;
+  environment: 'demo' | 'live';
+  currency?: string | null;
+  balance?: number | null;
+  equity?: number | null;
+  freeMargin?: number | null;
+  isActive: boolean;
+  isConnected: boolean;
+  status: TradeLockerAccountSelectorStatus;
+  lastUpdatedAtMs?: number | null;
+  lastError?: string | null;
+}
+
+export interface TradeLockerAccountSelectorSnapshot {
+  activeAccountKey?: string | null;
+  cardsCount: number;
+  freshCount: number;
+  staleCount: number;
+  unavailableCount: number;
+  refreshQueueDepth?: number | null;
+  lastRefreshAtMs?: number | null;
+  lastRefreshError?: string | null;
+}
+
+export interface TradeLockerAccountSelectorModel {
+  activeLabel?: string | null;
+  activeBalance?: number | null;
+  activeCurrency?: string | null;
+  activeAccNum?: number | null;
+  items: TradeLockerAccountSelectorItem[];
+  isOpen: boolean;
+  search: string;
+  switching?: boolean;
+  refreshingAccounts?: boolean;
+  refreshingBalances?: boolean;
+  queueDepth?: number;
+  lastRefreshAtMs?: number | null;
+  lastError?: string | null;
+  onToggleOpen: () => void;
+  onClose: () => void;
+  onSearchChange: (value: string) => void;
+  onSelect: (accountKey: string) => void;
+  onRefreshAccounts: () => void;
+  onRefreshBalances: () => void;
+}
+
+export interface SecurityAuditSnapshot {
+  generatedAtMs: number;
+  isPackaged?: boolean | null;
+  csp?: {
+    mode?: string | null;
+    policy?: string | null;
+  } | null;
+  windows?: Array<{
+    id?: number | null;
+    destroyed?: boolean | null;
+    url?: string | null;
+    webPreferences?: {
+      contextIsolation?: boolean | null;
+      nodeIntegration?: boolean | null;
+      sandbox?: boolean | null;
+      webSecurity?: boolean | null;
+      allowRunningInsecureContent?: boolean | null;
+      webviewTag?: boolean | null;
+    } | null;
+  }> | null;
+  lastError?: string | null;
+}
+
+export interface BridgeLifecycleSnapshot {
+  generatedAtMs: number;
+  running?: boolean | null;
+  pid?: number | null;
+  port?: number | null;
+  launchMode?: 'packaged_binary' | 'packaged_binary_missing' | 'python_script' | string | null;
+  expectedEntryPath?: string | null;
+  authEnabled?: boolean | null;
+  tokenPresent?: boolean | null;
+  lastHeartbeatAtMs?: number | null;
+  lastHeartbeatOk?: boolean | null;
+  heartbeatMisses?: number | null;
+  restartCount?: number | null;
+  lastTerminationRequestedAtMs?: number | null;
+  lastTerminationAckAtMs?: number | null;
+  lastExitAtMs?: number | null;
+  lastExitCode?: number | null;
+  lastExitSignal?: string | null;
+  lastError?: string | null;
+}
+
+export interface RenderPerfSnapshot {
+  generatedAtMs: number;
+  appUptimeSec?: number | null;
+  windows?: number | null;
+  memory?: {
+    rss?: number | null;
+    heapTotal?: number | null;
+    heapUsed?: number | null;
+    external?: number | null;
+  } | null;
+  runtime?: {
+    streamSubscribers?: number | null;
+    runtimeEventsBuffered?: number | null;
+    runtimeEventsDropped?: number | null;
+  } | null;
+  lastError?: string | null;
+}
+
+export interface CiValidationSnapshot {
+  generatedAtMs: number;
+  lane?: string | null;
+  platform?: string | null;
+  node?: string | null;
+  electron?: string | null;
+  baselineAuditAvailable?: boolean | null;
+  pythonTestsEnabled?: boolean | null;
+  e2eEnabled?: boolean | null;
+  windowsReady?: boolean | null;
+}
+
+export interface MigrationParityCounters {
+  chatMismatches: number;
+  signalMismatches: number;
+  tradeLockerMismatches: number;
+  lastMismatchAtMs: number | null;
+}
+
 export interface TradeLockerAccountNormalized {
   accountId: number;
   accNum: number | null;
@@ -795,6 +1008,64 @@ export interface TradeLockerAccountNormalized {
   server: string | null;
   accountKey: string | null;
   aliases: string[];
+}
+
+export type TradeLockerTenantKey = string;
+
+export type TradeLockerStrategyRuntimeState =
+  | 'idle'
+  | 'armed'
+  | 'running'
+  | 'paused'
+  | 'faulted'
+  | 'degraded';
+
+export interface TradeLockerAccountShardState {
+  accountKey: string;
+  queueDepth: number;
+  rateBudget: number;
+  circuitState: 'closed' | 'open' | 'half_open';
+  lastError?: string | null;
+  lastReconcileAtMs?: number | null;
+}
+
+export interface TradeLockerMarketSubscriptionState {
+  symbol: string;
+  subscriberCount: number;
+  subscribers: string[];
+  lastQuoteAtMs?: number | null;
+}
+
+export interface TradeLockerStrategyPolicy {
+  strategyId: string;
+  mode?: 'suggest' | 'paper' | 'live' | string;
+  symbols: string[];
+  timeframes: string[];
+  riskCaps?: {
+    maxOpenPositions?: number | null;
+    maxPerSymbolExposure?: number | null;
+    maxActionsPerMinute?: number | null;
+  } | null;
+  enabled?: boolean;
+}
+
+export interface TradeLockerStrategyMatrixRow {
+  tenantKey: TradeLockerTenantKey;
+  accountKey: string;
+  strategyId: string;
+  state: TradeLockerStrategyRuntimeState;
+  symbols: string[];
+  timeframes: string[];
+  lastDecision?: string | null;
+  lastOrder?: string | null;
+  risk?: {
+    maxOpenPositions?: number | null;
+    maxPerSymbolExposure?: number | null;
+    maxActionsPerMinute?: number | null;
+  } | null;
+  circuit?: 'closed' | 'open' | 'half_open' | string | null;
+  queueDepth?: number | null;
+  updatedAtMs?: number | null;
 }
 
 export interface Memory {
@@ -856,6 +1127,10 @@ export interface Message {
     changed?: boolean;
     source?: 'active' | 'pinned' | 'watched' | 'tradingview';
   }>;
+  threadKind?: 'global' | 'signal';
+  threadId?: string | null;
+  threadLabel?: string | null;
+  signalId?: string | null;
 }
 
 export interface Tab {
@@ -2086,6 +2361,11 @@ export interface TradeLockerRateLimitTelemetry {
 
 export interface HealthSnapshot {
   updatedAtMs: number;
+  securityAudit?: SecurityAuditSnapshot | null;
+  bridgeLifecycle?: BridgeLifecycleSnapshot | null;
+  renderPerf?: RenderPerfSnapshot | null;
+  ciValidation?: CiValidationSnapshot | null;
+  migrationParity?: MigrationParityCounters | null;
   academyMergeAddedCount?: number | null;
   academyMergeReplacedCount?: number | null;
   academyMergeRetainedCount?: number | null;
@@ -2126,6 +2406,16 @@ export interface HealthSnapshot {
   ledgerArchiveMoves?: number | null;
   ledgerArchiveRows?: number | null;
   signalIdCollisionPreventedCount?: number | null;
+  signalStatusReportRuns?: number | null;
+  signalStatusReportErrors?: number | null;
+  signalStatusReportSkipped?: number | null;
+  signalStatusReportLastAtMs?: number | null;
+  chatSignalActiveThreadId?: string | null;
+  chatSignalThreadMessageCounts?: Record<string, number> | null;
+  chatSignalThreadUnreadCounts?: Record<string, number> | null;
+  chatSignalActionAttempts?: number | null;
+  chatSignalActionSuccess?: number | null;
+  chatSignalActionFailure?: number | null;
   startupCheckedAtMs?: number | null;
   startupPhase?: 'booting' | 'restoring' | 'settled' | null;
   startupOpenaiState?: 'ready' | 'assumed_ready' | 'missing' | 'unknown' | null;
@@ -2169,6 +2459,16 @@ export interface HealthSnapshot {
   tradelockerRequestConcurrency?: number | null;
   tradelockerMinRequestIntervalMs?: number | null;
   tradelockerRateLimitTelemetry?: TradeLockerRateLimitTelemetry | null;
+  tradelockerShards?: Array<TradeLockerAccountShardState> | null;
+  tradelockerTenants?: number | null;
+  tradelockerFanout?: Array<TradeLockerMarketSubscriptionState> | null;
+  tradelockerAccountSelector?: TradeLockerAccountSelectorSnapshot | null;
+  tradelockerScheduler?: {
+    shardCount?: number | null;
+    totalQueueDepth?: number | null;
+    totalRuns?: number | null;
+    totalFailures?: number | null;
+  } | null;
   nativeChartSymbol?: string | null;
   nativeChartUpdatedAtMs?: number | null;
   nativeChartFrames?: number | null;
@@ -2439,6 +2739,7 @@ export interface SystemStateSnapshot {
   capturedAtMs: number;
   detail: 'summary' | 'full';
   health: HealthSnapshot;
+  migrationParity?: MigrationParityCounters | null;
   truth?: {
     projection?: TruthProjection | null;
     updatedAtMs?: number | null;
@@ -2468,6 +2769,12 @@ export interface SystemStateSnapshot {
     postTradeReviewEnabled?: boolean | null;
     postTradeReviewAgentId?: string | null;
     chartWatchLeadAgentId?: string | null;
+    chatSignalActiveThreadId?: string | null;
+    chatSignalThreadMessageCounts?: Record<string, number> | null;
+    chatSignalThreadUnreadCounts?: Record<string, number> | null;
+    chatSignalActionAttempts?: number | null;
+    chatSignalActionSuccess?: number | null;
+    chatSignalActionFailure?: number | null;
   } | null;
   agents?: Array<{
     id: string;
@@ -2554,6 +2861,11 @@ export interface SystemStateSnapshot {
     quotesBySymbolCount?: number | null;
     snapshotUpdatedAtMs?: number | null;
     rateLimitSuppressUntilMs?: number | null;
+    accountSelector?: TradeLockerAccountSelectorSnapshot | null;
+    securityAudit?: SecurityAuditSnapshot | null;
+    bridgeLifecycle?: BridgeLifecycleSnapshot | null;
+    renderPerf?: RenderPerfSnapshot | null;
+    ciValidation?: CiValidationSnapshot | null;
   } | null;
   mt5?: {
     bridgeAvailable?: boolean | null;

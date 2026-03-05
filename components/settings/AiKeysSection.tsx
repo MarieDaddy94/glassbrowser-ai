@@ -42,6 +42,8 @@ const AiKeysSection: React.FC<AiKeysSectionProps> = ({ ctx }) => {
     setWatchedVisionIntervalMs,
     chartWatchIntervalMs,
     setChartWatchIntervalMs,
+    browserHomeUrl,
+    setBrowserHomeUrl,
     autoWatchTradingView,
     setAutoWatchTradingView,
     chatTabContextMode,
@@ -327,6 +329,17 @@ const AiKeysSection: React.FC<AiKeysSectionProps> = ({ ctx }) => {
           <div className="space-y-1.5">
             <label className="text-[10px] text-gray-500 uppercase tracking-wider">Chart Watch (ms)</label>
             <input type="number" min={5000} step={1000} value={chartWatchIntervalMs} onChange={(e) => setChartWatchIntervalMs(e.target.value)} className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500/50 transition-colors font-mono" />
+          </div>
+          <div className="space-y-1.5 col-span-2">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wider">Browser Home URL</label>
+            <input
+              type="text"
+              value={browserHomeUrl}
+              onChange={(e) => setBrowserHomeUrl(e.target.value)}
+              className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500/50 transition-colors font-mono"
+              placeholder="https://en.wikipedia.org/wiki/Artificial_intelligence"
+            />
+            <p className="text-[10px] text-gray-500">Used for startup tab and new tabs. Leave blank to use default.</p>
           </div>
         </div>
         <div className="flex items-center justify-between gap-3 text-[11px] text-gray-400">

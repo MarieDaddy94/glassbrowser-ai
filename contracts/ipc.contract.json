@@ -156,6 +156,15 @@
       "inPreload": true
     },
     {
+      "name": "diagnostics:renderPerfSnapshot",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
       "name": "diagnostics:runtimeStream:start",
       "domain": "diagnostics",
       "scopes": [
@@ -166,6 +175,15 @@
     },
     {
       "name": "diagnostics:runtimeStream:stop",
+      "domain": "diagnostics",
+      "scopes": [
+        "diagnostics"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "diagnostics:securityAuditSnapshot",
       "domain": "diagnostics",
       "scopes": [
         "diagnostics"
@@ -205,6 +223,33 @@
       "domain": "glass",
       "scopes": [
         "file"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:forceRestart",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:heartbeat",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "mt5Bridge:lifecycleStatus",
+      "domain": "mt5Bridge",
+      "scopes": [
+        "mt5"
       ],
       "inMain": true,
       "inPreload": true
@@ -812,6 +857,15 @@
     },
     {
       "name": "tradelocker:getAccountMetrics",
+      "domain": "tradelocker",
+      "scopes": [
+        "tradelocker"
+      ],
+      "inMain": true,
+      "inPreload": true
+    },
+    {
+      "name": "tradelocker:getAccountMetricsForAccount",
       "domain": "tradelocker",
       "scopes": [
         "tradelocker"

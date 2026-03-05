@@ -4,6 +4,7 @@ import { normalizeSymbolKey, normalizeSymbolLoose } from "../services/symbols";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { GLASS_EVENT } from "../services/glassEvents";
+import type { TradeLockerMarketBus } from "../services/tradeLockerMarketBus";
 import {
   buildTradeLockerProfileBaseId,
   parseTradeLockerAccountNumber,
@@ -26,10 +27,19 @@ type TradeLockerAutoRestoreProfile = {
 
 export interface TradeLockerAccount {
   id: number;
+  accountId?: number;
   name: string;
   accNum?: number;
+  accountNum?: number;
+  accountNumber?: number;
   currency?: string;
   status?: string;
+  environment?: 'demo' | 'live' | string;
+  balance?: number | null;
+  equity?: number | null;
+  freeMargin?: number | null;
+  aaccountBalance?: number | null;
+  accountBalance?: number | null;
 }
 
 export interface TradeLockerSavedConfig {
@@ -168,12 +178,25 @@ function normalizeTradeLockerAccount(raw: any): TradeLockerAccount | null {
   const name = String(nameRaw || "").trim() || `Account ${accountId}${accNum != null ? `/${accNum}` : ""}`;
   const currencyRaw = pickFirstValue(raw, ["currency", "accountCurrency", "baseCurrency"]);
   const statusRaw = pickFirstValue(raw, ["status", "state", "accountStatus"]);
+  const environmentRaw = pickFirstValue(raw, ["environment", "env"]);
+  const balanceValue = readNumber(pickFirstValue(raw, ["aaccountBalance", "accountBalance", "balance"]));
+  const equityValue = readNumber(pickFirstValue(raw, ["equity", "accountEquity", "netAssetValue", "nav"]));
+  const freeMarginValue = readNumber(pickFirstValue(raw, ["freeMargin", "marginFree", "availableMargin"]));
   return {
     id: accountId,
+    accountId,
     name,
     accNum: accNum ?? undefined,
+    accountNum: accNum ?? undefined,
+    accountNumber: accNum ?? undefined,
     currency: currencyRaw != null ? String(currencyRaw) : undefined,
-    status: statusRaw != null ? String(statusRaw) : undefined
+    status: statusRaw != null ? String(statusRaw) : undefined,
+    environment: environmentRaw != null ? String(environmentRaw).trim().toLowerCase() : undefined,
+    balance: balanceValue,
+    equity: equityValue,
+    freeMargin: freeMarginValue,
+    aaccountBalance: balanceValue,
+    accountBalance: balanceValue
   };
 }
 
@@ -646,6 +669,7 @@ export function useTradeLocker(
     accountBusyRef?: React.MutableRefObject<boolean>;
     startupPhase?: 'booting' | 'restoring' | 'settled';
     startupBridgeReady?: boolean;
+    marketBus?: TradeLockerMarketBus | null;
   }
 ) {
   const api = window.glass?.tradelocker;
@@ -773,6 +797,7 @@ export function useTradeLocker(
   const switchShieldUntilRef = useRef<number>(0);
   const suppressRateLimitUntilRef = useRef(0);
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
+  const marketBusConsumerIdRef = useRef(`tl-hook-${Math.random().toString(16).slice(2)}`);
 
   const watchSymbols = useMemo(() => {
     const raw = Array.isArray(opts?.watchSymbols) ? opts?.watchSymbols : [];
@@ -2163,12 +2188,63 @@ export function useTradeLocker(
       quotesTimerRef.current();
       quotesTimerRef.current = null;
     }
+    const marketBus = opts?.marketBus || null;
     if (!startupBridgeOperational) return;
     if (status !== "connected") return;
     if (!isActive) return;
     if (switchShieldActive) return;
 
     const hasTargets = positionsRaw.length > 0 || orders.length > 0 || watchSymbols.length > 0;
+    const targetSymbols = hasTargets
+      ? Array.from(new Set([
+          ...positionsRaw.map((p) => String(p?.symbol || '').trim()),
+          ...orders.map((o) => String(o?.symbol || '').trim()),
+          ...watchSymbols
+        ].filter(Boolean)))
+      : [];
+
+    if (marketBus) {
+      const consumerId = marketBusConsumerIdRef.current;
+      const attach = marketBus.setSubscription({
+        consumerId,
+        symbols: targetSymbols,
+        onQuote: (quote) => {
+          const symbol = String(quote?.symbol || '').trim();
+          if (!symbol) return;
+          const key = normalizeSymbolKey(symbol);
+          if (!key) return;
+          const prev = quotesRef.current[key];
+          const nextQuote: TradeLockerQuote = {
+            symbol,
+            tradableInstrumentId: quote?.tradableInstrumentId ?? null,
+            routeId: quote?.routeId ?? null,
+            bid: quote?.bid ?? null,
+            ask: quote?.ask ?? null,
+            last: quote?.last ?? null,
+            mid: quote?.mid ?? null,
+            bidSize: quote?.bidSize ?? null,
+            askSize: quote?.askSize ?? null,
+            spread: quote?.spread ?? null,
+            timestampMs: quote?.timestampMs ?? null,
+            fetchedAtMs: quote?.fetchedAtMs ?? Date.now()
+          };
+          if (!shouldUpdateQuote(prev, nextQuote)) return;
+          quotesRef.current = { ...quotesRef.current, [key]: nextQuote };
+          quotesDirtyRef.current = true;
+          scheduleQuoteFlush(125);
+          onQuoteRef.current?.(nextQuote);
+          setQuotesUpdatedAtMs(Date.now());
+          setQuotesError(null);
+        }
+      });
+      if (attach?.ok) {
+        void marketBus.trigger?.();
+      }
+      return () => {
+        marketBus.removeSubscription(consumerId);
+      };
+    }
+
     const isRl = rateLimitedUntilMs > Date.now();
     const streamConnected = isStreamConnectedStatus(streamStatus);
     const baseInterval = streamConnected
@@ -2205,7 +2281,7 @@ export function useTradeLocker(
       quotesTimerRef.current = null;
       window.clearTimeout(kickoff);
     };
-  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, orders.length, positionsRaw.length, rateLimitGovernorMode, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, startupBridgeOperational, status, switchShieldActive, watchSymbols.length, streamStatus]);
+  }, [adaptiveMinIntervalMs, adaptivePressure, isActive, opts?.marketBus, orders, positionsRaw, rateLimitGovernorMode, rateLimitedUntilMs, refreshQuotes, runtimeScheduler, scheduleQuoteFlush, shouldUpdateQuote, startupBridgeOperational, status, switchShieldActive, watchSymbols, streamStatus]);
 
   useEffect(() => {
     if (!startupBridgeOperational) return;

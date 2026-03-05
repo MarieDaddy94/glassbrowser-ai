@@ -2318,6 +2318,46 @@ export const ACTION_CATALOG: Record<string, ActionDefinition> = {
     auditEventType: 'tradelocker_reconcile_account_state',
     defaultTimeoutMs: 30_000
   },
+  'tradelocker.strategy_runtime.list': {
+    id: 'tradelocker.strategy_runtime.list',
+    domain: 'broker',
+    owner: 'agent',
+    summary: 'List TradeLocker strategy runtime tenants, assignments, and shard telemetry.',
+    requiresBroker: true,
+    safety: { gates: ['permissions'], requiresConfirmation: false },
+    auditEventType: 'tradelocker_strategy_runtime_list',
+    defaultTimeoutMs: 8_000
+  },
+  'tradelocker.strategy_runtime.set_state': {
+    id: 'tradelocker.strategy_runtime.set_state',
+    domain: 'broker',
+    owner: 'agent',
+    summary: 'Set TradeLocker strategy runtime tenant state (pause/resume/fault-reset).',
+    requiresBroker: true,
+    safety: { gates: ['permissions'], requiresConfirmation: false },
+    auditEventType: 'tradelocker_strategy_runtime_set_state',
+    defaultTimeoutMs: 10_000
+  },
+  'tradelocker.strategy_runtime.assign_accounts': {
+    id: 'tradelocker.strategy_runtime.assign_accounts',
+    domain: 'broker',
+    owner: 'agent',
+    summary: 'Assign a TradeLocker strategy runtime to one or more account shards.',
+    requiresBroker: true,
+    safety: { gates: ['permissions'], requiresConfirmation: false },
+    auditEventType: 'tradelocker_strategy_runtime_assign_accounts',
+    defaultTimeoutMs: 10_000
+  },
+  'tradelocker.strategy_runtime.reconcile': {
+    id: 'tradelocker.strategy_runtime.reconcile',
+    domain: 'broker',
+    owner: 'agent',
+    summary: 'Run TradeLocker strategy runtime reconcile for a tenant or account shard.',
+    requiresBroker: true,
+    safety: { gates: ['permissions'], requiresConfirmation: false },
+    auditEventType: 'tradelocker_strategy_runtime_reconcile',
+    defaultTimeoutMs: 30_000
+  },
   'tradelocker.clear_secrets': {
     id: 'tradelocker.clear_secrets',
     domain: 'broker',

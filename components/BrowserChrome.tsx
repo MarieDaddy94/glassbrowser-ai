@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, ArrowRight, RotateCw, Search, Lock, Star, Settings, Sidebar, Eye, EyeOff, Maximize2, Minimize2, X, Pin, Tag } from 'lucide-react';
 import { Tab } from '../types';
 import { coerceUrlString } from '../services/url';
+import AccountSelector, { type TradeLockerAccountSelectorModel } from './tradelocker/AccountSelector';
 
 interface BrowserChromeProps {
   currentTab: Tab;
@@ -21,6 +22,7 @@ interface BrowserChromeProps {
   onOpenSettings: () => void;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  tradeLockerAccountSelector?: TradeLockerAccountSelectorModel;
 }
 
 const BrowserChrome: React.FC<BrowserChromeProps> = ({ 
@@ -40,7 +42,8 @@ const BrowserChrome: React.FC<BrowserChromeProps> = ({
   onSetLabel,
   onOpenSettings,
   isFullscreen,
-  onToggleFullscreen
+  onToggleFullscreen,
+  tradeLockerAccountSelector
 }) => {
   const safeUrl = coerceUrlString(currentTab.url);
   const [urlInput, setUrlInput] = useState(safeUrl);
@@ -218,6 +221,10 @@ const BrowserChrome: React.FC<BrowserChromeProps> = ({
         <div className="flex gap-2">
             {/* Extensions Placeholder */}
             <div className="w-px h-6 bg-gray-700 mx-1"></div>
+
+            {tradeLockerAccountSelector ? (
+              <AccountSelector model={tradeLockerAccountSelector} />
+            ) : null}
 
             <button
                 type="button"

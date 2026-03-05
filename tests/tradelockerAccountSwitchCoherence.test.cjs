@@ -32,6 +32,7 @@ test('telegram TradeLocker account-hint path dispatches switch event and refresh
   assert.equal(source.includes("source: 'telegram'"), true);
   assert.equal(source.includes('dispatchGlassEvent(GLASS_EVENT.TRADELOCKER_ACCOUNT_CHANGED'), true);
   assert.equal(source.includes('const snapRes = await api.getSnapshot({ includeOrders: false });'), true);
+  assert.equal(source.includes("source: 'browser_chrome_selector'"), true);
 });
 
 test('settings and TradeLocker panel direct account switches broadcast coherence events', () => {

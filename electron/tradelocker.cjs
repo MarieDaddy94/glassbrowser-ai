@@ -2372,6 +2372,8 @@ class TradeLockerClient {
     this.accountMetricsCache = null;
     this.accountMetricsCacheAtMs = 0;
     this.accountMetricsInFlight = null;
+    this.accountMetricsByAccountCache = new Map();
+    this.accountMetricsByAccountInFlight = new Map();
     this.quoteCache = new Map();
     this.dailyBarCache = new Map();
     this.historyCache = new Map();
@@ -4637,6 +4639,8 @@ class TradeLockerClient {
     this.accountMetricsCache = null;
     this.accountMetricsCacheAtMs = 0;
     this.accountMetricsInFlight = null;
+    this.accountMetricsByAccountCache = new Map();
+    this.accountMetricsByAccountInFlight = new Map();
     this.quoteCache = new Map();
     this.dailyBarCache = new Map();
     this.historyCache = new Map();
@@ -4852,18 +4856,21 @@ class TradeLockerClient {
     return path.startsWith('/trade/') || path.startsWith('trade/');
   }
 
-  buildAuthHeaders({ includeAccNum = false, includeDeveloper = true } = {}) {
+  buildAuthHeaders({ includeAccNum = false, includeDeveloper = true, accNumOverride } = {}) {
     const headers = {};
     if (this.tokens?.accessToken) headers.Authorization = `Bearer ${this.tokens.accessToken}`;
     if (includeAccNum) {
-      if (!this.state.accNum) throw new Error('TradeLocker accNum not set. Select an account first.');
-      headers.accNum = String(this.state.accNum);
+      const selectedAccNum =
+        parseAccountIdentifier(accNumOverride) ??
+        parseAccountIdentifier(this.state.accNum);
+      if (selectedAccNum == null) throw new Error('TradeLocker accNum not set. Select an account first.');
+      headers.accNum = String(selectedAccNum);
     }
     if (includeDeveloper) Object.assign(headers, this.buildDeveloperHeaders());
     return headers;
   }
 
-  async apiJson(pathname, { method = 'GET', body, headers = {}, includeAccNum = false, includeDeveloper = true } = {}) {
+  async apiJson(pathname, { method = 'GET', body, headers = {}, includeAccNum = false, includeDeveloper = true, accNumOverride } = {}) {
     return this.withRequestThrottle(async () => {
       const upstreamBackoff = this.getUpstreamBackoff();
       if (upstreamBackoff) {
@@ -4877,12 +4884,13 @@ class TradeLockerClient {
       await this.ensureAccessTokenValid();
       const includeAccNumFinal = includeAccNum || this.requiresAccNum(pathname);
       const accountScopedRequest = includeAccNumFinal;
-      if (includeAccNumFinal && parseAccountIdentifier(this.state.accNum) == null) {
+      const overrideAccNum = parseAccountIdentifier(accNumOverride);
+      if (includeAccNumFinal && overrideAccNum == null && parseAccountIdentifier(this.state.accNum) == null) {
         await this.ensureAccountContext();
       }
       const url = `${this.getBaseUrl()}${pathname.startsWith('/') ? '' : '/'}${pathname}`;
       const finalHeaders = {
-        ...this.buildAuthHeaders({ includeAccNum: includeAccNumFinal, includeDeveloper }),
+        ...this.buildAuthHeaders({ includeAccNum: includeAccNumFinal, includeDeveloper, accNumOverride: overrideAccNum ?? undefined }),
         ...headers
       };
       const hasBody = body !== undefined;
@@ -5257,12 +5265,12 @@ class TradeLockerClient {
     };
   }
 
-  findSelectedAccount(accounts) {
+  findSelectedAccount(accounts, identity = null) {
     const safeAccounts = Array.isArray(accounts) ? accounts : [];
     const resolved = resolveTradeLockerAccountPair(safeAccounts, {
-      accountId: this.state.accountId,
-      accNum: this.state.accNum,
-      allowSingleAccountFallback: true
+      accountId: identity?.accountId ?? this.state.accountId,
+      accNum: identity?.accNum ?? this.state.accNum,
+      allowSingleAccountFallback: identity?.allowSingleAccountFallback !== false
     });
     if (!resolved?.ok) return null;
     return safeAccounts.find((entry) => {
@@ -5376,6 +5384,166 @@ class TradeLockerClient {
     const selected = this.findSelectedAccount(accounts);
     const balance = parseNumberLoose(selected?.aaccountBalance ?? selected?.accountBalance ?? selected?.balance) ?? 0;
     return { balance, selectedAccount: selected };
+  }
+
+  async parseAccountMetricsPayloadFromState({
+    accountId,
+    accNum,
+    config,
+    stateJson
+  }) {
+    const columns = config?.d?.accountDetailsConfig?.columns || [];
+    const row = Array.isArray(stateJson?.d?.accountDetailsData) ? stateJson.d.accountDetailsData : [];
+    const mapped = mapRowToObject(row, columns);
+
+    const balanceCandidate =
+      this.findBestNumericField(mapped, columns, 'balance')?.value ??
+      parseNumberLoose(pickFirst(mapped, ['balance', 'accountBalance', 'aaccountBalance', 'cash', 'cashBalance']));
+
+    const equityCandidate =
+      this.findBestNumericField(mapped, columns, 'equity')?.value ??
+      parseNumberLoose(pickFirst(mapped, ['equity', 'accountEquity', 'netAssetValue', 'nav']));
+
+    let balance = balanceCandidate ?? null;
+    let equity = equityCandidate ?? null;
+
+    const openGrossPnlCandidate =
+      parseNumberLoose(
+        pickFirst(mapped, [
+          'openGrossPnL',
+          'openGrossPnl',
+          'openGrossPL',
+          'openGrossPl',
+          'openGrossPnlValue',
+          'openPnL',
+          'openPnl',
+          'openPL',
+          'openPl',
+          'floatingPnl',
+          'floatingProfit'
+        ])
+      ) ?? null;
+
+    const openNetPnlCandidate =
+      parseNumberLoose(
+        pickFirst(mapped, [
+          'openNetPnL',
+          'openNetPnl',
+          'openNetPL',
+          'openNetPl',
+          'openNetPnlValue'
+        ])
+      ) ?? null;
+
+    let currency = null;
+    try {
+      const accounts = await this.ensureAllAccountsCache(60_000);
+      const selected = this.findSelectedAccount(accounts, {
+        accountId,
+        accNum,
+        allowSingleAccountFallback: false
+      }) || this.findSelectedAccount(accounts, {
+        accountId,
+        accNum,
+        allowSingleAccountFallback: true
+      });
+      currency =
+        selected?.currency ||
+        selected?.accountCurrency ||
+        selected?.baseCurrency ||
+        null;
+      const fallbackBalance = parseNumberLoose(selected?.aaccountBalance ?? selected?.accountBalance ?? selected?.balance);
+      if (fallbackBalance != null && fallbackBalance > 0) {
+        if (balance == null || balance <= 0) {
+          balance = fallbackBalance;
+        } else {
+          const diff = Math.abs(balance - fallbackBalance);
+          if (diff > Math.max(1, fallbackBalance * 0.001)) {
+            balance = fallbackBalance;
+          }
+        }
+      }
+    } catch {
+      // ignore fallback errors
+    }
+
+    const marginUsedCandidate =
+      this.findNumericByKeywords(mapped, columns, {
+        include: ['margin'],
+        exclude: ['free', 'available', 'level', 'ratio', 'percent', 'pct'],
+        prefer: ['used', 'margin', 'utilized']
+      })?.value ?? null;
+
+    const marginFreeCandidate =
+      this.findNumericByKeywords(mapped, columns, {
+        include: ['margin'],
+        exclude: ['level', 'ratio', 'percent', 'pct'],
+        prefer: ['free', 'available', 'remaining']
+      })?.value ?? null;
+
+    const equityFromOpenPnl =
+      balance != null &&
+      Number.isFinite(Number(balance)) &&
+      (openNetPnlCandidate != null || openGrossPnlCandidate != null) &&
+      Number.isFinite(Number(openNetPnlCandidate != null ? openNetPnlCandidate : openGrossPnlCandidate))
+        ? Number(balance) + Number(openNetPnlCandidate != null ? openNetPnlCandidate : openGrossPnlCandidate)
+        : null;
+
+    const equityFromMargin =
+      marginUsedCandidate != null &&
+      marginFreeCandidate != null &&
+      Number.isFinite(Number(marginUsedCandidate)) &&
+      Number.isFinite(Number(marginFreeCandidate))
+        ? Number(marginUsedCandidate) + Number(marginFreeCandidate)
+        : null;
+
+    if (equity == null || equity <= 0) {
+      equity =
+        equityFromMargin != null && equityFromMargin > 0
+          ? equityFromMargin
+          : equityFromOpenPnl != null && equityFromOpenPnl > 0
+            ? equityFromOpenPnl
+            : balance;
+    } else if (equityFromMargin != null && equityFromMargin > 0 && Number.isFinite(Number(equity))) {
+      const diff = Math.abs(Number(equity) - equityFromMargin);
+      if (diff > Math.max(1, equityFromMargin * 0.001)) {
+        equity = equityFromMargin;
+      }
+    }
+
+    const marginLevelCandidate =
+      this.findNumericByKeywords(mapped, columns, {
+        include: ['margin'],
+        exclude: ['free', 'available', 'used'],
+        prefer: ['level', 'ratio', 'percent', 'pct']
+      })?.value ?? null;
+
+    const computedMarginLevel =
+      marginLevelCandidate == null &&
+      equity != null &&
+      Number.isFinite(Number(equity)) &&
+      marginUsedCandidate != null &&
+      Number.isFinite(Number(marginUsedCandidate)) &&
+      Number(marginUsedCandidate) > 0;
+
+    const marginLevel = computedMarginLevel
+      ? (Number(equity) / Number(marginUsedCandidate)) * 100
+      : marginLevelCandidate;
+
+    return {
+      accountId,
+      accNum,
+      currency,
+      balance: balance ?? 0,
+      equity: equity ?? balance ?? 0,
+      openGrossPnl: openGrossPnlCandidate,
+      openNetPnl: openNetPnlCandidate,
+      marginUsed: marginUsedCandidate,
+      marginFree: marginFreeCandidate,
+      marginLevel,
+      computedMarginLevel: !!computedMarginLevel,
+      updatedAtMs: nowMs()
+    };
   }
 
   findBestNumericField(mapped, columns, kind) {
@@ -8276,8 +8444,12 @@ class TradeLockerClient {
   }
 
   async getAccountMetrics({ maxAgeMs = 5_000 } = {}) {
-    if (!this.state.accountId) return { ok: false, error: 'TradeLocker accountId not set. Select an account first.' };
-
+    const accountId = parseAccountIdentifier(this.state.accountId);
+    const accNum = parseAccountIdentifier(this.state.accNum);
+    if (accountId == null || accNum == null) {
+      return { ok: false, error: 'TradeLocker accountId/accNum not set. Select an account first.' };
+    }
+    const cacheKey = `${accountId}:${accNum}`;
     const now = nowMs();
     const rateLimitedUntilMs = this.rateLimitedUntilMs || 0;
     if (rateLimitedUntilMs && now < rateLimitedUntilMs) {
@@ -8297,159 +8469,19 @@ class TradeLockerClient {
 
     this.accountMetricsInFlight = (async () => {
       try {
-        const [config, json] = await Promise.all([
+        const [config, stateJson] = await Promise.all([
           this.ensureConfig(),
-          this.apiJson(`/trade/accounts/${this.state.accountId}/state`, { includeAccNum: true })
+          this.apiJson(`/trade/accounts/${accountId}/state`, { includeAccNum: true })
         ]);
-
-        const columns = config?.d?.accountDetailsConfig?.columns || [];
-        const row = Array.isArray(json?.d?.accountDetailsData) ? json.d.accountDetailsData : [];
-        const mapped = mapRowToObject(row, columns);
-
-        const balanceCandidate =
-          this.findBestNumericField(mapped, columns, 'balance')?.value ??
-          parseNumberLoose(pickFirst(mapped, ['balance', 'accountBalance', 'aaccountBalance', 'cash', 'cashBalance']));
-
-        const equityCandidate =
-          this.findBestNumericField(mapped, columns, 'equity')?.value ??
-          parseNumberLoose(pickFirst(mapped, ['equity', 'accountEquity', 'netAssetValue', 'nav']));
-
-        let balance = balanceCandidate ?? null;
-        let equity = equityCandidate ?? null;
-
-        const openGrossPnlCandidate =
-          parseNumberLoose(
-            pickFirst(mapped, [
-              'openGrossPnL',
-              'openGrossPnl',
-              'openGrossPL',
-              'openGrossPl',
-              'openGrossPnlValue',
-              'openPnL',
-              'openPnl',
-              'openPL',
-              'openPl',
-              'floatingPnl',
-              'floatingProfit'
-            ])
-          ) ?? null;
-
-        const openNetPnlCandidate =
-          parseNumberLoose(
-            pickFirst(mapped, [
-              'openNetPnL',
-              'openNetPnl',
-              'openNetPL',
-              'openNetPl',
-              'openNetPnlValue'
-            ])
-          ) ?? null;
-
-        // Fallback: /auth/jwt/all-accounts sometimes contains the most reliable account balance.
-        let currency = null;
-        try {
-          const accounts = await this.ensureAllAccountsCache(60_000);
-          const selected = this.findSelectedAccount(accounts);
-          currency =
-            selected?.currency ||
-            selected?.accountCurrency ||
-            selected?.baseCurrency ||
-            null;
-          const fallbackBalance = parseNumberLoose(selected?.aaccountBalance ?? selected?.accountBalance ?? selected?.balance);
-          if (fallbackBalance != null && fallbackBalance > 0) {
-            if (balance == null || balance <= 0) {
-              balance = fallbackBalance;
-            } else {
-              const diff = Math.abs(balance - fallbackBalance);
-              if (diff > Math.max(1, fallbackBalance * 0.001)) {
-                balance = fallbackBalance;
-              }
-            }
-          }
-        } catch {
-          // ignore fallback errors
-        }
-
-        const marginUsedCandidate =
-          this.findNumericByKeywords(mapped, columns, {
-            include: ['margin'],
-            exclude: ['free', 'available', 'level', 'ratio', 'percent', 'pct'],
-            prefer: ['used', 'margin', 'utilized']
-          })?.value ?? null;
-
-        const marginFreeCandidate =
-          this.findNumericByKeywords(mapped, columns, {
-            include: ['margin'],
-            exclude: ['level', 'ratio', 'percent', 'pct'],
-            prefer: ['free', 'available', 'remaining']
-          })?.value ?? null;
-
-        const equityFromOpenPnl =
-          balance != null &&
-          Number.isFinite(Number(balance)) &&
-          (openNetPnlCandidate != null || openGrossPnlCandidate != null) &&
-          Number.isFinite(Number(openNetPnlCandidate != null ? openNetPnlCandidate : openGrossPnlCandidate))
-            ? Number(balance) + Number(openNetPnlCandidate != null ? openNetPnlCandidate : openGrossPnlCandidate)
-            : null;
-
-        const equityFromMargin =
-          marginUsedCandidate != null &&
-          marginFreeCandidate != null &&
-          Number.isFinite(Number(marginUsedCandidate)) &&
-          Number.isFinite(Number(marginFreeCandidate))
-            ? Number(marginUsedCandidate) + Number(marginFreeCandidate)
-            : null;
-
-        if (equity == null || equity <= 0) {
-          equity =
-            equityFromMargin != null && equityFromMargin > 0
-              ? equityFromMargin
-              : equityFromOpenPnl != null && equityFromOpenPnl > 0
-                ? equityFromOpenPnl
-                : balance;
-        } else if (equityFromMargin != null && equityFromMargin > 0 && Number.isFinite(Number(equity))) {
-          const diff = Math.abs(Number(equity) - equityFromMargin);
-          if (diff > Math.max(1, equityFromMargin * 0.001)) {
-            equity = equityFromMargin;
-          }
-        }
-
-        const marginLevelCandidate =
-          this.findNumericByKeywords(mapped, columns, {
-            include: ['margin'],
-            exclude: ['free', 'available', 'used'],
-            prefer: ['level', 'ratio', 'percent', 'pct']
-          })?.value ?? null;
-
-        const computedMarginLevel =
-          marginLevelCandidate == null &&
-          equity != null &&
-          Number.isFinite(Number(equity)) &&
-          marginUsedCandidate != null &&
-          Number.isFinite(Number(marginUsedCandidate)) &&
-          Number(marginUsedCandidate) > 0;
-
-        const marginLevel = computedMarginLevel
-          ? (Number(equity) / Number(marginUsedCandidate)) * 100
-          : marginLevelCandidate;
-
-        const payload = {
-          accountId: this.state.accountId,
-          accNum: this.state.accNum,
-          currency,
-          balance: balance ?? 0,
-          equity: equity ?? balance ?? 0,
-          openGrossPnl: openGrossPnlCandidate,
-          openNetPnl: openNetPnlCandidate,
-          marginUsed: marginUsedCandidate,
-          marginFree: marginFreeCandidate,
-          marginLevel,
-          computedMarginLevel: !!computedMarginLevel,
-          updatedAtMs: nowMs()
-        };
-
+        const payload = await this.parseAccountMetricsPayloadFromState({
+          accountId,
+          accNum,
+          config,
+          stateJson
+        });
         this.accountMetricsCache = payload;
         this.accountMetricsCacheAtMs = nowMs();
+        this.accountMetricsByAccountCache.set(cacheKey, payload);
         this.lastError = null;
         this.rateLimitedUntilMs = 0;
         return { ok: true, ...payload };
@@ -8459,14 +8491,13 @@ class TradeLockerClient {
           const retryAfterMs = typeof e?.retryAfterMs === 'number' ? e.retryAfterMs : null;
           const cooldownMs = retryAfterMs != null ? retryAfterMs : 15_000;
           this.rateLimitedUntilMs = Math.max(this.rateLimitedUntilMs || 0, nowMs() + cooldownMs);
-
-          if (this.accountMetricsCache) {
-            return { ok: true, ...this.accountMetricsCache, cached: true, rateLimited: true, retryAtMs: this.rateLimitedUntilMs };
+          const fallback = this.accountMetricsCache || this.accountMetricsByAccountCache.get(cacheKey) || null;
+          if (fallback) {
+            return { ok: true, ...fallback, cached: true, rateLimited: true, retryAtMs: this.rateLimitedUntilMs };
           }
           const msg = redactErrorMessage(e?.message || String(e));
           return { ok: false, error: msg, rateLimited: true, retryAtMs: this.rateLimitedUntilMs };
         }
-
         const msg = redactErrorMessage(e?.message || String(e));
         this.lastError = msg;
         return { ok: false, error: msg };
@@ -8476,6 +8507,86 @@ class TradeLockerClient {
     })();
 
     return this.accountMetricsInFlight;
+  }
+
+  async getAccountMetricsForAccount({ accountId, accNum, maxAgeMs = 15_000 } = {}) {
+    const parsedAccountId = parseAccountIdentifier(accountId);
+    const parsedAccNum = parseAccountIdentifier(accNum);
+    if (parsedAccountId == null || parsedAccNum == null) {
+      return { ok: false, error: 'TradeLocker accountId/accNum is required.' };
+    }
+
+    const cacheKey = `${parsedAccountId}:${parsedAccNum}`;
+    const now = nowMs();
+    const rateLimitedUntilMs = this.rateLimitedUntilMs || 0;
+    const cached = this.accountMetricsByAccountCache.get(cacheKey) || null;
+
+    if (rateLimitedUntilMs && now < rateLimitedUntilMs) {
+      if (cached) {
+        return { ok: true, ...cached, cached: true, rateLimited: true, retryAtMs: rateLimitedUntilMs };
+      }
+      const retryInMs = rateLimitedUntilMs - now;
+      return { ok: false, error: `TradeLocker rate limited. Retry in ${Math.ceil(retryInMs / 1000)}s.`, rateLimited: true, retryAtMs: rateLimitedUntilMs };
+    }
+
+    const maxAge = Math.max(250, Number(maxAgeMs) || 0);
+    const cachedAge = cached ? now - Number(cached.updatedAtMs || 0) : Infinity;
+    if (cached && Number.isFinite(cachedAge) && cachedAge >= 0 && cachedAge < maxAge) {
+      return { ok: true, ...cached, cached: true };
+    }
+
+    if (this.accountMetricsByAccountInFlight.has(cacheKey)) {
+      return this.accountMetricsByAccountInFlight.get(cacheKey);
+    }
+
+    const promise = (async () => {
+      try {
+        const [config, stateJson] = await Promise.all([
+          this.ensureConfig(),
+          this.apiJson(`/trade/accounts/${parsedAccountId}/state`, {
+            includeAccNum: true,
+            accNumOverride: parsedAccNum
+          })
+        ]);
+        const payload = await this.parseAccountMetricsPayloadFromState({
+          accountId: parsedAccountId,
+          accNum: parsedAccNum,
+          config,
+          stateJson
+        });
+        this.accountMetricsByAccountCache.set(cacheKey, payload);
+        const activeAccountId = parseAccountIdentifier(this.state.accountId);
+        const activeAccNum = parseAccountIdentifier(this.state.accNum);
+        if (activeAccountId === parsedAccountId && activeAccNum === parsedAccNum) {
+          this.accountMetricsCache = payload;
+          this.accountMetricsCacheAtMs = nowMs();
+        }
+        this.lastError = null;
+        this.rateLimitedUntilMs = 0;
+        return { ok: true, ...payload };
+      } catch (e) {
+        const status = typeof e?.status === 'number' ? e.status : null;
+        if (status === 429) {
+          const retryAfterMs = typeof e?.retryAfterMs === 'number' ? e.retryAfterMs : null;
+          const cooldownMs = retryAfterMs != null ? retryAfterMs : 15_000;
+          this.rateLimitedUntilMs = Math.max(this.rateLimitedUntilMs || 0, nowMs() + cooldownMs);
+          const fallback = this.accountMetricsByAccountCache.get(cacheKey) || null;
+          if (fallback) {
+            return { ok: true, ...fallback, cached: true, rateLimited: true, retryAtMs: this.rateLimitedUntilMs };
+          }
+          const msg = redactErrorMessage(e?.message || String(e));
+          return { ok: false, error: msg, rateLimited: true, retryAtMs: this.rateLimitedUntilMs };
+        }
+        const msg = redactErrorMessage(e?.message || String(e));
+        this.lastError = msg;
+        return { ok: false, error: msg };
+      } finally {
+        this.accountMetricsByAccountInFlight.delete(cacheKey);
+      }
+    })();
+
+    this.accountMetricsByAccountInFlight.set(cacheKey, promise);
+    return promise;
   }
 }
 

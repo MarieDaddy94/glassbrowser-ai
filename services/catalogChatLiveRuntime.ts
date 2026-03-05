@@ -129,8 +129,33 @@ export async function runCatalogChatLiveRuntime(
         const timeframes = timeframesList
           .map((tf) => normalizeTimeframeKey(String(tf || '').trim()))
           .filter(Boolean);
-        const options = symbolOverride || timeframes.length > 0
-          ? { symbol: symbolOverride || undefined, timeframes: timeframes.length > 0 ? timeframes : undefined }
+        const threadKindRaw = String(payload.threadKind || '').trim().toLowerCase();
+        const signalId = String(payload.signalId || '').trim();
+        const threadKind: 'global' | 'signal' | undefined =
+          threadKindRaw === 'signal' && signalId
+            ? 'signal'
+            : threadKindRaw === 'global'
+              ? 'global'
+              : undefined;
+        const threadIdRaw = String(payload.threadId || '').trim();
+        const threadId = threadIdRaw || (threadKind === 'signal' && signalId ? `signal:${signalId}` : threadKind === 'global' ? 'global' : '');
+        const threadLabelRaw = String(payload.threadLabel || '').trim();
+        const options = (
+          symbolOverride ||
+          timeframes.length > 0 ||
+          threadKind ||
+          threadId ||
+          signalId ||
+          threadLabelRaw
+        )
+          ? {
+              symbol: symbolOverride || undefined,
+              timeframes: timeframes.length > 0 ? timeframes : undefined,
+              threadKind,
+              threadId: threadId || undefined,
+              threadLabel: threadLabelRaw || undefined,
+              signalId: signalId || undefined
+            }
           : undefined;
         await chartHandlers.sendMessage(text, context, [], image, options);
         return { ok: true, data: { sent: true, channel: 'chart' } };

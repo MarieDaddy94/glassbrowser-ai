@@ -15,7 +15,7 @@ test('TradeLocker panel profiles include persisted account identity and restore 
   assert.equal(source.includes('normalizeTradeLockerProfileId'), true);
   assert.equal(source.includes('const accountId = parseTradeLockerAccountId(entry?.accountId);'), true);
   assert.equal(source.includes('const accNum = parseTradeLockerAccountId(entry?.accNum);'), true);
-  assert.equal(source.includes("runImmediateTradeLockerAction(\n        'tradelocker.set_active_account'"), true);
+  assert.match(source, /runImmediateTradeLockerAction\(\r?\n\s*'tradelocker\.set_active_account'/);
   assert.equal(source.includes('const savedCfg = await tlApi?.getSavedConfig?.();'), true);
 });
 

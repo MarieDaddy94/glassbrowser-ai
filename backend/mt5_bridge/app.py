@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Set
 
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -42,6 +42,17 @@ def _env_str(name: str) -> Optional[str]:
     return raw or None
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
 def _mt5_last_error() -> Dict[str, Any]:
     if mt5 is None:
         return {"code": None, "message": "MetaTrader5 package not installed"}
@@ -50,6 +61,33 @@ def _mt5_last_error() -> Dict[str, Any]:
         return {"code": code, "message": message}
     except Exception as exc:  # pragma: no cover
         return {"code": None, "message": str(exc)}
+
+
+BRIDGE_AUTH_HEADER = "x-glass-bridge-token"
+BRIDGE_AUTH_TOKEN = _env_str("GLASS_BRIDGE_TOKEN")
+BRIDGE_AUTH_REQUIRED = _env_bool("GLASS_BRIDGE_AUTH_REQUIRED", default=bool(BRIDGE_AUTH_TOKEN))
+PROCESS_STARTED_AT_MS = int(time.time() * 1000)
+PROCESS_STARTED_MONOTONIC_MS = int(time.monotonic() * 1000)
+LAST_HEARTBEAT_AT_MS: Optional[int] = None
+AUTH_FAILURE_COUNT = 0
+
+
+def _resolve_cors_origins() -> list[str]:
+    raw = _env_str("MT5_CORS_ORIGINS")
+    if raw:
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    is_dev = _env_bool("MT5_DEV_MODE", default=_env_bool("GLASS_DEV_MODE", default=False))
+    if is_dev:
+        return ["http://localhost:3000", "http://127.0.0.1:3000", "null"]
+    return ["null"]
+
+
+def _is_bridge_authorized(token: Optional[str]) -> bool:
+    if not BRIDGE_AUTH_REQUIRED:
+        return True
+    expected = (BRIDGE_AUTH_TOKEN or "").strip()
+    presented = str(token or "").strip()
+    return bool(expected) and presented == expected
 
 
 def _tick_to_dict(symbol: str, tick: Any) -> Dict[str, Any]:
@@ -499,14 +537,29 @@ def _init_mt5() -> Dict[str, Any]:
 
 app = FastAPI(title="GlassBrowser MT5 Bridge", version="0.1.0")
 hub = Mt5TickHub()
+ALLOWED_CORS_ORIGINS = _resolve_cors_origins()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_CORS_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Glass-Bridge-Token", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def _bridge_auth_middleware(request: Request, call_next):
+    global AUTH_FAILURE_COUNT
+    if BRIDGE_AUTH_REQUIRED:
+        presented = request.headers.get(BRIDGE_AUTH_HEADER) or request.headers.get(BRIDGE_AUTH_HEADER.title())
+        if not _is_bridge_authorized(presented):
+            AUTH_FAILURE_COUNT += 1
+            return JSONResponse(
+                {"ok": False, "error": "Unauthorized bridge request"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -533,7 +586,32 @@ async def _shutdown() -> None:
 async def health() -> JSONResponse:
     # Keep this endpoint lightweight and always 200 if the server is up.
     # (Electron uses this to detect whether the bridge is running.)
-    return JSONResponse({"ok": True, "mt5": {"available": mt5 is not None}})
+    return JSONResponse(
+        {
+            "ok": True,
+            "mt5": {"available": mt5 is not None},
+            "auth": {"required": BRIDGE_AUTH_REQUIRED},
+        }
+    )
+
+
+@app.get("/heartbeat")
+async def heartbeat() -> JSONResponse:
+    global LAST_HEARTBEAT_AT_MS
+    now_ms = int(time.time() * 1000)
+    LAST_HEARTBEAT_AT_MS = now_ms
+    return JSONResponse(
+        {
+            "ok": True,
+            "nowMs": now_ms,
+            "uptimeMs": max(0, now_ms - PROCESS_STARTED_AT_MS),
+            "monotonicMs": int(time.monotonic() * 1000),
+            "processStartedAtMs": PROCESS_STARTED_AT_MS,
+            "processStartedMonotonicMs": PROCESS_STARTED_MONOTONIC_MS,
+            "lastHeartbeatAtMs": LAST_HEARTBEAT_AT_MS,
+            "authFailures": AUTH_FAILURE_COUNT,
+        }
+    )
 
 
 @app.get("/account")
@@ -1169,6 +1247,13 @@ async def modify_position(payload: Dict[str, Any] = Body(...)) -> JSONResponse:
 
 @app.websocket("/ws/ticks")
 async def ws_ticks(websocket: WebSocket) -> None:
+    global AUTH_FAILURE_COUNT
+    if BRIDGE_AUTH_REQUIRED:
+        presented = websocket.headers.get(BRIDGE_AUTH_HEADER) or websocket.query_params.get("token")
+        if not _is_bridge_authorized(presented):
+            AUTH_FAILURE_COUNT += 1
+            await websocket.close(code=4401)
+            return
     await websocket.accept()
 
     if mt5 is None:

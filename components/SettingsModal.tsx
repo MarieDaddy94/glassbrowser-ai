@@ -8,8 +8,10 @@ import { requestBrokerCoordinated } from "../services/brokerRequestBridge";
 import { getRuntimeScheduler } from "../services/runtimeScheduler";
 import { requireBridge } from "../services/bridgeGuard";
 import { recordLedgerQueueDepth } from "../services/persistenceHealth";
+import { getEnterpriseFeatureFlags } from "../services/enterpriseFeatureFlags";
 import { GLASS_EVENT, dispatchGlassEvent } from "../services/glassEvents";
 import {
+  buildTradeLockerAccountKey,
   buildTradeLockerProfileBaseId,
   buildTradeLockerProfileId as buildTlProfileId,
   buildTradeLockerProfileLabel as buildTlProfileLabel,
@@ -77,6 +79,7 @@ const STORAGE = {
   activeVisionIntervalMs: "glass_vision_active_interval_ms",
   watchedVisionIntervalMs: "glass_vision_watched_interval_ms",
   chartWatchIntervalMs: "glass_chart_watch_interval_ms",
+  browserHomeUrl: "glass_browser_home_url_v1",
   autoWatchTradingView: "glass_auto_watch_tradingview",
   chatTabContextMode: "glass_chat_tab_context_mode",
   chatTabContextMaxTabs: "glass_chat_tab_context_max_tabs",
@@ -312,6 +315,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   onSignalSnapshotWarmupChange,
   healthSnapshot
 }) => {
+  const enterpriseFlags = useMemo(() => getEnterpriseFeatureFlags(), []);
   const runtimeScheduler = useMemo(() => getRuntimeScheduler(), []);
   const [openaiKey, setOpenaiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
@@ -324,6 +328,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [activeVisionIntervalMs, setActiveVisionIntervalMs] = useState("2000");
   const [watchedVisionIntervalMs, setWatchedVisionIntervalMs] = useState("7000");
   const [chartWatchIntervalMs, setChartWatchIntervalMs] = useState("60000");
+  const [browserHomeUrl, setBrowserHomeUrl] = useState("");
   const [autoWatchTradingView, setAutoWatchTradingView] = useState(true);
   const [chatTabContextMode, setChatTabContextMode] = useState<ChatTabContextMode>("tradingview_all");
   const [chatTabContextMaxTabs, setChatTabContextMaxTabs] = useState("3");
@@ -886,6 +891,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [tlAccounts, setTlAccounts] = useState<any[]>([]);
   const [tlSelectedAccountId, setTlSelectedAccountId] = useState<string>("");
   const [tlSelectedAccNum, setTlSelectedAccNum] = useState<string>("");
+  const [tlStrategyRuntimeRows, setTlStrategyRuntimeRows] = useState<any[]>([]);
+  const [tlStrategyRuntimeAssignments, setTlStrategyRuntimeAssignments] = useState<Array<{ strategyId: string; accountKeys: string[] }>>([]);
+  const [tlStrategyEditorId, setTlStrategyEditorId] = useState<string>('manual');
+  const [tlStrategyEditorAccountKeys, setTlStrategyEditorAccountKeys] = useState<string[]>([]);
+  const [tlStrategyRuntimeBusy, setTlStrategyRuntimeBusy] = useState(false);
+  const [tlStrategyRuntimeError, setTlStrategyRuntimeError] = useState<string | null>(null);
+  const [tlStrategyRuntimeStatus, setTlStrategyRuntimeStatus] = useState<string | null>(null);
 
   const [tlTradingEnabled, setTlTradingEnabled] = useState(false);
   const [tlAutoPilotEnabled, setTlAutoPilotEnabled] = useState(false);
@@ -957,6 +969,28 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return accNum != null ? `${accountId}:${accNum}` : String(accountId);
   }, [tlSelectedAccountId, tlSelectedAccNum]);
 
+  const tlAccountKeyOptions = useMemo(() => {
+    const env = tlEnv === 'live' ? 'live' : 'demo';
+    const server = String(tlServer || '').trim();
+    if (!server || !Array.isArray(tlAccounts)) return [];
+    return tlAccounts
+      .map((entry) => {
+        const accountId = parseTradeLockerId(entry?.id ?? entry?.accountId);
+        const accNum = parseTradeLockerId(entry?.accNum ?? entry?.accountNum ?? entry?.accountNumber);
+        if (accountId == null || accNum == null) return null;
+        const key = buildTradeLockerAccountKey({
+          env,
+          server,
+          accountId,
+          accNum
+        });
+        if (!key) return null;
+        const label = `${String(entry?.name || accountId)} (${accountId}/${accNum})`;
+        return { key, label };
+      })
+      .filter(Boolean) as Array<{ key: string; label: string }>;
+  }, [tlAccounts, tlEnv, tlServer]);
+
   const runTradeLockerImmediateAction = useCallback(
     async (
       actionId: string,
@@ -1002,6 +1036,79 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     },
     [onRunActionCatalog, onRunActionCatalogImmediate]
   );
+
+  const runTradeLockerStrategyCatalogAction = useCallback(async (
+    actionId: string,
+    payload?: Record<string, any>
+  ) => {
+    const runner = onRunActionCatalogImmediate || onRunActionCatalog;
+    if (!runner) return { ok: false, error: 'Action catalog unavailable.' };
+    try {
+      const res = await Promise.resolve(runner({ actionId, payload: payload || {} }));
+      if (res?.ok === false) {
+        return { ok: false, error: res?.error ? String(res.error) : 'Action failed.' };
+      }
+      return { ok: true, data: res?.data ?? res ?? null };
+    } catch (err: any) {
+      return { ok: false, error: err?.message ? String(err.message) : 'Action failed.' };
+    }
+  }, [onRunActionCatalog, onRunActionCatalogImmediate]);
+
+  const refreshTradeLockerStrategyRuntime = useCallback(async () => {
+    setTlStrategyRuntimeBusy(true);
+    setTlStrategyRuntimeError(null);
+    try {
+      const res = await runTradeLockerStrategyCatalogAction('tradelocker.strategy_runtime.list', {
+        source: 'settings_modal'
+      });
+      if (!res.ok) {
+        setTlStrategyRuntimeError(res.error || 'Failed to load strategy runtime.');
+        return;
+      }
+      const data = res.data && typeof res.data === 'object' ? res.data : {};
+      setTlStrategyRuntimeRows(Array.isArray((data as any)?.rows) ? (data as any).rows : []);
+      setTlStrategyRuntimeAssignments(Array.isArray((data as any)?.assignments) ? (data as any).assignments : []);
+      setTlStrategyRuntimeStatus('Strategy runtime refreshed.');
+    } finally {
+      setTlStrategyRuntimeBusy(false);
+    }
+  }, [runTradeLockerStrategyCatalogAction]);
+
+  const toggleTlStrategyEditorAccountKey = useCallback((accountKey: string) => {
+    const key = String(accountKey || '').trim();
+    if (!key) return;
+    setTlStrategyEditorAccountKeys((prev) => {
+      const next = new Set(prev || []);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return Array.from(next.values());
+    });
+  }, []);
+
+  const applyTlStrategyAssignment = useCallback(async () => {
+    const strategyId = String(tlStrategyEditorId || '').trim().toLowerCase();
+    if (!strategyId) {
+      setTlStrategyRuntimeError('Strategy id is required.');
+      return;
+    }
+    setTlStrategyRuntimeBusy(true);
+    setTlStrategyRuntimeError(null);
+    setTlStrategyRuntimeStatus(null);
+    try {
+      const res = await runTradeLockerStrategyCatalogAction('tradelocker.strategy_runtime.assign_accounts', {
+        strategyId,
+        accountKeys: tlStrategyEditorAccountKeys
+      });
+      if (!res.ok) {
+        setTlStrategyRuntimeError(res.error || 'Failed to apply strategy assignment.');
+        return;
+      }
+      setTlStrategyRuntimeStatus('Strategy assignment updated.');
+      await refreshTradeLockerStrategyRuntime();
+    } finally {
+      setTlStrategyRuntimeBusy(false);
+    }
+  }, [refreshTradeLockerStrategyRuntime, runTradeLockerStrategyCatalogAction, tlStrategyEditorAccountKeys, tlStrategyEditorId]);
 
   const emitTradeLockerSwitchShield = useCallback((input: {
     active: boolean;
@@ -1098,6 +1205,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       setActiveVisionIntervalMs(localStorage.getItem(STORAGE.activeVisionIntervalMs) || "2000");
       setWatchedVisionIntervalMs(localStorage.getItem(STORAGE.watchedVisionIntervalMs) || "7000");
       setChartWatchIntervalMs(localStorage.getItem(STORAGE.chartWatchIntervalMs) || "60000");
+      setBrowserHomeUrl(localStorage.getItem(STORAGE.browserHomeUrl) || "");
       const rawAutoTv = localStorage.getItem(STORAGE.autoWatchTradingView);
       if (rawAutoTv == null) setAutoWatchTradingView(true);
       else setAutoWatchTradingView(!(rawAutoTv === "0" || rawAutoTv === "false"));
@@ -1207,6 +1315,21 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     });
     return () => dispose();
   }, [isOpen, refreshLedgerStats, runtimeScheduler]);
+
+  useEffect(() => {
+    if (!isOpen || activeSection !== 'broker') return;
+    void refreshTradeLockerStrategyRuntime();
+  }, [activeSection, isOpen, refreshTradeLockerStrategyRuntime]);
+
+  useEffect(() => {
+    const strategyId = String(tlStrategyEditorId || '').trim().toLowerCase();
+    if (!strategyId) return;
+    const assignment = tlStrategyRuntimeAssignments.find((entry) => String(entry?.strategyId || '').trim().toLowerCase() === strategyId) || null;
+    const accountKeys = Array.isArray(assignment?.accountKeys)
+      ? assignment!.accountKeys.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    setTlStrategyEditorAccountKeys(Array.from(new Set(accountKeys)));
+  }, [tlStrategyEditorId, tlStrategyRuntimeAssignments]);
 
   if (!isOpen) return null;
 
@@ -1754,6 +1877,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
       persist(STORAGE.activeVisionIntervalMs, activeVisionIntervalMs);
       persist(STORAGE.watchedVisionIntervalMs, watchedVisionIntervalMs);
       persist(STORAGE.chartWatchIntervalMs, chartWatchIntervalMs);
+      persist(STORAGE.browserHomeUrl, browserHomeUrl);
       persist(STORAGE.autoWatchTradingView, autoWatchTradingView ? "1" : "0");
       persist(STORAGE.chatTabContextMode, chatTabContextMode);
       persist(STORAGE.chatTabContextMaxTabs, chatTabContextMaxTabs);
@@ -2242,6 +2366,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setWatchedVisionIntervalMs,
     chartWatchIntervalMs,
     setChartWatchIntervalMs,
+    browserHomeUrl,
+    setBrowserHomeUrl,
     autoWatchTradingView,
     setAutoWatchTradingView,
     chatTabContextMode,
@@ -2449,7 +2575,86 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {activeSection === "broker" && (
             <React.Suspense fallback={<div className="text-[11px] text-gray-500">Loading broker settings...</div>}>
-              <BrokerAdapterSection ctx={brokerAdapterSectionCtx} />
+              <div className="space-y-4">
+                <BrokerAdapterSection ctx={brokerAdapterSectionCtx} />
+                <div className="pt-2 border-t border-white/5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[11px] font-medium text-gray-400 uppercase tracking-wide">
+                      TradeLocker Strategy Assignments
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void refreshTradeLockerStrategyRuntime()}
+                      disabled={tlStrategyRuntimeBusy}
+                      className="px-2 py-1 rounded-md text-[10px] font-semibold bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 disabled:opacity-50"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div className="text-[10px] text-gray-500 font-mono">
+                    Tenants: {tlStrategyRuntimeRows.length} • Assignments: {tlStrategyRuntimeAssignments.length}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] text-gray-500 uppercase tracking-wider">Strategy ID</label>
+                      <input
+                        type="text"
+                        value={tlStrategyEditorId}
+                        onChange={(e) => setTlStrategyEditorId(String(e.target.value || '').trim().toLowerCase())}
+                        className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-cyan-500/50 transition-colors font-mono"
+                        placeholder="manual"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] text-gray-500 uppercase tracking-wider">Action</label>
+                      <button
+                        type="button"
+                        onClick={() => { void applyTlStrategyAssignment(); }}
+                        disabled={tlStrategyRuntimeBusy || !tlStrategyEditorId}
+                        className="w-full px-3 py-2 rounded-lg text-[11px] font-semibold bg-cyan-600/70 hover:bg-cyan-600 text-white transition-colors disabled:opacity-40"
+                      >
+                        Apply Assignment
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {tlAccountKeyOptions.length === 0 ? (
+                      <div className="text-[10px] text-gray-500">No account keys available. Connect and refresh accounts first.</div>
+                    ) : (
+                      tlAccountKeyOptions.map((entry) => (
+                        <label key={`tl-strategy-assign-${entry.key}`} className="flex items-center gap-2 text-[11px] text-gray-400">
+                          <input
+                            type="checkbox"
+                            checked={tlStrategyEditorAccountKeys.includes(entry.key)}
+                            onChange={() => toggleTlStrategyEditorAccountKey(entry.key)}
+                          />
+                          <span>{entry.label}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+
+                  {tlStrategyRuntimeRows.length > 0 ? (
+                    <div className="max-h-40 overflow-y-auto custom-scrollbar space-y-1 rounded-lg border border-white/10 bg-black/20 p-2">
+                      {tlStrategyRuntimeRows.slice(0, 24).map((row: any, idx: number) => (
+                        <div key={String(row?.tenantKey || `runtime_${idx}`)} className="text-[10px] text-gray-400 font-mono">
+                          {String(row?.strategyId || 'manual')} @ {String(row?.accountKey || '--')} • {String(row?.state || 'idle')}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {tlStrategyRuntimeStatus ? (
+                    <div className="text-[10px] text-emerald-300">{tlStrategyRuntimeStatus}</div>
+                  ) : null}
+                  {tlStrategyRuntimeError ? (
+                    <div className="text-[10px] text-red-400/90 font-mono bg-black/20 border border-red-500/20 rounded-lg p-2">{tlStrategyRuntimeError}</div>
+                  ) : null}
+                </div>
+              </div>
             </React.Suspense>
           )}
 
@@ -2622,6 +2827,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                     <div className="text-[11px] text-gray-500 font-mono truncate" title={diagnosticsMeta?.migrationReason || ""}>
                       Migration Reason: {diagnosticsMeta?.migrationReason || "--"}
+                    </div>
+                    <div className="text-[11px] text-gray-500 break-words">
+                      Enterprise Flags: {Object.entries(enterpriseFlags)
+                        .map(([key, enabled]) => `${key}:${enabled ? 'on' : 'off'}`)
+                        .join(' | ')}
                     </div>
                   </div>
 
